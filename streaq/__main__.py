@@ -1,12 +1,14 @@
+import asyncio
 import os
 import sys
 from multiprocessing import Process
-from typing import Annotated
+from typing import Annotated, cast
 
 from typer import Exit, Option, Typer
 
 from streaq import VERSION
 from streaq.utils import import_string
+from streaq.worker import Worker
 
 cli = Typer(context_settings={"help_option_names": ["-h", "--help"]})
 
@@ -23,7 +25,7 @@ def dummy():
 
 @cli.command()
 def main(
-    worker_model: str,
+    worker_path: str,
     workers: Annotated[
         int, Option("--workers", "-w", help="Number of worker processes to spin up")
     ] = 1,
@@ -38,12 +40,12 @@ def main(
     ] = None,
 ):
     sys.path.append(os.getcwd())
-    worker = import_string(worker_model)
-    print(worker)
+    worker = cast(Worker, import_string(worker_path))
+    coroutine = worker.start()
     if workers > 1:
         for _ in range(workers - 1):
-            Process(target=dummy, args=()).start()
-    dummy()
+            Process(target=asyncio.run, args=(coroutine,)).start()
+    asyncio.run(coroutine)
 
 
 if __name__ == "__main__":

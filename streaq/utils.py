@@ -1,5 +1,10 @@
+from datetime import timedelta
 from importlib import import_module
 from typing import Any
+
+
+class StreaqError(Exception):
+    pass
 
 
 def import_string(dotted_path: str) -> Any:
@@ -19,3 +24,9 @@ def import_string(dotted_path: str) -> Any:
         raise ImportError(
             f"Module '{module_path}' does not define a '{class_name}' attribute"
         ) from e
+
+
+def timeout_seconds(timeout: timedelta | int | None) -> int | None:
+    if isinstance(timeout, timedelta):
+        return round(timeout.total_seconds())
+    return timeout
