@@ -1,4 +1,5 @@
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta
 from importlib import import_module
 from typing import Any
 
@@ -26,7 +27,21 @@ def import_string(dotted_path: str) -> Any:
         ) from e
 
 
-def timeout_seconds(timeout: timedelta | int | None) -> int | None:
+def to_seconds(timeout: timedelta | int) -> int:
     if isinstance(timeout, timedelta):
         return round(timeout.total_seconds())
     return timeout
+
+
+def to_ms(timeout: timedelta | int) -> int:
+    if isinstance(timeout, timedelta):
+        return round(timeout.total_seconds() * 1000)
+    return timeout * 1000
+
+
+def now_ms() -> int:
+    return round(time.time() * 1000)
+
+
+def datetime_ms(dt: datetime) -> int:
+    return round(dt.timestamp() * 1000)

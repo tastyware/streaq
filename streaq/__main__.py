@@ -41,11 +41,11 @@ def main(
 ):
     sys.path.append(os.getcwd())
     worker = cast(Worker, import_string(worker_path))
-    coroutine = worker.start()
-    if workers > 1:
-        for _ in range(workers - 1):
-            Process(target=asyncio.run, args=(coroutine,)).start()
-    asyncio.run(coroutine)
+    # coroutine = worker.start()
+    # if workers > 1:
+    #    for _ in range(workers - 1):
+    #        Process(target=asyncio.run, args=(coroutine,)).start()
+    asyncio.run(worker.start())
 
 
 if __name__ == "__main__":
