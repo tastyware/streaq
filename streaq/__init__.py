@@ -17,8 +17,16 @@ logger.setLevel(logging.DEBUG)
 
 # ruff: noqa: E402
 
+from .task import Task, TaskStatus
+from .types import WorkerContext
+from .utils import StreaqError, StreaqRetry
 from .worker import Worker
 
 __all__ = [
+    "StreaqError",
+    "StreaqRetry",
+    "Task",
+    "TaskStatus",
     "Worker",
+    "WorkerContext",
 ]

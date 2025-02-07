@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Generic, ParamSpec, TypeVar
 
 from redis.asyncio import Redis
+from redis.commands.core import AsyncScript
 
 P = ParamSpec("P")
 PNext = ParamSpec("PNext")
@@ -27,3 +28,4 @@ class WorkerContext(Generic[WD]):
     deps: WD
     id: str
     redis: Redis
+    scripts: dict[str, AsyncScript]

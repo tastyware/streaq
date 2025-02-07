@@ -6,21 +6,20 @@ from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable, Concatenate, Generic
 from uuid import uuid4
 
-from redis.asyncio import Redis
+from redis.asyncio import Redis, WatchError
 from redis.typing import EncodableT
 
 from streaq import DEFAULT_TTL, REDIS_MESSAGE, REDIS_QUEUE, REDIS_STREAM, logger
-from streaq.lua import PUBLISH_TASK_LUA
-from streaq.types import P, R, WD, PNext, RNext, WorkerContext
+from streaq.types import P, R, WD, WorkerContext
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
 
 
 class TaskStatus(str, Enum):
-    PENDING = "Pending"
-    QUEUED = "Queued"
-    RUNNING = "Running"
-    DEFERRED = "Deferred"
-    DONE = "Done"
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    SCHEDULED = "scheduled"
+    DONE = "done"
 
 
 @asynccontextmanager
@@ -42,29 +41,28 @@ class Task(Generic[WD, P, R]):
     id: str = uuid4().hex
 
     async def status(self) -> TaskStatus:
-        return TaskStatus.PENDING
+        async with self.redis.pipeline(transaction=True) as pipe:
+            await pipe.exists(self.result_key)
+            await pipe.exists(in_progress_key_prefix + self.job_id)
+            await pipe.zscore(REDIS_QUEUE, self.id)
+            await pipe.exists(job_message_id_prefix + self.job_id)
+            is_complete, is_in_progress, score, queued = await pipe.execute()
 
-    async def result(self) -> R:
+        if is_complete:
+            return TaskStatus.DONE
+        elif is_in_progress:
+            return TaskStatus.RUNNING
+        elif queued:
+            return TaskStatus.QUEUED
+        elif score:
+            return TaskStatus.SCHEDULED
+        raise StreaqError()
+
+    async def result(self) -> R | None:
         result = await self.redis.get(self.result_key)
-        return self.deserializer(result)
+        return self.deserializer(result) if result else None
 
-    def triggers(
-        self,
-        *on_success: "RegisteredTask[WD, PNext, RNext]",
-    ) -> "Task[WD, PNext, RNext]":
-        """
-        also takes all kwargs from `start()`
-
-        TODO - AFAIK there's no way to enforce that `PNext` is `(R,)` - e.g. that the return value of the
-        first function is the input to the second function.
-
-        The even more complex case is where you have multiple jobs triggering a job, where I'm even more sure
-        full type safety is impossible.
-
-        I would therefore suggest that subsequent jobs are not allowed to take any arguments, and instead
-        access the results of previous jobs via `FunctionContext`
-        """
-        ...
+    async def abort(self) -> bool: ...
 
     @property
     def task_key(self) -> str:
@@ -85,9 +83,12 @@ class RegisteredTask(Generic[WD, P, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
+    _id: str = uuid4().hex  # for unique jobs only
 
     # TODO: add exception handler
     # TODO: add dependency injection
+    # TODO: add triggers next job/starts with
+    # TODO: optimizations, __slots__?
 
     async def enqueue(
         self,
@@ -108,8 +109,17 @@ class RegisteredTask(Generic[WD, P, R]):
             raise StreaqError(
                 "Use either '_delay' or '_schedule' when enqueuing tasks, not both!"
             )
+        publish_task = self.deps().scripts["publish_task"]
         ttl_ms = to_ms(_ttl) if _ttl is not None else None
         async with self.redis.pipeline(transaction=True) as pipe:
+            if self.unique:
+                redis_key = self.task_key(self._id)
+                await pipe.watch(redis_key)
+                if await pipe.exists(
+                    redis_key
+                ):  # TODO: should result_key be checked here too?
+                    await pipe.reset()
+                    raise StreaqError("Task is unique and already exists!")
             enqueue_time = now_ms()
             if _schedule:
                 score = datetime_ms(_schedule)
@@ -119,33 +129,31 @@ class RegisteredTask(Generic[WD, P, R]):
                 score = None
             ttl = ttl_ms or (score or enqueue_time) - enqueue_time + DEFAULT_TTL
             data = self.serializer(
-                {
-                    "a": args,
-                    "k": kwargs,
-                    "t": enqueue_time,
-                }
+                (
+                    args,
+                    kwargs,
+                    enqueue_time,
+                )
             )
             pipe.multi()
-            task = Task(self.deserializer, self.fn_name, self.redis)
-            pipe.psetex(self.task_key(task.id), ttl, data)
+            if self.unique:
+                task = Task(self.deserializer, self.fn_name, self.redis, id=self._id)
+            else:
+                task = Task(self.deserializer, self.fn_name, self.redis)
+            await pipe.psetex(self.task_key(task.id), ttl, data)
 
             if score is not None:
-                pipe.zadd(REDIS_QUEUE, {task.id: score})
+                await pipe.zadd(REDIS_QUEUE, {task.id: score})
             else:
-                pipe.eval(
-                    PUBLISH_TASK_LUA,
-                    2,
-                    # keys
-                    REDIS_STREAM,
-                    REDIS_MESSAGE,
-                    # args
-                    task.id,
-                    str(enqueue_time),
-                    str(ttl),
-                    self.fn_name,
+                await publish_task(
+                    keys=[REDIS_STREAM, REDIS_MESSAGE],
+                    args=[task.id, enqueue_time, ttl, self.fn_name],
                 )
 
-            await pipe.execute()
+            try:
+                await pipe.execute()
+            except WatchError:
+                raise StreaqError("Task is unique and already exists!")
         return task
 
     async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:

@@ -1,11 +1,30 @@
 import time
 from datetime import datetime, timedelta
 from importlib import import_module
-from typing import Any
+from typing import Any, Callable
+
+from redis.asyncio import Redis
 
 
 class StreaqError(Exception):
     pass
+
+
+class StreaqRetry(RuntimeError):
+    """
+    Special exception to retry the job (if ``max_retries`` hasn't been reached).
+
+    :param defer: duration to wait before rerunning the job
+    """
+
+    def __init__(self, defer: timedelta | int | None = None):
+        self.defer_score: int | None = to_ms(defer) if defer is not None else None
+
+    def __repr__(self) -> str:
+        return f"<Retry defer {(self.defer_score or 0) / 1000:0.2f}s>"
+
+    def __str__(self) -> str:
+        return repr(self)
 
 
 def import_string(dotted_path: str) -> Any:
@@ -45,3 +64,23 @@ def now_ms() -> int:
 
 def datetime_ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
+
+
+async def log_redis_info(redis: Redis, log_func: Callable[[str], Any]) -> None:
+    async with redis.pipeline(transaction=False) as pipe:
+        pipe.info(section="Server")
+        pipe.info(section="Memory")
+        pipe.info(section="Clients")
+        pipe.dbsize()
+        info_server, info_memory, info_clients, key_count = await pipe.execute()
+
+    redis_version = info_server.get("redis_version", "?")
+    mem_usage = info_memory.get("used_memory_human", "?")
+    clients_connected = info_clients.get("connected_clients", "?")
+
+    log_func(
+        f"redis_version={redis_version} "
+        f"mem_usage={mem_usage} "
+        f"clients_connected={clients_connected} "
+        f"db_keys={key_count}"
+    )

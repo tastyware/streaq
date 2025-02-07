@@ -19,10 +19,6 @@ def version_callback(value: bool):
         raise Exit()
 
 
-def dummy():
-    print("Fake worker started!")
-
-
 @cli.command()
 def main(
     worker_path: str,
@@ -41,11 +37,11 @@ def main(
 ):
     sys.path.append(os.getcwd())
     worker = cast(Worker, import_string(worker_path))
-    # coroutine = worker.start()
-    # if workers > 1:
-    #    for _ in range(workers - 1):
-    #        Process(target=asyncio.run, args=(coroutine,)).start()
-    asyncio.run(worker.start())
+    coroutine = worker.start()
+    if workers > 1:
+        for _ in range(workers - 1):
+            Process(target=asyncio.run, args=(coroutine,)).start()
+    asyncio.run(coroutine)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,7 @@
+from redis.asyncio import Redis
+from redis.commands.core import AsyncScript
+
+
 PUBLISH_TASK_LUA = """
 local stream_key = KEYS[1]
 local task_message_id_key = KEYS[2]
@@ -47,3 +51,11 @@ end
 
 return task[1]
 """
+
+
+def register_scripts(redis: Redis) -> dict[str, AsyncScript]:
+    return {
+        "publish_task": redis.register_script(PUBLISH_TASK_LUA),
+        "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK_LUA),
+        "fetch_task": redis.register_script(FETCH_TASK_LUA),
+    }
