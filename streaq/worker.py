@@ -1,6 +1,6 @@
 import asyncio
-from collections import defaultdict
 import pickle
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from datetime import timedelta
@@ -61,7 +61,7 @@ class Worker(Generic[WD]):
         self.id = uuid4().hex
         self.serializer = serializer
         self.deserializer = deserializer
-        self.tasks: list[asyncio.Task] = []
+        self.tasks: dict[str, asyncio.Task] = {}
 
     @property
     def deps(self) -> WD:
@@ -128,11 +128,23 @@ class Worker(Generic[WD]):
         logger.info(f"Starting worker {self.id} for {len(self.registry)} functions...")
         async with self:
             try:
-                await self.listen_stream()
+                done, pending = await asyncio.wait(
+                    [
+                        #self.run_delayed_queue_poller(),
+                        asyncio.ensure_future(self.listen_stream()),
+                        #self.run_idle_consumer_cleanup(),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in done:
+                    task.result()
             except asyncio.CancelledError:
                 pass
             finally:
-                await asyncio.gather(*self.tasks)
+                await asyncio.gather(*self.tasks.values())
                 await self.redis.close(close_connection_pool=True)
 
     async def listen_stream(self):
@@ -161,7 +173,7 @@ class Worker(Generic[WD]):
     def create_tasks(self, tasks: list[StreamMessage]):
         for task in tasks:
             coro = self.run_task(task.fn_name, task.task_id)
-            self.tasks.append(self.loop.create_task(coro))
+            self.tasks[task.task_id] = self.loop.create_task(coro)
 
     async def run_task(self, fn_name: str, id: str):
         """
@@ -174,10 +186,17 @@ class Worker(Generic[WD]):
             raw = await self.redis.get(self.queue_name + REDIS_TASK + id)
             data = task.deserializer(raw)
             async with task.lifespan(ctx):
-                result = await asyncio.wait_for(
-                    task.fn(ctx, *data[0], **data[1]),
-                    to_seconds(task.timeout) if task.timeout else None,
-                )
+                try:
+                    result = await asyncio.wait_for(
+                        task.fn(ctx, *data[0], **data[1]),
+                        to_seconds(task.timeout) if task.timeout else None,
+                    )
+                except Exception:
+                    pass
+                else:
+                    pass
+                finally:
+                    del self.tasks[id]
                 async with self.redis.pipeline(transaction=True) as pipe:
                     # notify anything waiting on results
                     pipe.publish(self.queue_name + REDIS_CHANNEL, id)
@@ -219,63 +238,10 @@ class Worker(Generic[WD]):
         """
         Returns the number of tasks running in the worker currently.
         """
-        return sum(not t.done() for t in self.tasks)
+        return sum(not t.done() for t in self.tasks.values())
 
     def __repr__(self) -> str:
         return (
             f"<Worker done={self.counters['done']} failed={self.counters['failed']} "
             f"retried={self.counters['retried']} running={len(self)}>"
         )
-
-    """
-    TODO: implement
-    """
-
-    def handle_signal(self, signum: Signals) -> None:
-        sig = Signals(signum)
-        logger.info(
-            "shutdown on %s ◆ %d jobs complete ◆ %d failed ◆ %d retries ◆ %d running to cancel",
-            sig.name,
-            self.counters["complete"],
-            self.counters["failed"],
-            self.counters["retried"],
-            len(self.tasks),
-        )
-        for t in self.tasks:
-            if not t.done():
-                t.cancel()
-        # self.main_task and self.main_task.cancel()
-        # self.on_stop and self.on_stop(sig)
-
-    def _add_signal_handler(
-        self, signum: Signals, handler: Callable[[Signals], None]
-    ) -> None:
-        try:
-            self.loop.add_signal_handler(signum, partial(handler, signum))
-        except NotImplementedError:
-            logger.debug(
-                "Windows does not support adding a signal handler to an event loop!"
-            )
-
-    async def record_health(self) -> None:
-        now_ts = time()
-        if (now_ts - self._last_health_check) < self.health_check_interval:
-            return
-        self._last_health_check = now_ts
-        pending_tasks = sum(not t.done() for t in self.tasks.values())
-        queued = await self.redis.zcard(REDIS_QUEUE)
-        info = (
-            f"{datetime.now():%b-%d %H:%M:%S} j_complete={self.jobs_complete} j_failed={self.jobs_failed} "
-            f"j_retried={self.jobs_retried} j_ongoing={pending_tasks} queued={queued}"
-        )
-        await self.pool.psetex(  # type: ignore[no-untyped-call]
-            self.health_check_key,
-            int((self.health_check_interval + 1) * 1000),
-            info.encode(),
-        )
-        log_suffix = info[info.index("j_complete=") :]
-        if self._last_health_check_log and log_suffix != self._last_health_check_log:
-            logger.info("recording health: %s", info)
-            self._last_health_check_log = log_suffix
-        elif not self._last_health_check_log:
-            self._last_health_check_log = log_suffix
