@@ -1,0 +1,12 @@
+DEFAULT_QUEUE_NAME = "streaq"
+DEFAULT_TTL = 86_400_000  # 1 day in ms
+REDIS_CHANNEL = ":channel"
+REDIS_GROUP = "streaq"
+REDIS_HEALTH = ":health"
+REDIS_QUEUE = ":queue"
+REDIS_MESSAGE = ":task:messages:"
+REDIS_STREAM = ":stream"
+REDIS_RESULT = ":task:results:"
+REDIS_RETRY = ":task:retry:"
+REDIS_RUNNING = ":task:running:"
+REDIS_TASK = ":task:data:"

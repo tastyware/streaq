@@ -1,17 +1,37 @@
 import asyncio
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, AsyncIterator, Awaitable, Callable, Concatenate, Generic
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Concatenate,
+    Generic,
+)
 from uuid import uuid4
 
-from redis.asyncio import Redis, WatchError
+from redis.asyncio import Redis
 from redis.typing import EncodableT
 
-from streaq import DEFAULT_TTL, REDIS_MESSAGE, REDIS_QUEUE, REDIS_STREAM, logger
-from streaq.types import P, R, WD, WorkerContext
+from streaq import logger
+from streaq.constants import (
+    DEFAULT_TTL,
+    REDIS_MESSAGE,
+    REDIS_QUEUE,
+    REDIS_RESULT,
+    REDIS_RUNNING,
+    REDIS_STREAM,
+    REDIS_TASK,
+)
+from streaq.types import P, R, WD, WrappedContext
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
+
+if TYPE_CHECKING:
+    from streaq.worker import Worker
 
 
 class TaskStatus(str, Enum):
@@ -23,10 +43,10 @@ class TaskStatus(str, Enum):
 
 
 @asynccontextmanager
-async def task_lifespan(ctx: WorkerContext[WD]) -> AsyncIterator[None]:
-    logger.info("Job started.")
+async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
+    logger.info(f"Task {ctx.task_id} started in worker {ctx.worker_id}.")
     yield
-    logger.info("Job finished.")
+    logger.info(f"Task {ctx.task_id} finished.")
 
 
 @dataclass
@@ -35,17 +55,68 @@ class Task(Generic[WD, P, R]):
     Represents a job that has been enqueued or scheduled.
     """
 
-    deserializer: Callable[[EncodableT], Any]
-    fn_name: str
-    redis: Redis
-    id: str = uuid4().hex
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    parent: "RegisteredTask"
+    id: str = field(default_factory=lambda: uuid4().hex)
+
+    async def start(
+        self, delay: timedelta | int | None = None, schedule: datetime | None = None
+    ) -> "Task[WD, P, R]":
+        """
+
+        :param delay: duration to wait before running the job
+        :param schedule: datetime at which to run the job
+        """
+        if delay and schedule:
+            raise StreaqError(
+                "Use either 'delay' or 'schedule' when enqueuing tasks, not both!"
+            )
+        publish_task = self.parent.worker.scripts["publish_task"]
+        ttl_ms = to_ms(self.parent.ttl) if self.parent.ttl is not None else None
+        async with self.redis.pipeline(transaction=True) as pipe:
+            enqueue_time = now_ms()
+            if schedule:
+                score = datetime_ms(schedule)
+            elif delay is not None:
+                score = enqueue_time + to_ms(delay)
+            else:
+                score = None
+            ttl = ttl_ms or (score or enqueue_time) - enqueue_time + DEFAULT_TTL
+            data = self.parent.serializer(
+                (
+                    self.args,
+                    self.kwargs,
+                    enqueue_time,
+                )
+            )
+            pipe.psetex(self.task_key(REDIS_TASK), ttl, data)
+            if score is not None:
+                pipe.zadd(self.queue + REDIS_QUEUE, {self.id: score})
+            else:
+                await publish_task(
+                    keys=[
+                        self.queue + REDIS_STREAM,
+                        self.task_key(REDIS_MESSAGE),
+                    ],
+                    args=[self.id, enqueue_time, ttl, self.parent.fn_name],
+                    client=pipe,
+                )
+            await pipe.execute()
+
+        return self
+
+    def __await__(self):
+        if not self.id:
+            self.id = uuid4().hex
+        return self.start().__await__()
 
     async def status(self) -> TaskStatus:
         async with self.redis.pipeline(transaction=True) as pipe:
-            await pipe.exists(self.result_key)
-            await pipe.exists(in_progress_key_prefix + self.job_id)
-            await pipe.zscore(REDIS_QUEUE, self.id)
-            await pipe.exists(job_message_id_prefix + self.job_id)
+            pipe.exists(self.task_key(REDIS_RESULT))
+            pipe.exists(self.task_key(REDIS_RUNNING))
+            pipe.zscore(self.queue + REDIS_QUEUE, self.id)
+            pipe.exists(self.task_key(REDIS_MESSAGE))
             is_complete, is_in_progress, score, queued = await pipe.execute()
 
         if is_complete:
@@ -56,111 +127,72 @@ class Task(Generic[WD, P, R]):
             return TaskStatus.QUEUED
         elif score:
             return TaskStatus.SCHEDULED
-        raise StreaqError()
+        return TaskStatus.PENDING
+
+    def task_key(self, mid: str) -> str:
+        return self.queue + mid + self.id
 
     async def result(self) -> R | None:
-        result = await self.redis.get(self.result_key)
-        return self.deserializer(result) if result else None
+        result = await self.redis.get(self.task_key(REDIS_RESULT))
+        if result is None:
+            # pubsub
+            pass
+        return self.parent.deserializer(result) if result else None
 
     async def abort(self) -> bool: ...
 
-    @property
-    def task_key(self) -> str:
-        return f"streaq:task:{self.fn_name}:{self.id}"
+    async def depends(self): ...
+
+    async def then(self): ...
 
     @property
-    def result_key(self) -> str:
-        return f"streaq:results:{self.fn_name}:{self.id}"
+    def redis(self) -> Redis:
+        return self.parent.worker.redis
+
+    @property
+    def queue(self) -> str:
+        return self.parent.worker.queue_name
 
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
-    deps: Callable[[], WorkerContext[WD]]
-    fn: Callable[Concatenate[WorkerContext[WD], P], Awaitable[R]]
+    fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]]
     serializer: Callable[[Any], EncodableT]
     deserializer: Callable[[EncodableT], Any]
-    lifespan: Callable[[WorkerContext[WD]], AbstractAsyncContextManager[None]]
+    lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     timeout: timedelta | int | None
     ttl: timedelta | int | None
-    unique: bool
-    _id: str = uuid4().hex  # for unique jobs only
+    worker: "Worker"
 
     # TODO: add exception handler
     # TODO: add dependency injection
-    # TODO: add triggers next job/starts with
     # TODO: optimizations, __slots__?
 
-    async def enqueue(
+    def enqueue(
         self,
-        _delay: timedelta | int | None = None,
-        _schedule: datetime | None = None,
-        _ttl: timedelta | int | None = None,
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> Task[WD, P, R]:
         """
         Serialize the job and send it to the queue for later execution by an active worker.
-
-        :param _delay: duration to wait before running the job
-        :param _schedule: datetime at which to run the job
-        :param _ttl: max time to leave the job in the queue before it expires
+        Though this isn't async, it should be awaited as it returns an object that should be.
         """
-        if _delay and _schedule:
-            raise StreaqError(
-                "Use either '_delay' or '_schedule' when enqueuing tasks, not both!"
-            )
-        publish_task = self.deps().scripts["publish_task"]
-        ttl_ms = to_ms(_ttl) if _ttl is not None else None
-        async with self.redis.pipeline(transaction=True) as pipe:
-            if self.unique:
-                redis_key = self.task_key(self._id)
-                await pipe.watch(redis_key)
-                if await pipe.exists(
-                    redis_key
-                ):  # TODO: should result_key be checked here too?
-                    await pipe.reset()
-                    raise StreaqError("Task is unique and already exists!")
-            enqueue_time = now_ms()
-            if _schedule:
-                score = datetime_ms(_schedule)
-            elif _delay is not None:
-                score = enqueue_time + to_ms(_delay)
-            else:
-                score = None
-            ttl = ttl_ms or (score or enqueue_time) - enqueue_time + DEFAULT_TTL
-            data = self.serializer(
-                (
-                    args,
-                    kwargs,
-                    enqueue_time,
-                )
-            )
-            pipe.multi()
-            if self.unique:
-                task = Task(self.deserializer, self.fn_name, self.redis, id=self._id)
-            else:
-                task = Task(self.deserializer, self.fn_name, self.redis)
-            await pipe.psetex(self.task_key(task.id), ttl, data)
-
-            if score is not None:
-                await pipe.zadd(REDIS_QUEUE, {task.id: score})
-            else:
-                await publish_task(
-                    keys=[REDIS_STREAM, REDIS_MESSAGE],
-                    args=[task.id, enqueue_time, ttl, self.fn_name],
-                )
-
-            try:
-                await pipe.execute()
-            except WatchError:
-                raise StreaqError("Task is unique and already exists!")
-        return task
+        return Task(args, kwargs, self)
 
     async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """
-        Run the task with the given params and return the result.
+        Run the task directly with the given params and return the result.
+        This skips enqueuing and result storing in Redis.
         """
-        deps = self.deps()
+        deps = WrappedContext(
+            deps=self.worker.deps,
+            redis=self.worker.redis,
+            task_id=uuid4().hex,
+            timeout=self.timeout,
+            tries=1,
+            ttl=self.ttl,
+            worker_id=self.worker.id,
+        )
         async with self.lifespan(deps):
             try:
                 return await asyncio.wait_for(
@@ -172,14 +204,11 @@ class RegisteredTask(Generic[WD, P, R]):
 
     @property
     def fn_name(self) -> str:
-        return f"{self.fn.__module__}.{self.fn.__qualname__}"
+        return self.fn.__qualname__
 
-    @property
-    def redis(self) -> Redis:
-        return self.deps().redis
-
-    def task_key(self, id: str) -> str:
-        return f"streaq:task:{self.fn_name}:{id}"
-
-    def result_key(self, id: str) -> str:
-        return f"streaq:results:{self.fn_name}:{id}"
+    def __repr__(self):
+        return (
+            f"<Task fn={self.fn_name} serializer={self.serializer} deserializer="
+            f"{self.deserializer} lifespan={self.lifespan} timeout={self.timeout} "
+            f"ttl={self.ttl}>"
+        )

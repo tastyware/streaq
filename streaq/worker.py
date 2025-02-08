@@ -9,24 +9,30 @@ from signal import Signals
 from typing import Any, AsyncIterator, Concatenate, Generic
 from uuid import uuid4
 
-from croniter import croniter
 from redis.asyncio import Redis
 from redis.commands.core import AsyncScript
 from redis.exceptions import ResponseError
 from redis.typing import EncodableT
 
-from streaq import REDIS_CHANNEL, REDIS_QUEUE, logger, REDIS_GROUP, REDIS_STREAM
+from streaq import logger
+from streaq.constants import (
+    DEFAULT_QUEUE_NAME,
+    REDIS_CHANNEL,
+    REDIS_GROUP,
+    REDIS_QUEUE,
+    REDIS_RESULT,
+    REDIS_STREAM,
+    REDIS_TASK,
+)
 from streaq.lua import register_scripts
-from streaq.types import P, R, WD, StreamMessage, WorkerContext
-from streaq.utils import StreaqError
+from streaq.types import P, R, WD, StreamMessage, WrappedContext
+from streaq.utils import StreaqError, to_seconds
 from streaq.task import RegisteredTask, task_lifespan
 
 
 @asynccontextmanager
-async def worker_lifespan() -> AsyncIterator[None]:
-    logger.info("Worker started.")
+async def do_nothing() -> AsyncIterator[None]:
     yield
-    logger.info("Worker shutdown.")
 
 
 class Worker(Generic[WD]):
@@ -34,13 +40,15 @@ class Worker(Generic[WD]):
         self,
         redis_url: str = "redis://localhost:6379",
         concurrency: int = 16,
+        queue_name: str = DEFAULT_QUEUE_NAME,
         queue_fetch_limit: int | None = None,
-        lifespan: Callable[[], AbstractAsyncContextManager] = worker_lifespan,
+        lifespan: Callable[[], AbstractAsyncContextManager] = do_nothing,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[EncodableT], Any] = pickle.loads,  # type: ignore
     ):
         self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
+        self.queue_name = queue_name
         self.queue_fetch_limit = queue_fetch_limit or concurrency * 4
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
         self.counters = defaultdict(lambda: 0)
@@ -55,43 +63,68 @@ class Worker(Generic[WD]):
         self.deserializer = deserializer
         self.tasks: list[asyncio.Task] = []
 
-    def deps(self) -> WorkerContext[WD]:
+    @property
+    def deps(self) -> WD:
         if self._deps is None:
             raise StreaqError("Worker did not start correctly!")
-        return WorkerContext(
-            deps=self._deps, id=self.id, redis=self.redis, scripts=self.scripts
+        return self._deps
+
+    def build_context(
+        self, registered_task: RegisteredTask, id: str, tries: int = 1
+    ) -> WrappedContext[WD]:
+        return WrappedContext(
+            deps=self.deps,
+            redis=self.redis,
+            task_id=id,
+            timeout=registered_task.timeout,
+            tries=tries,
+            ttl=registered_task.ttl,
+            worker_id=self.id,
         )
+
+    # TODO: add cron
 
     def task(
         self,
         lifespan: Callable[
-            [WorkerContext[WD]], AbstractAsyncContextManager[None]
+            [WrappedContext[WD]], AbstractAsyncContextManager[None]
         ] = task_lifespan,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = None,
-        unique: bool = False,  # TODO: implement this
     ):
         def wrapped(
-            fn: Callable[Concatenate[WorkerContext[WD], P], Awaitable[R]],
+            fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]],
         ) -> RegisteredTask[WD, P, R]:
             task = RegisteredTask(
-                self.deps,
                 fn,
                 self.serializer,
                 self.deserializer,
                 lifespan,
-                timeout=timeout,
-                ttl=ttl,
-                unique=unique,
+                timeout,
+                ttl,
+                self,
             )
             self.registry[task.fn_name] = task
             return task
 
         return wrapped
 
-    # TODO: add cron
+    """
+    TODO: implement
+    """
 
-    async def start(self):
+    def run_sync(self) -> None:
+        """
+        Sync function to run the worker, finally closes worker connections.
+        """
+        self.main_task = self.loop.create_task(self.run())
+        try:
+            self.loop.run_until_complete(self.main_task)
+        except asyncio.CancelledError:
+            # happens on shutdown, fine
+            pass
+
+    async def run(self):
         logger.info(f"Starting worker {self.id} for {len(self.registry)} functions...")
         async with self:
             try:
@@ -99,7 +132,7 @@ class Worker(Generic[WD]):
             except asyncio.CancelledError:
                 pass
             finally:
-                # await asyncio.gather(*self.tasks)
+                await asyncio.gather(*self.tasks)
                 await self.redis.close(close_connection_pool=True)
 
     async def listen_stream(self):
@@ -109,7 +142,7 @@ class Worker(Generic[WD]):
                 msgs = await self.redis.xreadgroup(
                     groupname=REDIS_GROUP,
                     consumername=self.id,
-                    streams={REDIS_STREAM: ">"},
+                    streams={self.queue_name + REDIS_STREAM: ">"},
                     block=0,  # indefinitely
                     count=self.queue_fetch_limit,
                 )
@@ -123,13 +156,12 @@ class Worker(Generic[WD]):
                                 score=int(task[b"score"]),
                             )
                         )
-            self.run_tasks(messages)
+            self.create_tasks(messages)
 
-    def run_tasks(self, tasks: list[StreamMessage]):
+    def create_tasks(self, tasks: list[StreamMessage]):
         for task in tasks:
-            self.tasks.append(
-                self.loop.create_task(self.run_task(task.fn_name, task.task_id))
-            )
+            coro = self.run_task(task.fn_name, task.task_id)
+            self.tasks.append(self.loop.create_task(coro))
 
     async def run_task(self, fn_name: str, id: str):
         """
@@ -138,15 +170,92 @@ class Worker(Generic[WD]):
         # acquire semaphore
         async with self.bs:
             task = self.registry[fn_name]
-            data = await self.redis.get(task.task_key(id))
-            info = task.deserializer(data)
-            result = await task.run(*info[0], **info[1])
-            # notify anything waiting on results
-            await self.redis.publish(self.channel_key(id), "Job completed!")
-            if result is not None:
-                if task.ttl != 0:
-                    data = self.serializer(result)
-                    await self.redis.set(task.result_key(id), data, ex=task.ttl)
+            ctx = self.build_context(task, id)
+            raw = await self.redis.get(self.queue_name + REDIS_TASK + id)
+            data = task.deserializer(raw)
+            async with task.lifespan(ctx):
+                result = await asyncio.wait_for(
+                    task.fn(ctx, *data[0], **data[1]),
+                    to_seconds(task.timeout) if task.timeout else None,
+                )
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    # notify anything waiting on results
+                    pipe.publish(self.queue_name + REDIS_CHANNEL, id)
+                    if result is not None:
+                        if task.ttl != 0:
+                            data = task.serializer(result)
+                            pipe.set(
+                                self.queue_name + REDIS_RESULT + id, data, ex=task.ttl
+                            )
+
+    async def queue_size(self) -> int:
+        """
+        Returns the number of tasks currently queued in Redis.
+        """
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.xlen(self.queue_name + REDIS_STREAM)
+            pipe.zcount(self.queue_name + REDIS_QUEUE, "-inf", "+inf")
+            stream_size, queue_size = await pipe.execute()
+
+        return stream_size + queue_size
+
+    async def __aenter__(self):
+        self.scripts.update(register_scripts(self.redis))
+        self._deps = await self.lifespan.__aenter__()
+        # create consumer group if it doesn't exist
+        with suppress(ResponseError):
+            await self.redis.xgroup_create(
+                name=self.queue_name + REDIS_STREAM,
+                groupname=REDIS_GROUP,
+                id=0,
+                mkstream=True,
+            )
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.lifespan.__aexit__(*exc)
+
+    def __len__(self):
+        """
+        Returns the number of tasks running in the worker currently.
+        """
+        return sum(not t.done() for t in self.tasks)
+
+    def __repr__(self) -> str:
+        return (
+            f"<Worker done={self.counters['done']} failed={self.counters['failed']} "
+            f"retried={self.counters['retried']} running={len(self)}>"
+        )
+
+    """
+    TODO: implement
+    """
+
+    def handle_signal(self, signum: Signals) -> None:
+        sig = Signals(signum)
+        logger.info(
+            "shutdown on %s ◆ %d jobs complete ◆ %d failed ◆ %d retries ◆ %d running to cancel",
+            sig.name,
+            self.counters["complete"],
+            self.counters["failed"],
+            self.counters["retried"],
+            len(self.tasks),
+        )
+        for t in self.tasks:
+            if not t.done():
+                t.cancel()
+        # self.main_task and self.main_task.cancel()
+        # self.on_stop and self.on_stop(sig)
+
+    def _add_signal_handler(
+        self, signum: Signals, handler: Callable[[Signals], None]
+    ) -> None:
+        try:
+            self.loop.add_signal_handler(signum, partial(handler, signum))
+        except NotImplementedError:
+            logger.debug(
+                "Windows does not support adding a signal handler to an event loop!"
+            )
 
     async def record_health(self) -> None:
         now_ts = time()
@@ -170,68 +279,3 @@ class Worker(Generic[WD]):
             self._last_health_check_log = log_suffix
         elif not self._last_health_check_log:
             self._last_health_check_log = log_suffix
-
-    def _add_signal_handler(
-        self, signum: Signals, handler: Callable[[Signals], None]
-    ) -> None:
-        try:
-            self.loop.add_signal_handler(signum, partial(handler, signum))
-        except NotImplementedError:
-            logger.debug(
-                "Windows does not support adding a signal handler to an event loop!"
-            )
-
-    def __len__(self):
-        """
-        Returns the number of tasks currently running.
-        """
-        return sum([v for v in self.counters.values()]) + len(self.tasks)
-
-    async def queue_size(self) -> int:
-        """
-        Returns the number of tasks currently queued in Redis.
-        """
-        async with self.redis.pipeline(transaction=True) as pipe:
-            await pipe.xlen(REDIS_STREAM)
-            await pipe.zcount(REDIS_QUEUE, "-inf", "+inf")
-            stream_size, queue_size = await pipe.execute()
-
-        return stream_size + queue_size
-
-    def handle_signal(self, signum: Signals) -> None:
-        sig = Signals(signum)
-        logger.info(
-            "shutdown on %s ◆ %d jobs complete ◆ %d failed ◆ %d retries ◆ %d running to cancel",
-            sig.name,
-            self.counters["complete"],
-            self.counters["failed"],
-            self.counters["retried"],
-            len(self.tasks),
-        )
-        for t in self.tasks:
-            if not t.done():
-                t.cancel()
-        # self.main_task and self.main_task.cancel()
-        # self.on_stop and self.on_stop(sig)
-
-    async def __aenter__(self):
-        self.scripts.update(register_scripts(self.redis))
-        self._deps = await self.lifespan.__aenter__()
-        # create consumer group if it doesn't exist
-        with suppress(ResponseError):
-            await self.redis.xgroup_create(
-                name=REDIS_STREAM, groupname=REDIS_GROUP, id=0, mkstream=True
-            )
-        return self
-
-    async def __aexit__(self, *exc):
-        await self.lifespan.__aexit__(*exc)
-
-    def __repr__(self) -> str:
-        return (
-            f"<Worker complete={self.counters['complete']} failed={self.counters['failed']} retried={self.counters['retried']} "
-            f"running={sum(not t.done() for t in self.tasks)}>"
-        )
-
-    def channel_key(self, id: str) -> str:
-        return f"{REDIS_CHANNEL}:{id}"

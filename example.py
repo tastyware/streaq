@@ -3,13 +3,14 @@ from typing import AsyncIterator
 from contextlib import asynccontextmanager
 
 from httpx import AsyncClient
-from streaq.worker import WorkerContext, Worker
+from streaq.types import WrappedContext
+from streaq.worker import Worker
 
 
 @dataclass
 class Context:
     """
-    Type safe way of defining the dependencies of the worker functions.
+    Type safe way of defining the dependencies of your tasks.
 
     E.g. HTTP client, database connection, settings. etc.
     """
@@ -24,8 +25,8 @@ async def worker_lifespan() -> AsyncIterator[Context]:
 
 
 @asynccontextmanager
-async def job_lifespan(ctx: WorkerContext[Context]) -> AsyncIterator[None]:
-    print(f"Starting job in worker {ctx.id}")
+async def job_lifespan(ctx: WrappedContext[Context]) -> AsyncIterator[None]:
+    print(f"Starting job {ctx.task_id} in worker {ctx.worker_id}")
     yield
     print("Finished job")
 
@@ -34,7 +35,7 @@ worker = Worker(lifespan=worker_lifespan)
 
 
 @worker.task(lifespan=job_lifespan, timeout=10)
-async def foo(ctx: WorkerContext[Context], url: str) -> int:
+async def foo(ctx: WrappedContext[Context], url: str) -> int:
     # ctx.deps here is of type MyWorkerDeps, that's enforced by static typing
     # FunctionContext will also provide access to a redis connection, retry count,
     # even results of other jobs etc.
@@ -46,11 +47,30 @@ async def foo(ctx: WorkerContext[Context], url: str) -> int:
 async def main() -> None:
     async with worker:
         # run the task directly, never sending it to a queue
-        result = await foo.run("https://www.google.com/")
-        print(result)
+        # result = await foo.run("https://www.google.com/")
         # these two are equivalent, param spec means the arguments are type safe
-        await foo.enqueue(url="https://google.com/")
-        await foo.enqueue(url="https://google.com/")
+        for url in [
+            "https://microsoft.com/",
+            "https://apple.com/",
+            "https://amazon.com/",
+            "https://google.com/",
+            "https://paypal.com/",
+            "https://tesla.com/",
+            "https://youtube.com/",
+            "https://heroku.com/",
+            "https://adobe.com/",
+            "https://airbnb.com/",
+            "https://github.com/",
+            "https://tastytrade.com/",
+            "https://chatgpt.com/",
+            "https://pypi.org/",
+            "https://compassion.org/",
+            "https://cru.org/",
+            "https://linkedin.com/",
+        ]:
+            await foo.enqueue(url)
+        # task = await foo.enqueue("https://apple.com/").start()
+        # await foo.enqueue("https://amazon.com/").start(delay=5)
 
 
 if __name__ == "__main__":

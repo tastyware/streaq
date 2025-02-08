@@ -84,3 +84,31 @@ async def log_redis_info(redis: Redis, log_func: Callable[[str], Any]) -> None:
         f"clients_connected={clients_connected} "
         f"db_keys={key_count}"
     )
+
+
+def default_log_config(verbose: bool) -> dict[str, Any]:
+    """
+    Setup default config. for dictConfig.
+
+    :param verbose: level: DEBUG if True, INFO if False
+    :return: dict suitable for ``logging.config.dictConfig``
+    """
+    log_level = "DEBUG" if verbose else "INFO"
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {
+            "streaq.standard": {
+                "level": log_level,
+                "class": "logging.StreamHandler",
+                "formatter": "streaq.standard",
+            }
+        },
+        "formatters": {
+            "streaq.standard": {
+                "format": "%(asctime)s: %(message)s",
+                "datefmt": "%H:%M:%S",
+            }
+        },
+        "loggers": {"streaq": {"handlers": ["streaq.standard"], "level": log_level}},
+    }

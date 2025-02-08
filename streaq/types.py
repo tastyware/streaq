@@ -1,13 +1,11 @@
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Generic, ParamSpec, TypeVar
 
 from redis.asyncio import Redis
-from redis.commands.core import AsyncScript
 
 P = ParamSpec("P")
-PNext = ParamSpec("PNext")
 R = TypeVar("R")
-RNext = TypeVar("RNext")
 WD = TypeVar("WD")
 
 
@@ -20,12 +18,11 @@ class StreamMessage:
 
 
 @dataclass
-class WorkerContext(Generic[WD]):
-    """
-    Context provided to worker functions, contains deps but also a connection, retry count etc.
-    """
-
+class WrappedContext(Generic[WD]):
     deps: WD
-    id: str
     redis: Redis
-    scripts: dict[str, AsyncScript]
+    task_id: str
+    timeout: timedelta | int | None
+    tries: int
+    ttl: timedelta | int | None
+    worker_id: str
