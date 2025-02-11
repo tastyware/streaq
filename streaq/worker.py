@@ -5,8 +5,9 @@ import signal
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from datetime import datetime, timedelta
+from datetime import timedelta
 from signal import Signals
+from time import time
 from typing import Any, AsyncIterator, Concatenate, Generic
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from streaq.constants import (
     REDIS_RESULT,
     REDIS_STREAM,
     REDIS_TASK,
+    REDIS_TIMEOUT,
 )
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
@@ -91,36 +93,9 @@ class Worker(Generic[WD]):
             worker_id=self.id,
         )
 
-    def cron(
-        self,
-        lifespan: Callable[
-            [WrappedContext[WD]], AbstractAsyncContextManager[None]
-        ] = task_lifespan,
-        timeout: timedelta | int | None = None,
-        ttl: timedelta | int | None = None,
-        unique: bool = True,
-    ):
-        # TODO: implement
-        def wrapped(
-            fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]],
-        ) -> RegisteredTask[WD, P, R]:
-            task = RegisteredTask(
-                fn,
-                self.serializer,
-                self.deserializer,
-                lifespan,
-                timeout,
-                ttl,
-                unique,
-                self,
-            )
-            self.registry[task.fn_name] = task
-            return task
-
-        return wrapped
-
     def task(
         self,
+        cron: str | None = None,
         lifespan: Callable[
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
         ] = task_lifespan,
@@ -172,13 +147,14 @@ class Worker(Generic[WD]):
                 id=0,
                 mkstream=True,
             )
-        await log_redis_info(self.redis, logger.info)
+        await log_redis_info(self.redis)
         async with self:
             done, pending = await asyncio.wait(
                 [
                     self.listen_queue(),
                     self.listen_stream(),
                     self.consumer_cleanup(),
+                    self.health_check(),
                 ],
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -220,6 +196,7 @@ class Worker(Generic[WD]):
 
     async def consumer_cleanup(self) -> None:
         while True:
+            await asyncio.sleep(300)  # every 5 minutes
             consumers_info = await self.redis.xinfo_consumers(
                 self.queue_name + REDIS_STREAM,
                 groupname=REDIS_GROUP,
@@ -237,52 +214,66 @@ class Worker(Generic[WD]):
                         groupname=REDIS_GROUP,
                         consumername=consumer_info["name"],
                     )
+
+    async def health_check(self):
+        while True:
             await asyncio.sleep(300)  # every 5 minutes
+            await self.record_health()
 
     async def listen_stream(self):
         while True:
-            messages = []
-            async with self.bs:
-                msgs = await self.redis.xreadgroup(
+            messages: list[StreamMessage] = []
+            count = self.queue_fetch_limit - len(self)
+            if len(self) < self.concurrency:
+                messages.extend(await self.reclaim_expired_tasks(count))
+            if count - len(messages) > 0:
+                res = await self.redis.xreadgroup(
                     groupname=REDIS_GROUP,
                     consumername=self.id,
                     streams={self.queue_name + REDIS_STREAM: ">"},
-                    block=0,  # indefinitely
-                    count=self.queue_fetch_limit,
+                    block=1,
+                    count=count,
                 )
-                for _, msg in msgs:
-                    for msg_id, task in msg:
-                        messages.append(
+                for _, msgs in res:
+                    messages.extend(
+                        [
                             StreamMessage(
-                                fn_name=task[b"fn_name"].decode(),
+                                fn_name=msg[b"fn_name"].decode(),
                                 message_id=msg_id.decode(),
-                                task_id=task[b"task_id"].decode(),
-                                score=int(task[b"score"]),
+                                task_id=msg[b"task_id"].decode(),
+                                score=int(msg[b"score"]),
                             )
-                        )
-                messages.extend(await self.reclaim_stale_tasks(5))
-            self.create_tasks(messages)
+                            for msg_id, msg in msgs
+                        ]
+                    )
+            # startup tasks
+            for message in messages:
+                coro = self.run_task(message.fn_name, message.task_id)
+                self.tasks[message.task_id] = self.loop.create_task(coro)
 
-    async def reclaim_stale_tasks(self, count: int) -> list[tuple[bytes, list]]:
-        resp = await self.redis.xautoclaim(
+    async def reclaim_expired_tasks(self, count: int) -> list[StreamMessage]:
+        now = round(time())
+        ids = await self.redis.zrangebyscore(self.queue_name + REDIS_TIMEOUT, 0, now)
+        if not ids:
+            return []
+        if len(ids) > count:
+            ids = ids[:count]
+        msgs = await self.redis.xclaim(
             self.queue_name + REDIS_STREAM,
             groupname=REDIS_GROUP,
             consumername=self.id,
-            min_idle_time=int(self.in_progress_timeout_s * 1000),
-            count=count,
+            min_idle_time=0,
+            message_ids=ids,
         )
-        if not resp:
-            return []
-        _, msgs, __ = resp
-        if not msgs:
-            return []
-        # cast to the same format as the xreadgroup response
-        return [((self.queue_name + REDIS_STREAM).encode(), msgs)]
-
-    def create_tasks(self, tasks: list[StreamMessage]):
-        for task in tasks:
-            coro = self.run_task(task.fn_name, task.task_id)
-            self.tasks[task.task_id] = self.loop.create_task(coro)
+        return [
+            StreamMessage(
+                fn_name=msg[b"fn_name"].decode(),
+                message_id=msg_id.decode(),
+                task_id=msg[b"task_id"].decode(),
+                score=int(msg[b"score"]),
+            )
+            for msg_id, msg in msgs
+        ]
 
     async def run_task(self, fn_name: str, id: str):
         """
@@ -294,11 +285,19 @@ class Worker(Generic[WD]):
             ctx = self.build_context(task, id)
             raw = await self.redis.get(self.queue_name + REDIS_TASK + id)
             data = task.deserializer(raw)
+            timeout = (
+                "inf"
+                if task.timeout is None
+                else round(time()) + to_seconds(task.timeout) + 1
+            )
             async with task.lifespan(ctx):
                 try:
+                    await self.redis.zadd(
+                        self.queue_name + REDIS_TIMEOUT, {id: timeout}
+                    )
                     result = await asyncio.wait_for(
                         task.fn(ctx, *data[0], **data[1]),
-                        to_seconds(task.timeout) if task.timeout else None,
+                        to_seconds(task.timeout) if task.timeout is not None else None,
                     )
                     async with self.redis.pipeline(transaction=True) as pipe:
                         # notify anything waiting on results
@@ -318,17 +317,6 @@ class Worker(Generic[WD]):
                 finally:
                     del self.tasks[id]
 
-    async def queue_size(self) -> int:
-        """
-        Returns the number of tasks currently queued in Redis.
-        """
-        async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.xlen(self.queue_name + REDIS_STREAM)
-            pipe.zcount(self.queue_name + REDIS_QUEUE, "-inf", "+inf")
-            stream_size, queue_size = await pipe.execute()
-
-        return stream_size + queue_size
-
     def _add_signal_handler(self, signum: int, handler: Callable[[int], None]) -> None:
         try:
             self.loop.add_signal_handler(signum, partial(handler, signum))
@@ -338,29 +326,42 @@ class Worker(Generic[WD]):
     def handle_signal(self, signum: int) -> None:
         signal = Signals(signum)
         logger.info(
-            f"Worker {self.id} shutdown on {signal.name} ◆ {self.counters['complete']} "
-            f"tasks completed ◆ {self.counters['failed']} failed ◆ "
-            f"{self.counters['retried']} retries ◆ {len(self)} interrupted"
+            f"Shutdown on {signal.name}: "
+            + repr(self)[1:-1].replace("running", "interrupted")
         )
         for t in self.tasks.values():
             if not t.done():
                 t.cancel()
         self.main_task.cancel()
 
+    async def queue_size(self) -> int:
+        """
+        Returns the number of tasks currently queued in Redis.
+        """
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.xlen(self.queue_name + REDIS_STREAM)
+            pipe.zcard(self.queue_name + REDIS_QUEUE)
+            stream_size, queue_size = await pipe.execute()
+
+        return stream_size + queue_size
+
     async def record_health(self) -> None:
-        # TODO: make this unique
-        queued = await self.redis.zcard(self.queue_name + REDIS_QUEUE)
-        health = (
-            f"{datetime.now():%b-%d %H:%M:%S} complete={self.counters['complete']} "
-            f"failed={self.counters['failed']} retries={self.counters['retried']} "
-            f"running={len(self)} queued={queued}"
-        )
-        await self.redis.psetex(
-            self.queue_name + REDIS_HEALTH,
-            5000,
-            health.encode(),
-        )
+        health = repr(self)[1:-1]
         logger.info(health)
+        await self.redis.hset(  # type: ignore
+            self.queue_name + REDIS_HEALTH,
+            self.id,
+            health,
+        )
+        await log_redis_info(self.redis)
+
+    async def close(self) -> None:
+        if not self.handle_signals:
+            self.handle_signal(signal.SIGUSR1)
+        await asyncio.gather(*self.tasks.values())
+        # delete health hash
+        await self.redis.delete(self.queue_name + REDIS_HEALTH)
+        await self.redis.close(close_connection_pool=True)
 
     async def __aenter__(self):
         # register lua scripts
@@ -368,13 +369,6 @@ class Worker(Generic[WD]):
         # user-defined deps
         self._deps = await self.lifespan.__aenter__()
         return self
-
-    async def close(self) -> None:
-        if not self.handle_signals:
-            self.handle_signal(signal.SIGUSR1)
-        await asyncio.gather(*self.tasks.values())
-        await self.redis.delete(self.queue_name + REDIS_HEALTH)
-        await self.redis.close(close_connection_pool=True)
 
     async def __aexit__(self, *exc):
         await self.lifespan.__aexit__(*exc)
@@ -387,6 +381,7 @@ class Worker(Generic[WD]):
 
     def __repr__(self) -> str:
         return (
-            f"<Worker {self.id} done={self.counters['done']} failed={self.counters['failed']} "
-            f"retried={self.counters['retried']} running={len(self)}>"
+            f"<Worker {self.id} completed={self.counters['completed']} failed="
+            f"{self.counters['failed']} retried={self.counters['retried']} running="
+            f"{len(self)}>"
         )

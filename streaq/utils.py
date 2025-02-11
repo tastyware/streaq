@@ -1,9 +1,11 @@
 import time
 from datetime import datetime, timedelta
 from importlib import import_module
-from typing import Any, Callable
+from typing import Any
 
 from redis.asyncio import Redis
+
+from streaq import logger
 
 
 class StreaqError(Exception):
@@ -66,7 +68,7 @@ def datetime_ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
 
 
-async def log_redis_info(redis: Redis, log_func: Callable[[str], Any]) -> None:
+async def log_redis_info(redis: Redis) -> None:
     async with redis.pipeline(transaction=False) as pipe:
         pipe.info(section="Server")
         pipe.info(section="Memory")
@@ -78,7 +80,7 @@ async def log_redis_info(redis: Redis, log_func: Callable[[str], Any]) -> None:
     mem_usage = info_memory.get("used_memory_human", "?")
     clients_connected = info_clients.get("connected_clients", "?")
 
-    log_func(
+    logger.info(
         f"redis_version={redis_version} "
         f"mem_usage={mem_usage} "
         f"clients_connected={clients_connected} "

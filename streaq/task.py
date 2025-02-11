@@ -97,7 +97,6 @@ class Task(Generic[WD, P, R]):
                 (
                     self.args,
                     self.kwargs,
-                    enqueue_time,
                 )
             )
             pipe.psetex(self.task_key(REDIS_TASK), ttl, data)
@@ -109,7 +108,12 @@ class Task(Generic[WD, P, R]):
                         self.queue + REDIS_STREAM,
                         self.task_key(REDIS_MESSAGE),
                     ],
-                    args=[self.id, enqueue_time, ttl, self.parent.fn_name],
+                    args=[
+                        self.id,
+                        enqueue_time,
+                        ttl,
+                        self.parent.fn_name,
+                    ],
                     client=pipe,
                 )
             await pipe.execute()
