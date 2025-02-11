@@ -44,8 +44,15 @@ async def foo(ctx: WrappedContext[Context], url: str) -> int:
     return len(r.text)
 
 
+@worker.task(lifespan=job_lifespan, unique=True)
+async def unq(ctx: WrappedContext[Context]) -> None:
+    await asyncio.sleep(1)
+
+
 async def main() -> None:
     async with worker:
+        task = await unq.enqueue()
+        print(task)
         # run the task directly, never sending it to a queue
         # result = await foo.run("https://www.google.com/")
         # these two are equivalent, param spec means the arguments are type safe

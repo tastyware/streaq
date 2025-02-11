@@ -1,6 +1,7 @@
 import asyncio
+import hashlib
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import (
@@ -12,7 +13,7 @@ from typing import (
     Concatenate,
     Generic,
 )
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
 from redis.typing import EncodableT
@@ -58,7 +59,16 @@ class Task(Generic[WD, P, R]):
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     parent: "RegisteredTask"
-    id: str = field(default_factory=lambda: uuid4().hex)
+    id: str = ""
+
+    def __post_init__(self):
+        if self.parent.unique:
+            deterministic_hash = hashlib.sha256(
+                self.parent.fn_name.encode()
+            ).hexdigest()
+            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
+        else:
+            self.id = uuid4().hex
 
     async def start(
         self, delay: timedelta | int | None = None, schedule: datetime | None = None
@@ -107,8 +117,6 @@ class Task(Generic[WD, P, R]):
         return self
 
     def __await__(self):
-        if not self.id:
-            self.id = uuid4().hex
         return self.start().__await__()
 
     async def status(self) -> TaskStatus:
@@ -162,6 +170,7 @@ class RegisteredTask(Generic[WD, P, R]):
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     timeout: timedelta | int | None
     ttl: timedelta | int | None
+    unique: bool
     worker: "Worker"
 
     # TODO: add exception handler
