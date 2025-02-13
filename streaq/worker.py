@@ -8,7 +8,6 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppres
 from datetime import timedelta, timezone, tzinfo
 from signal import Signals
 from time import time
-from types import NoneType
 from typing import Any, AsyncIterator, Concatenate, Generic
 from uuid import uuid4
 
@@ -37,7 +36,7 @@ from streaq.constants import (
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
 from streaq.utils import StreaqError, now_ms, to_seconds
-from streaq.task import RegisteredTask, task_lifespan
+from streaq.task import RegisteredCron, RegisteredTask, task_lifespan
 
 
 @asynccontextmanager
@@ -71,6 +70,7 @@ class Worker(Generic[WD]):
         self._deps: WD | None = None
         self.scripts: dict[str, AsyncScript] = {}
         self.registry: dict[str, RegisteredTask] = {}
+        self.cron_jobs: dict[str, RegisteredCron] = {}
         self.id = uuid4().hex
         self.serializer = serializer
         self.deserializer = deserializer
@@ -114,19 +114,19 @@ class Worker(Generic[WD]):
     ):
         def wrapped(
             fn: Callable[[WrappedContext[WD]], Awaitable[R]],
-        ) -> RegisteredTask[WD, Any, R]:
-            task = RegisteredTask(
+        ) -> RegisteredCron[WD, R]:
+            task = RegisteredCron(
                 fn,
                 self.serializer,
                 self.deserializer,
                 lifespan,
+                croniter(tab),
                 timeout,
                 ttl,
                 unique,
                 self,
-                schedule=croniter(tab),
             )
-            self.registry[task.fn_name] = task
+            self.cron_jobs[task.fn_name] = task
             return task
 
         return wrapped

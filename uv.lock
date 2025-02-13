@@ -253,6 +253,19 @@ wheels = [
 ]
 
 [[package]]
+name = "fast-depends"
+version = "2.4.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/85/f5/8b42b7588a67ad78991e5e7ca0e0c6a1ded535a69a725e4e48d3346a20c1/fast_depends-2.4.12.tar.gz", hash = "sha256:9393e6de827f7afa0141e54fa9553b737396aaf06bd0040e159d1f790487b16d", size = 16682 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/08/4adb160d8394053289fdf3b276e93b53271fd463e54fff8911b23c1db4ed/fast_depends-2.4.12-py3-none-any.whl", hash = "sha256:9e5d110ddc962329e46c9b35e5fe65655984247a13ee3ca5a33186db7d2d75c2", size = 17651 },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.115.7"
 source = { registry = "https://pypi.org/simple" }
@@ -863,6 +876,7 @@ name = "streaq"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
+    { name = "fast-depends" },
     { name = "redis", extra = ["hiredis"] },
     { name = "typer-slim" },
     { name = "types-croniter" },
@@ -888,6 +902,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "croniter", specifier = ">=6.0.0" },
+    { name = "fast-depends", specifier = ">=2.4.12" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115.7" },
     { name = "redis", extras = ["hiredis"], specifier = ">=5.2.1" },
     { name = "typer-slim", specifier = ">=0.15.1" },

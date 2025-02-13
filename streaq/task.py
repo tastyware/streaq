@@ -74,7 +74,7 @@ async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
 
 
 @dataclass
-class Task(Generic[WD, P, R]):
+class Task(Generic[R]):
     """
     Represents a job that has been enqueued or scheduled.
     """
@@ -95,7 +95,7 @@ class Task(Generic[WD, P, R]):
 
     async def start(
         self, delay: timedelta | int | None = None, schedule: datetime | None = None
-    ) -> "Task[WD, P, R]":
+    ) -> "Task[R]":
         """
 
         :param delay: duration to wait before running the job
@@ -211,7 +211,8 @@ class Task(Generic[WD, P, R]):
             scheduled=dt,
         )
 
-    async def depends(self): ...
+    def depends(self):
+        return self
 
     async def then(self): ...
 
@@ -244,7 +245,7 @@ class RegisteredTask(Generic[WD, P, R]):
         self,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Task[WD, P, R]:
+    ) -> Task[R]:
         """
         Serialize the job and send it to the queue for later execution by an active worker.
         Though this isn't async, it should be awaited as it returns an object that should be.
@@ -283,4 +284,51 @@ class RegisteredTask(Generic[WD, P, R]):
             f"<Task fn={self.fn_name} serializer={self.serializer} deserializer="
             f"{self.deserializer} lifespan={self.lifespan} timeout={self.timeout} "
             f"ttl={self.ttl}>"
+        )
+
+
+@dataclass
+class RegisteredCron(Generic[WD, R]):
+    fn: Callable[[WrappedContext[WD]], Awaitable[R]]
+    serializer: Callable[[Any], EncodableT]
+    deserializer: Callable[[EncodableT], Any]
+    lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
+    schedule: croniter
+    timeout: timedelta | int | None
+    ttl: timedelta | int | None
+    unique: bool
+    worker: "Worker"
+
+    async def run(self) -> R:
+        """
+        Run the task directly and return the result.
+        This skips enqueuing and result storing in Redis.
+        """
+        deps = WrappedContext(
+            deps=self.worker.deps,
+            redis=self.worker.redis,
+            task_id=uuid4().hex,
+            timeout=self.timeout,
+            tries=1,
+            ttl=self.ttl,
+            worker_id=self.worker.id,
+        )
+        async with self.lifespan(deps):
+            try:
+                return await asyncio.wait_for(
+                    self.fn(deps),
+                    to_seconds(self.timeout) if self.timeout else None,
+                )
+            except asyncio.TimeoutError as e:
+                raise e
+
+    @property
+    def fn_name(self) -> str:
+        return self.fn.__qualname__
+
+    def __repr__(self):
+        return (
+            f"<Cron fn={self.fn_name} serializer={self.serializer} deserializer="
+            f"{self.deserializer} lifespan={self.lifespan} timeout={self.timeout} "
+            f"ttl={self.ttl} schedule={self.schedule.get_next(datetime)}>"
         )

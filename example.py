@@ -50,7 +50,7 @@ async def unq(ctx: WrappedContext[Context]) -> None:
 
 
 @worker.cron("* * * * *")
-async def cronjob(ctx: WrappedContext[Context], x=5) -> None:
+async def cronjob(ctx: WrappedContext[Context]) -> None:
     print("hi")
 
 
@@ -58,6 +58,7 @@ async def main() -> None:
     async with worker:
         task = await unq.enqueue()
         print(task)
+        await cronjob.run()
         # run the task directly, never sending it to a queue
         # result = await foo.run("https://www.google.com/")
         # these two are equivalent, param spec means the arguments are type safe

@@ -16,6 +16,7 @@ authors = [
 ]
 dependencies = [
     "croniter>=6.0.0",
+    "fast-depends>=2.4.12",
     "redis[hiredis]>=5.2.1",
     "typer-slim>=0.15.1",
     "types-croniter>=5.0.1.20241205",
