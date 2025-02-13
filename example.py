@@ -49,6 +49,11 @@ async def unq(ctx: WrappedContext[Context]) -> None:
     await asyncio.sleep(1)
 
 
+@worker.cron("* * * * *")
+async def cronjob(ctx: WrappedContext[Context], x=5) -> None:
+    print("hi")
+
+
 async def main() -> None:
     async with worker:
         task = await unq.enqueue()

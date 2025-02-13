@@ -3,10 +3,6 @@ from datetime import datetime, timedelta
 from importlib import import_module
 from typing import Any
 
-from redis.asyncio import Redis
-
-from streaq import logger
-
 
 class StreaqError(Exception):
     pass
@@ -66,26 +62,6 @@ def now_ms() -> int:
 
 def datetime_ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
-
-
-async def log_redis_info(redis: Redis) -> None:
-    async with redis.pipeline(transaction=False) as pipe:
-        pipe.info(section="Server")
-        pipe.info(section="Memory")
-        pipe.info(section="Clients")
-        pipe.dbsize()
-        info_server, info_memory, info_clients, key_count = await pipe.execute()
-
-    redis_version = info_server.get("redis_version", "?")
-    mem_usage = info_memory.get("used_memory_human", "?")
-    clients_connected = info_clients.get("connected_clients", "?")
-
-    logger.info(
-        f"redis_version={redis_version} "
-        f"mem_usage={mem_usage} "
-        f"clients_connected={clients_connected} "
-        f"db_keys={key_count}"
-    )
 
 
 def default_log_config(verbose: bool) -> dict[str, Any]:

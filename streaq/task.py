@@ -15,15 +15,19 @@ from typing import (
 )
 from uuid import UUID, uuid4
 
+from croniter import croniter
 from redis.asyncio import Redis
 from redis.typing import EncodableT
 
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
+    REDIS_ABORT,
+    REDIS_CHANNEL,
     REDIS_MESSAGE,
     REDIS_QUEUE,
     REDIS_RESULT,
+    REDIS_RETRY,
     REDIS_RUNNING,
     REDIS_STREAM,
     REDIS_TASK,
@@ -41,6 +45,25 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     SCHEDULED = "scheduled"
     DONE = "done"
+
+
+@dataclass
+class TaskData:
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    enqueue_time: int
+    task_id: str
+    task_try: int
+    scheduled: datetime | None = None
+
+
+@dataclass
+class TaskResult(Generic[R]):
+    success: bool
+    result: R | Exception
+    start_time: int
+    finish_time: int
+    queue_name: str
 
 
 @asynccontextmanager
@@ -97,6 +120,7 @@ class Task(Generic[WD, P, R]):
                 (
                     self.args,
                     self.kwargs,
+                    enqueue_time,
                 )
             )
             pipe.psetex(self.task_key(REDIS_TASK), ttl, data)
@@ -144,14 +168,48 @@ class Task(Generic[WD, P, R]):
     def task_key(self, mid: str) -> str:
         return self.queue + mid + self.id
 
-    async def result(self) -> R | None:
-        result = await self.redis.get(self.task_key(REDIS_RESULT))
-        if result is None:
-            # pubsub
-            pass
-        return self.parent.deserializer(result) if result else None
+    async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R]:
+        raw = await self.redis.get(self.task_key(REDIS_RESULT))
+        if raw is None:
+            timeout_seconds = to_seconds(timeout) if timeout is not None else None
+            await asyncio.wait_for(self._listen_for_result(), timeout_seconds)
+            raw = await self.redis.get(self.task_key(REDIS_RESULT))
+        result = self.parent.deserializer(raw)
+        return TaskResult(*result)
 
-    async def abort(self) -> bool: ...
+    async def _listen_for_result(self) -> None:
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe(REDIS_CHANNEL)
+        encoded_id = self.id.encode()
+        async for msg in pubsub.listen():
+            if msg.get("data") == encoded_id:
+                break
+
+    async def abort(self, timeout: timedelta | int | None = None) -> bool:
+        await self.redis.sadd(self.queue + REDIS_ABORT, self.id)  # type: ignore
+        try:
+            await self.result(timeout=timeout)
+        except asyncio.CancelledError:
+            return True
+        else:
+            return False
+
+    async def info(self) -> TaskData:
+        async with self.redis.pipeline(transaction=False) as pipe:
+            pipe.get(self.task_key(REDIS_TASK))
+            pipe.get(self.task_key(REDIS_RETRY))
+            pipe.zscore(self.queue + REDIS_QUEUE, self.id)
+            raw, task_try, score = await pipe.execute()
+        data = self.parent.deserializer(raw)
+        dt = datetime.fromtimestamp(score, tz=self.parent.worker.tz) if score else None
+        return TaskData(
+            args=self.args,
+            kwargs=self.kwargs,
+            enqueue_time=data[2],
+            task_id=self.id,
+            task_try=task_try,
+            scheduled=dt,
+        )
 
     async def depends(self): ...
 
@@ -176,6 +234,7 @@ class RegisteredTask(Generic[WD, P, R]):
     ttl: timedelta | int | None
     unique: bool
     worker: "Worker"
+    schedule: croniter | None = None
 
     # TODO: add exception handler
     # TODO: add dependency injection
