@@ -11,7 +11,7 @@ from time import time
 from typing import Any, AsyncIterator, Concatenate, Generic
 from uuid import uuid4
 
-from croniter import croniter
+from crontab import CronTab
 from redis.asyncio import Redis
 from redis.commands.core import AsyncScript
 from redis.exceptions import ResponseError
@@ -29,13 +29,15 @@ from streaq.constants import (
     REDIS_MESSAGE,
     REDIS_QUEUE,
     REDIS_RESULT,
+    REDIS_RETRY,
+    REDIS_RUNNING,
     REDIS_STREAM,
     REDIS_TASK,
     REDIS_TIMEOUT,
 )
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
-from streaq.utils import StreaqError, now_ms, to_seconds
+from streaq.utils import StreaqError, StreaqRetry, now_ms, to_seconds
 from streaq.task import RegisteredCron, RegisteredTask, task_lifespan
 
 
@@ -50,17 +52,20 @@ class Worker(Generic[WD]):
         redis_url: str = "redis://localhost:6379",
         concurrency: int = 16,
         queue_name: str = DEFAULT_QUEUE_NAME,
+        group_name: str = REDIS_GROUP,
         queue_fetch_limit: int | None = None,
         lifespan: Callable[[], AbstractAsyncContextManager] = do_nothing,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[EncodableT], Any] = pickle.loads,  # type: ignore
         burst: bool = False,
+        tz: tzinfo = timezone.utc,
         handle_signals: bool = False,
         health_check_interval: timedelta | int = 300,
     ):
         self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
         self.queue_name = queue_name
+        self.group_name = group_name
         self.queue_fetch_limit = queue_fetch_limit or concurrency * 4
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
         self.counters = defaultdict(lambda: 0)
@@ -77,7 +82,7 @@ class Worker(Generic[WD]):
         self.tasks: dict[str, asyncio.Task] = {}
         self.handle_signals = handle_signals
         self.health_check_interval = health_check_interval
-        self.tz: tzinfo = timezone.utc
+        self.tz: tzinfo = tz
         self.aborting_tasks: set[str] = set()
         if handle_signals:
             self._add_signal_handler(signal.SIGINT, self.handle_signal)
@@ -108,6 +113,7 @@ class Worker(Generic[WD]):
         lifespan: Callable[
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
         ] = task_lifespan,
+        max_tries: int | None = 3,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = None,
         unique: bool = True,
@@ -120,7 +126,8 @@ class Worker(Generic[WD]):
                 self.serializer,
                 self.deserializer,
                 lifespan,
-                croniter(tab),
+                max_tries,
+                CronTab(tab),
                 timeout,
                 ttl,
                 unique,
@@ -136,6 +143,7 @@ class Worker(Generic[WD]):
         lifespan: Callable[
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
         ] = task_lifespan,
+        max_tries: int | None = 3,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = None,
         unique: bool = False,
@@ -148,6 +156,7 @@ class Worker(Generic[WD]):
                 self.serializer,
                 self.deserializer,
                 lifespan,
+                max_tries,
                 timeout,
                 ttl,
                 unique,
@@ -180,7 +189,7 @@ class Worker(Generic[WD]):
         with suppress(ResponseError):
             await self.redis.xgroup_create(
                 name=self.queue_name + REDIS_STREAM,
-                groupname=REDIS_GROUP,
+                groupname=self.group_name,
                 id=0,
                 mkstream=True,
             )
@@ -236,7 +245,7 @@ class Worker(Generic[WD]):
             await asyncio.sleep(300)  # every 5 minutes
             consumers_info = await self.redis.xinfo_consumers(
                 self.queue_name + REDIS_STREAM,
-                groupname=REDIS_GROUP,
+                groupname=self.group_name,
             )
             for consumer_info in consumers_info:
                 if self.id == consumer_info["name"].decode():
@@ -248,7 +257,7 @@ class Worker(Generic[WD]):
                 if pending == 0 and idle > DEFAULT_TTL / 1000:
                     await self.redis.xgroup_delconsumer(
                         name=self.queue_name + REDIS_STREAM,
-                        groupname=REDIS_GROUP,
+                        groupname=self.group_name,
                         consumername=consumer_info["name"],
                     )
 
@@ -262,7 +271,7 @@ class Worker(Generic[WD]):
                 messages.extend(expired)
             if count > 0:
                 res = await self.redis.xreadgroup(
-                    groupname=REDIS_GROUP,
+                    groupname=self.group_name,
                     consumername=self.id,
                     streams={self.queue_name + REDIS_STREAM: ">"},
                     block=500,
@@ -291,7 +300,7 @@ class Worker(Generic[WD]):
 
     async def start_tasks(self, messages: list[StreamMessage]) -> None:
         for message in messages:
-            coro = self.run_task(message.fn_name, message.task_id)
+            coro = self.run_task(message.fn_name, message.task_id, message.message_id)
             self.tasks[message.task_id] = self.loop.create_task(coro)
 
     async def cancel_tasks(self) -> None:
@@ -322,7 +331,7 @@ class Worker(Generic[WD]):
             pipe.zrem(self.queue_name + REDIS_TIMEOUT, ids)
             pipe.xclaim(
                 self.queue_name + REDIS_STREAM,
-                groupname=REDIS_GROUP,
+                groupname=self.group_name,
                 consumername=self.id,
                 min_idle_time=0,
                 message_ids=ids,
@@ -339,47 +348,155 @@ class Worker(Generic[WD]):
             for msg_id, msg in msgs
         ]
 
-    async def run_task(self, fn_name: str, id: str):
+    async def run_task(self, fn_name: str, task_id: str, message_id: str):
         """
         Execute the registered task, then store the result in Redis.
         """
+        key = lambda mid: self.queue_name + mid + id
         # acquire semaphore
         async with self.bs:
+            start_time = now_ms()
             task = self.registry[fn_name]
-            ctx = self.build_context(task, id)
-            raw = await self.redis.get(self.queue_name + REDIS_TASK + id)
-            data = task.deserializer(raw)
+            ctx = self.build_context(task, task_id)
             timeout = (
                 "inf"
                 if task.timeout is None
                 else round(time()) + to_seconds(task.timeout) + 1
             )
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.get(key(REDIS_TASK))
+                pipe.incr(key(REDIS_RETRY))
+                pipe.expire(key(REDIS_RETRY), DEFAULT_TTL // 1000)
+                pipe.srem(self.queue_name + REDIS_ABORT, task_id)
+                pipe.zadd(self.queue_name + REDIS_TIMEOUT, {task_id: timeout})
+                raw, task_try, _, abort = await pipe.execute()
+
+            async def handle_failure(exc: BaseException) -> None:
+                self.counters["failed"] += 1
+                data = {
+                    "s": False,
+                    "r": exc,
+                    "st": start_time,
+                    "ft": now_ms(),
+                }
+                try:
+                    raw = self.serializer(data)
+                    await asyncio.shield(
+                        self.finish_failed_task(task_id, message_id, raw, task.ttl)
+                    )
+                except Exception as e:
+                    raise StreaqError(
+                        f"Failed to serialize result for task {id}!"
+                    ) from e
+
+            if not raw:
+                logger.warning(f"Task {task_id} expired.")
+                return await handle_failure(StreaqError("Task execution failed!"))
+
+            try:
+                data = task.deserializer(raw)
+            except Exception as e:
+                logger.exception(f"Failed to deserialize task {task_id}: {e}")
+                return await handle_failure(e)
+
+            if abort:
+                logger.info(f"Task {task_id} aborted prior to starting.")
+                return await handle_failure(asyncio.CancelledError())
+
+            if task.max_tries and task_try > task.max_tries:
+                logger.warning(f"Max retry attempts reached for task {task_id}!")
+                self.counters["failed"] += 1
+                return await handle_failure(
+                    StreaqError(f"Max retry attempts reached for task {task_id}!")
+                )
+
             async with task.lifespan(ctx):
                 try:
-                    await self.redis.zadd(
-                        self.queue_name + REDIS_TIMEOUT, {id: timeout}
+                    logger.info(
+                        f"Starting task {task_id} for function {task.fn_name}..."
                     )
                     result = await asyncio.wait_for(
-                        task.fn(ctx, *data[0], **data[1]),
+                        task.fn(ctx, *data["a"], **data["k"]),
                         to_seconds(task.timeout) if task.timeout is not None else None,
                     )
-                    async with self.redis.pipeline(transaction=True) as pipe:
-                        # notify anything waiting on results
-                        pipe.publish(self.queue_name + REDIS_CHANNEL, id)
-                        if result is not None:
-                            if task.ttl != 0:
-                                data = task.serializer(result)
-                                pipe.set(
-                                    self.queue_name + REDIS_RESULT + id,
-                                    data,
-                                    ex=task.ttl,
-                                )
-                except Exception:
-                    pass
+                except StreaqRetry as e:
+                    logger.info(f"Retrying task {task_id} in {e.delay} seconds...")
+                except (Exception, asyncio.CancelledError) as e:
+                    finish_time = now_ms()
+                    run_time = (start_time - finish_time) / 1000
                 else:
                     pass
                 finally:
                     pass
+
+    async def finish_task(
+        self,
+        task_id: str,
+        message_id: str,
+        score: int,
+        finish: bool,
+        result_data: bytes | None,
+        ttl: timedelta | int | None,
+        incr_score: int | None,
+    ) -> None:
+        key = lambda mid: self.queue_name + mid + task_id
+        async with self.redis.pipeline(transaction=True) as pipe:
+            delete_keys = set()
+            stream_key = self.queue_name + REDIS_STREAM
+            delete_keys.add(key(REDIS_RUNNING))
+            pipe.xack(
+                stream_key,
+                self.group_name,
+                message_id,
+            )
+            pipe.xdel(stream_key, message_id)
+            pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
+
+            if finish:
+                if result_data:
+                    pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
+                delete_keys.add(key(REDIS_RETRY))
+                delete_keys.add(key(REDIS_TASK))
+                delete_keys.add(key(REDIS_MESSAGE))
+                pipe.zrem(self.queue_name + REDIS_TIMEOUT, task_id)
+                pipe.srem(self.queue_name + REDIS_ABORT, task_id)
+            elif incr_score:
+                delete_keys.add(key(REDIS_MESSAGE))
+                pipe.zadd(self.queue_name, {task_id: score + incr_score})
+            else:
+                job_message_id_expire = score - now_ms() + DEFAULT_TTL
+                await self.scripts["publish_task"](
+                    keys=[stream_key, key(REDIS_MESSAGE)],
+                    args=[task_id, score, job_message_id_expire],
+                    client=pipe,
+                )
+            if delete_keys:
+                pipe.delete(*delete_keys)
+            await pipe.execute()
+
+    async def finish_failed_task(
+        self,
+        task_id: str,
+        message_id: str,
+        result_data: EncodableT,
+        ttl: timedelta | int | None,
+    ) -> None:
+        key = lambda mid: self.queue_name + mid + task_id
+        stream_key = self.queue_name + REDIS_STREAM
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.delete(
+                key(REDIS_RETRY),
+                key(REDIS_RUNNING),
+                key(REDIS_TASK),
+                key(REDIS_MESSAGE),
+            )
+            pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
+            pipe.zrem(self.queue_name + REDIS_ABORT, task_id)
+            pipe.xack(stream_key, self.group_name, message_id)
+            pipe.xdel(stream_key, message_id)
+            if result_data is not None:
+                pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
+            await pipe.execute()
 
     async def redis_health_check(self):
         timeout = to_seconds(self.health_check_interval)

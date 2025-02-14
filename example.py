@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import AsyncIterator
 from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
 
 from httpx import AsyncClient
 from streaq.types import WrappedContext
@@ -31,10 +32,10 @@ async def job_lifespan(ctx: WrappedContext[Context]) -> AsyncIterator[None]:
     print("Finished job")
 
 
-worker = Worker(lifespan=worker_lifespan)
+worker = Worker(lifespan=worker_lifespan, tz=ZoneInfo("US/Eastern"))
 
 
-@worker.task(lifespan=job_lifespan, timeout=10)
+@worker.task(lifespan=job_lifespan, timeout=10, unique=True)
 async def foo(ctx: WrappedContext[Context], url: str) -> int:
     # ctx.deps here is of type MyWorkerDeps, that's enforced by static typing
     # FunctionContext will also provide access to a redis connection, retry count,
@@ -44,20 +45,13 @@ async def foo(ctx: WrappedContext[Context], url: str) -> int:
     return len(r.text)
 
 
-@worker.task(lifespan=job_lifespan, unique=True)
-async def unq(ctx: WrappedContext[Context]) -> None:
-    await asyncio.sleep(1)
-
-
-@worker.cron("* * * * *")
+@worker.cron("25 13 * * mon-fri")
 async def cronjob(ctx: WrappedContext[Context]) -> None:
     print("hi")
 
 
 async def main() -> None:
     async with worker:
-        task = await unq.enqueue()
-        print(task)
         await cronjob.run()
         # run the task directly, never sending it to a queue
         # result = await foo.run("https://www.google.com/")
@@ -82,8 +76,9 @@ async def main() -> None:
             "https://linkedin.com/",
         ]:
             await foo.enqueue(url)
-        # task = await foo.enqueue("https://apple.com/").start()
-        # await foo.enqueue("https://amazon.com/").start(delay=5)
+        task = await foo.enqueue("https://apple.com/").start()
+        print(task)
+        await foo.enqueue("https://amazon.com/").start(delay=5)
 
 
 if __name__ == "__main__":

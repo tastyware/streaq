@@ -4,6 +4,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from time import time
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -15,7 +16,8 @@ from typing import (
 )
 from uuid import UUID, uuid4
 
-from croniter import croniter
+from crontab import CronTab
+from redis import WatchError
 from redis.asyncio import Redis
 from redis.typing import EncodableT
 
@@ -49,11 +51,12 @@ class TaskStatus(str, Enum):
 
 @dataclass
 class TaskData:
+    fn_name: str
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     enqueue_time: int
-    task_id: str
-    task_try: int
+    task_id: str | None = None
+    task_try: int | None = None
     scheduled: datetime | None = None
 
 
@@ -81,10 +84,12 @@ class Task(Generic[R]):
 
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    parent: "RegisteredTask"
+    parent: "RegisteredCron | RegisteredTask"
     id: str = ""
 
     def __post_init__(self):
+        if self.id:
+            return
         if self.parent.unique:
             deterministic_hash = hashlib.sha256(
                 self.parent.fn_name.encode()
@@ -105,9 +110,14 @@ class Task(Generic[R]):
             raise StreaqError(
                 "Use either 'delay' or 'schedule' when enqueuing tasks, not both!"
             )
-        publish_task = self.parent.worker.scripts["publish_task"]
         ttl_ms = to_ms(self.parent.ttl) if self.parent.ttl is not None else None
         async with self.redis.pipeline(transaction=True) as pipe:
+            key = self.task_key(REDIS_TASK)
+            await pipe.watch(key)
+            if await pipe.exists(key, self.task_key(REDIS_RESULT)):
+                await pipe.reset()
+                logger.debug("Task is unique and already exists, not enqueuing!")
+                return self
             enqueue_time = now_ms()
             if schedule:
                 score = datetime_ms(schedule)
@@ -116,18 +126,13 @@ class Task(Generic[R]):
             else:
                 score = None
             ttl = ttl_ms or (score or enqueue_time) - enqueue_time + DEFAULT_TTL
-            data = self.parent.serializer(
-                (
-                    self.args,
-                    self.kwargs,
-                    enqueue_time,
-                )
-            )
-            pipe.psetex(self.task_key(REDIS_TASK), ttl, data)
+            data = self.serialize(enqueue_time)
+            pipe.multi()
+            pipe.psetex(key, ttl, data)
             if score is not None:
                 pipe.zadd(self.queue + REDIS_QUEUE, {self.id: score})
             else:
-                await publish_task(
+                await self.parent.worker.scripts["publish_task"](
                     keys=[
                         self.queue + REDIS_STREAM,
                         self.task_key(REDIS_MESSAGE),
@@ -140,7 +145,10 @@ class Task(Generic[R]):
                     ],
                     client=pipe,
                 )
-            await pipe.execute()
+            try:
+                await pipe.execute()
+            except WatchError:
+                logger.debug("Task is unique and already exists, not enqueuing!")
 
         return self
 
@@ -168,14 +176,36 @@ class Task(Generic[R]):
     def task_key(self, mid: str) -> str:
         return self.queue + mid + self.id
 
+    def serialize(self, enqueue_time: int) -> EncodableT:
+        try:
+            return self.parent.serializer(
+                {
+                    "f": self.parent.fn_name,
+                    "a": self.args,
+                    "k": self.kwargs,
+                    "t": enqueue_time,
+                }
+            )
+        except Exception as e:
+            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
+
     async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R]:
         raw = await self.redis.get(self.task_key(REDIS_RESULT))
         if raw is None:
             timeout_seconds = to_seconds(timeout) if timeout is not None else None
             await asyncio.wait_for(self._listen_for_result(), timeout_seconds)
             raw = await self.redis.get(self.task_key(REDIS_RESULT))
-        result = self.parent.deserializer(raw)
-        return TaskResult(*result)
+        try:
+            data = self.parent.deserializer(raw)
+            return TaskResult(
+                success=data["s"],
+                result=data["r"],
+                start_time=data["st"],
+                finish_time=data["ft"],
+                queue_name=self.queue,
+            )
+        except Exception as e:
+            raise StreaqError("Unable to deserialize result for task {self.id}!") from e
 
     async def _listen_for_result(self) -> None:
         pubsub = self.redis.pubsub()
@@ -203,9 +233,10 @@ class Task(Generic[R]):
         data = self.parent.deserializer(raw)
         dt = datetime.fromtimestamp(score, tz=self.parent.worker.tz) if score else None
         return TaskData(
+            fn_name=self.parent.fn_name,
             args=self.args,
             kwargs=self.kwargs,
-            enqueue_time=data[2],
+            enqueue_time=data["t"],
             task_id=self.id,
             task_try=task_try,
             scheduled=dt,
@@ -231,11 +262,11 @@ class RegisteredTask(Generic[WD, P, R]):
     serializer: Callable[[Any], EncodableT]
     deserializer: Callable[[EncodableT], Any]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
+    max_tries: int | None
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
     worker: "Worker"
-    schedule: croniter | None = None
 
     # TODO: add exception handler
     # TODO: add dependency injection
@@ -293,7 +324,8 @@ class RegisteredCron(Generic[WD, R]):
     serializer: Callable[[Any], EncodableT]
     deserializer: Callable[[EncodableT], Any]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
-    schedule: croniter
+    max_tries: int | None
+    schedule: CronTab
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
@@ -326,9 +358,17 @@ class RegisteredCron(Generic[WD, R]):
     def fn_name(self) -> str:
         return self.fn.__qualname__
 
+    @property
+    def delay(self) -> int:
+        return round(self.schedule.next(now=datetime.now(self.worker.tz)))  # type: ignore
+
+    def next(self) -> datetime:
+        ts = self.delay + round(time())
+        return datetime.fromtimestamp(ts, tz=self.worker.tz)
+
     def __repr__(self):
         return (
             f"<Cron fn={self.fn_name} serializer={self.serializer} deserializer="
             f"{self.deserializer} lifespan={self.lifespan} timeout={self.timeout} "
-            f"ttl={self.ttl} schedule={self.schedule.get_next(datetime)}>"
+            f"ttl={self.ttl} schedule={self.next()}>"
         )

@@ -25,8 +25,15 @@ def main(
     workers: Annotated[
         int, Option("--workers", "-w", help="Number of worker processes to spin up")
     ] = 1,
+    burst: Annotated[
+        bool,
+        Option(help="Whether to close workers when no tasks are left in the queue"),
+    ] = False,
     watch: Annotated[
         bool, Option(help="Whether to auto-reload workers upon changes detected")
+    ] = False,
+    verbose: Annotated[
+        bool, Option(help="Whether to use logging.DEBUG instead of logging.INFO")
     ] = False,
     version: Annotated[
         bool | None,

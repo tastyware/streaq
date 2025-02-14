@@ -12,17 +12,11 @@ class StreaqRetry(RuntimeError):
     """
     Special exception to retry the job (if ``max_retries`` hasn't been reached).
 
-    :param defer: duration to wait before rerunning the job
+    :param delay: duration to wait before rerunning the job
     """
 
-    def __init__(self, defer: timedelta | int | None = None):
-        self.defer_score: int | None = to_ms(defer) if defer is not None else None
-
-    def __repr__(self) -> str:
-        return f"<Retry defer {(self.defer_score or 0) / 1000:0.2f}s>"
-
-    def __str__(self) -> str:
-        return repr(self)
+    def __init__(self, delay: timedelta | int = 0):
+        self.delay: int = to_ms(delay)
 
 
 def import_string(dotted_path: str) -> Any:
