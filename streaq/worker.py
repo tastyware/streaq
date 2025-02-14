@@ -5,7 +5,7 @@ import signal
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from datetime import timedelta, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from signal import Signals
 from time import time
 from typing import Any, AsyncIterator, Concatenate, Generic
@@ -76,6 +76,7 @@ class Worker(Generic[WD]):
         self.scripts: dict[str, AsyncScript] = {}
         self.registry: dict[str, RegisteredTask] = {}
         self.cron_jobs: dict[str, RegisteredCron] = {}
+        self.cron_schedule: dict[str, int] = {}
         self.id = uuid4().hex
         self.serializer = serializer
         self.deserializer = deserializer
@@ -114,6 +115,7 @@ class Worker(Generic[WD]):
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
         ] = task_lifespan,
         max_tries: int | None = 3,
+        run_at_startup: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = None,
         unique: bool = True,
@@ -127,6 +129,7 @@ class Worker(Generic[WD]):
                 self.deserializer,
                 lifespan,
                 max_tries,
+                run_at_startup,
                 CronTab(tab),
                 timeout,
                 ttl,
@@ -193,6 +196,13 @@ class Worker(Generic[WD]):
                 id=0,
                 mkstream=True,
             )
+        # set schedule for cron jobs
+        ts = now_ms()
+        for name, cron_job in self.cron_jobs.items():
+            if cron_job.run_at_startup and name not in self.cron_schedule:
+                self.cron_schedule[name] = ts
+            else:
+                self.cron_schedule[name] = cron_job.delay + ts
         async with self:
             done, pending = await asyncio.wait(
                 [
@@ -420,14 +430,37 @@ class Worker(Generic[WD]):
                         to_seconds(task.timeout) if task.timeout is not None else None,
                     )
                 except StreaqRetry as e:
-                    logger.info(f"Retrying task {task_id} in {e.delay} seconds...")
-                except (Exception, asyncio.CancelledError) as e:
-                    finish_time = now_ms()
-                    run_time = (start_time - finish_time) / 1000
+                    if e.delay is not None:
+                        delay = to_seconds(e.delay)
+                    else:
+                        delay = task_try**2
+                    logger.info(f"Retrying task {task_id} in {delay} seconds...")
+                except (asyncio.CancelledError, asyncio.TimeoutError) as e:
+                    pass
+                except Exception as e:
+                    pass
                 else:
                     pass
                 finally:
-                    pass
+                    finish_time = now_ms()
+                    run_time = (start_time - finish_time) / 1000
+
+                timeout = task.timeout
+                data = {
+                    "s": False,
+                    "r": result,
+                    "st": start_time,
+                    "ft": now_ms(),
+                }
+                try:
+                    raw = self.serializer(data)
+                    await asyncio.shield(
+                        self.finish_task(task_id, message_id, raw, task.ttl)
+                    )
+                except Exception as e:
+                    raise StreaqError(
+                        f"Failed to serialize result for task {id}!"
+                    ) from e
 
     async def finish_task(
         self,
@@ -497,6 +530,22 @@ class Worker(Generic[WD]):
             if result_data is not None:
                 pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
             await pipe.execute()
+
+    async def run_cron(self, delay: float, num_windows: int = 2) -> None:
+        job_futures = set()
+
+        ts = now_ms()
+        cutoff = ts + delay * num_windows
+
+        for name, cron_job in self.cron_jobs.items():
+            if self.cron_schedule[name] <= cutoff:
+                # We queue up the cron if the next execution time is in the next
+                # delay * num_windows (by default 0.5 * 2 = 1 second).
+                job_futures.add(cron_job.enqueue().start(delay=cron_job.delay))
+                cron_job.calculate_next(cron_job.next_run)
+                cron_job.schedule.next()
+
+        job_futures and await asyncio.gather(*job_futures)
 
     async def redis_health_check(self):
         timeout = to_seconds(self.health_check_interval)

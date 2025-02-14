@@ -325,11 +325,19 @@ class RegisteredCron(Generic[WD, R]):
     deserializer: Callable[[EncodableT], Any]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
+    run_at_startup: bool
     schedule: CronTab
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
     worker: "Worker"
+
+    def enqueue(self) -> Task[R]:
+        """
+        Serialize the job and send it to the queue for later execution by an active worker.
+        Though this isn't async, it should be awaited as it returns an object that should be.
+        """
+        return Task((), {}, self)
 
     async def run(self) -> R:
         """

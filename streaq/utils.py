@@ -8,15 +8,10 @@ class StreaqError(Exception):
     pass
 
 
-class StreaqRetry(RuntimeError):
-    """
-    Special exception to retry the job (if ``max_retries`` hasn't been reached).
-
-    :param delay: duration to wait before rerunning the job
-    """
-
-    def __init__(self, delay: timedelta | int = 0):
-        self.delay: int = to_ms(delay)
+class StreaqRetry(Exception):
+    def __init__(self, delay: timedelta | int | None = None):
+        # None means square of number of attempts
+        self.delay = delay
 
 
 def import_string(dotted_path: str) -> Any:
