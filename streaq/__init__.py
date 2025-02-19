@@ -10,8 +10,8 @@ logger.setLevel(logging.DEBUG)
 
 from .task import TaskStatus
 from .types import WrappedContext
-from .utils import StreaqError, StreaqRetry
-from .worker import Worker
+from .utils import StreaqError
+from .worker import StreaqRetry, Worker
 
 __all__ = [
     "StreaqError",

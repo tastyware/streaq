@@ -1,6 +1,6 @@
 import asyncio
 import hashlib
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -8,7 +8,6 @@ from time import time
 from typing import (
     TYPE_CHECKING,
     Any,
-    AsyncIterator,
     Awaitable,
     Callable,
     Concatenate,
@@ -67,11 +66,6 @@ class TaskResult(Generic[R]):
     start_time: int
     finish_time: int
     queue_name: str
-
-
-@asynccontextmanager
-async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
-    yield
 
 
 @dataclass
@@ -316,7 +310,7 @@ class RegisteredCron(Generic[WD, R]):
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     run_at_startup: bool
-    schedule: CronTab
+    crontab: CronTab
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
@@ -356,19 +350,29 @@ class RegisteredCron(Generic[WD, R]):
     def fn_name(self) -> str:
         return self.fn.__qualname__
 
-    @property
-    def delay(self) -> int:
+    def schedule(self) -> datetime:
         """
-        Number of milliseconds until the next run.
+        Datetime of next run.
         """
-        return round(self.schedule.next(now=datetime.now(self.worker.tz)) * 1000)  # type: ignore
+        return datetime.fromtimestamp(self.next() / 1000, tz=self.worker.tz)
 
-    def next(self) -> datetime:
-        ts = self.delay + round(time())
-        return datetime.fromtimestamp(ts, tz=self.worker.tz)
+    def next(self) -> int:
+        """
+        Timestamp in milliseconds of next run.
+        """
+        return round((time() + self.delay) * 1000)
+
+    def _upcoming(self) -> int:
+        # Timestamp in ms for run after next run.
+        diff = self.crontab.next(now=self.schedule())  # type: ignore
+        return self.next() + round(diff * 1000)
+
+    @property
+    def delay(self) -> float:
+        return self.crontab.next(now=datetime.now(self.worker.tz))  # type: ignore
 
     def __repr__(self):
         return (
             f"<Cron fn={self.fn_name} lifespan={self.lifespan} timeout={self.timeout} "
-            f"ttl={self.ttl} schedule={self.next()}>"
+            f"ttl={self.ttl} schedule={self.schedule()}>"
         )

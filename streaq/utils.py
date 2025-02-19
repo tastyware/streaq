@@ -8,12 +8,6 @@ class StreaqError(Exception):
     pass
 
 
-class StreaqRetry(Exception):
-    def __init__(self, delay: timedelta | int | None = None):
-        # None means square of number of attempts
-        self.delay = delay
-
-
 def import_string(dotted_path: str) -> Any:
     """
     Taken from pydantic.utils.

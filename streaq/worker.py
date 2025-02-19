@@ -37,12 +37,31 @@ from streaq.constants import (
 )
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
-from streaq.utils import StreaqError, StreaqRetry, now_ms, to_ms, to_seconds
-from streaq.task import RegisteredCron, RegisteredTask, task_lifespan
+from streaq.utils import StreaqError, now_ms, to_ms, to_seconds
+from streaq.task import RegisteredCron, RegisteredTask
+
+
+class StreaqRetry(StreaqError):
+    """
+    An exception you can manually raise in your tasks to make sure the task
+    is retried.
+
+    :param delay:
+        amount of time to wait before retrying the job; if none, will be the
+        square of the number of attempts
+    """
+
+    def __init__(self, delay: timedelta | int | None = None):
+        self.delay = delay
 
 
 @asynccontextmanager
-async def do_nothing() -> AsyncIterator[None]:
+async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
+    yield
+
+
+@asynccontextmanager
+async def worker_lifespan() -> AsyncIterator[None]:
     yield
 
 
@@ -54,7 +73,12 @@ class Worker(Generic[WD]):
         queue_name: str = DEFAULT_QUEUE_NAME,
         group_name: str = REDIS_GROUP,
         queue_fetch_limit: int | None = None,
-        lifespan: Callable[[], AbstractAsyncContextManager] = do_nothing,
+        task_lifespan: Callable[
+            [WrappedContext[WD]], AbstractAsyncContextManager[None]
+        ] = task_lifespan,
+        worker_lifespan: Callable[
+            [], AbstractAsyncContextManager[WD]
+        ] = worker_lifespan,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[EncodableT], Any] = pickle.loads,  # type: ignore
         burst: bool = False,
@@ -69,12 +93,12 @@ class Worker(Generic[WD]):
         self.queue_fetch_limit = queue_fetch_limit or concurrency * 4
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
         self.counters = defaultdict(lambda: 0)
-        self.lifespan = lifespan()
+        self.worker_lifespan = worker_lifespan()
         self.loop = asyncio.get_event_loop()
         self.task_lifespan = task_lifespan
         self._deps: WD | None = None
         self.scripts: dict[str, AsyncScript] = {}
-        self.registry: dict[str, RegisteredTask] = {}
+        self.registry: dict[str, RegisteredCron | RegisteredTask] = {}
         self.cron_jobs: dict[str, RegisteredCron] = {}
         self.cron_schedule: dict[str, int] = {}
         self.id = uuid4().hex
@@ -111,9 +135,6 @@ class Worker(Generic[WD]):
     def cron(
         self,
         tab: str,
-        lifespan: Callable[
-            [WrappedContext[WD]], AbstractAsyncContextManager[None]
-        ] = task_lifespan,
         max_tries: int | None = 3,
         run_at_startup: bool = False,
         timeout: timedelta | int | None = None,
@@ -125,7 +146,7 @@ class Worker(Generic[WD]):
         ) -> RegisteredCron[WD, R]:
             task = RegisteredCron(
                 fn,
-                lifespan,
+                task_lifespan,
                 max_tries,
                 run_at_startup,
                 CronTab(tab),
@@ -135,18 +156,16 @@ class Worker(Generic[WD]):
                 self,
             )
             self.cron_jobs[task.fn_name] = task
+            self.registry[task.fn_name] = task
             return task
 
         return wrapped
 
     def task(
         self,
-        lifespan: Callable[
-            [WrappedContext[WD]], AbstractAsyncContextManager[None]
-        ] = task_lifespan,
         max_tries: int | None = 3,
         timeout: timedelta | int | None = None,
-        ttl: timedelta | int | None = None,
+        ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
     ):
         def wrapped(
@@ -154,7 +173,7 @@ class Worker(Generic[WD]):
         ) -> RegisteredTask[WD, P, R]:
             task = RegisteredTask(
                 fn,
-                lifespan,
+                task_lifespan,
                 max_tries,
                 timeout,
                 ttl,
@@ -198,7 +217,8 @@ class Worker(Generic[WD]):
             if cron_job.run_at_startup and name not in self.cron_schedule:
                 self.cron_schedule[name] = ts
             else:
-                self.cron_schedule[name] = cron_job.delay + ts
+                self.cron_schedule[name] = cron_job.next()
+        # run loops
         async with self:
             done, pending = await asyncio.wait(
                 [
@@ -216,48 +236,6 @@ class Worker(Generic[WD]):
             for task in done:
                 task.result()
             await self.close()
-
-    async def listen_queue(self) -> None:
-        while True:
-            task_ids = await self.redis.zrange(
-                self.queue_name + REDIS_QUEUE,
-                start=0,
-                end=now_ms(),
-                num=self.queue_fetch_limit,
-                offset=0,
-                withscores=True,
-                byscore=True,
-            )
-            async with self.redis.pipeline(transaction=False) as pipe:
-                for task_id, score in task_ids:
-                    expire_ms = int(score - now_ms() + DEFAULT_TTL)
-                    if expire_ms <= 0:
-                        expire_ms = DEFAULT_TTL
-
-                    decoded = task_id.decode()
-                    await self.scripts["publish_delayed_task"](
-                        keys=[
-                            self.queue_name + REDIS_QUEUE,
-                            self.queue_name + REDIS_STREAM,
-                            self.queue_name + REDIS_MESSAGE + decoded,
-                        ],
-                        args=[decoded, expire_ms],
-                        client=pipe,
-                    )
-                await pipe.execute()
-            # cron jobs
-            job_futures = set()
-            ts = now_ms()
-
-            for name, cron_job in self.cron_jobs.items():
-                if self.cron_schedule[name] < ts:
-                    job_futures.add(cron_job.enqueue().start())
-                    self.cron_schedule[name] = ts + cron_job.delay
-
-            if job_futures:
-                await asyncio.gather(*job_futures)
-
-            await asyncio.sleep(1)
 
     async def consumer_cleanup(self) -> None:
         while True:
@@ -280,13 +258,81 @@ class Worker(Generic[WD]):
                         consumername=consumer_info["name"],
                     )
 
+    async def listen_queue(self) -> None:
+        set_name = self.queue_name + REDIS_ABORT
+        while True:
+            start_time = time()
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.zrange(
+                    self.queue_name + REDIS_QUEUE,
+                    start=0,
+                    end=now_ms(),
+                    num=self.queue_fetch_limit,
+                    offset=0,
+                    withscores=True,
+                    byscore=True,
+                )
+                pipe.smembers(set_name)
+                task_ids, aborted_ids = await pipe.execute()
+            async with self.redis.pipeline(transaction=False) as pipe:
+                for task_id, score in task_ids:
+                    expire_ms = int(score - now_ms() + DEFAULT_TTL)
+                    if expire_ms <= 0:
+                        expire_ms = DEFAULT_TTL
+
+                    decoded = task_id.decode()
+                    await self.scripts["publish_delayed_task"](
+                        keys=[
+                            self.queue_name + REDIS_QUEUE,
+                            self.queue_name + REDIS_STREAM,
+                            self.queue_name + REDIS_MESSAGE + decoded,
+                        ],
+                        args=[decoded, expire_ms],
+                        client=pipe,
+                    )
+                # Go through job_ids in the aborted tasks set and cancel those tasks.
+                aborted: set[str] = set()
+                for task_id_bytes in aborted_ids:
+                    task_id = task_id_bytes.decode()
+                    if task_id in self.tasks:
+                        self.tasks[task_id].cancel()
+                        aborted.add(task_id)
+                if aborted:
+                    self.aborting_tasks.update(aborted)
+                    pipe.srem(set_name, *aborted)
+                await pipe.execute()
+
+            # cron jobs
+            job_futures = set()
+            ts = now_ms()
+            for name, cron_job in self.cron_jobs.items():
+                diff = max(0, self.cron_schedule[name] - ts)
+                if diff < 1000:
+                    job_futures.add(
+                        cron_job.enqueue().start(delay=timedelta(milliseconds=diff))
+                    )
+                    self.cron_schedule[name] = cron_job._upcoming()
+            if job_futures:
+                await asyncio.gather(*job_futures)
+
+            # cleanup aborted tasks
+            for task_id, task in list(self.tasks.items()):
+                if task.done():
+                    del self.tasks[task_id]
+                    # propagate error
+                    task.result()
+
+            delay = time() - start_time
+            if delay < 1:
+                await asyncio.sleep(delay)
+
     async def listen_stream(self):
         while True:
             messages: list[StreamMessage] = []
             active_jobs = self.active
             count = self.queue_fetch_limit - active_jobs
             if active_jobs < self.concurrency:
-                expired = await self.handle_expired_tasks(count)
+                expired = await self.get_idle_tasks(count)
                 count -= len(expired)
                 messages.extend(expired)
             if count > 0:
@@ -308,40 +354,15 @@ class Worker(Generic[WD]):
                             for msg_id, msg in msgs
                         ]
                     )
-            # start new tasks and cleanup aborted ones
-            await self.start_tasks(messages)
-            await self.cancel_tasks()
-            for task_id, task in list(self.tasks.items()):
-                if task.done():
-                    del self.tasks[task_id]
-                    # propagate error
-                    task.result()
+            # start new tasks
+            for message in messages:
+                coro = self.run_task(message.task_id, message.message_id)
+                self.tasks[message.task_id] = self.loop.create_task(coro)
 
-    async def start_tasks(self, messages: list[StreamMessage]) -> None:
-        for message in messages:
-            coro = self.run_task(message.task_id, message.message_id)
-            self.tasks[message.task_id] = self.loop.create_task(coro)
-
-    async def cancel_tasks(self) -> None:
-        """
-        Go through job_ids in the aborted tasks set and cancel those tasks.
-        """
-        set_name = self.queue_name + REDIS_ABORT
-        aborted_ids = await self.redis.smembers(set_name)  # type: ignore
-        aborted: set[str] = set()
-        for task_id_bytes in aborted_ids:
-            task_id = task_id_bytes.decode()
-            if task_id in self.tasks:
-                self.tasks[task_id].cancel()
-                aborted.add(task_id)
-
-        if aborted:
-            self.aborting_tasks.update(aborted)
-            await self.redis.srem(set_name, *aborted)  # type: ignore
-
-    async def handle_expired_tasks(self, count: int) -> list[StreamMessage]:
-        now = round(time())
-        ids = await self.redis.zrangebyscore(self.queue_name + REDIS_TIMEOUT, 0, now)
+    async def get_idle_tasks(self, count: int) -> list[StreamMessage]:
+        ids = await self.redis.zrangebyscore(
+            self.queue_name + REDIS_TIMEOUT, 0, now_ms()
+        )
         if not ids:
             return []
         if len(ids) > count:
@@ -355,8 +376,7 @@ class Worker(Generic[WD]):
                 min_idle_time=1000,
                 message_ids=ids,
             )
-            pipe.sadd(self.queue_name + REDIS_ABORT, *ids)
-            _, msgs, _ = await pipe.execute()
+            _, msgs = await pipe.execute()
         return [
             StreamMessage(
                 message_id=msg_id.decode(),
@@ -405,37 +425,37 @@ class Worker(Generic[WD]):
 
             try:
                 data = self.deserializer(raw)
-                fn_name = data["f"]
             except Exception as e:
                 logger.exception(f"Failed to deserialize task {task_id}: {e}")
                 return await handle_failure(e)
-            if fn_name in self.registry:
-                task = self.registry[fn_name]
-            else:
-                task = self.cron_jobs[fn_name]
-            ctx = self.build_context(task, task_id)
+
+            fn_name = data["f"]
+            task = self.registry[fn_name]
+
+            if abort:
+                logger.info(f"Task {task_id} aborted prior to start.")
+                return await handle_failure(asyncio.CancelledError())
+
             timeout = (
                 "inf"
                 if task.timeout is None
                 else round(time()) + to_seconds(task.timeout) + 1
             )
-
-            if abort:
-                logger.info(f"Task {task_id} aborted prior to starting.")
-                return await handle_failure(asyncio.CancelledError())
+            await self.redis.zadd(
+                self.queue_name + REDIS_TIMEOUT, {message_id: timeout}
+            )
 
             if task.max_tries and task_try > task.max_tries:
                 logger.warning(f"Max retry attempts reached for task {task_id}!")
                 return await handle_failure(
                     StreaqError(f"Max retry attempts reached for task {task_id}!")
                 )
-            await self.redis.zadd(
-                self.queue_name + REDIS_TIMEOUT, {message_id: timeout}
-            )
 
+            ctx = self.build_context(task, task_id)
             async with task.lifespan(ctx):
                 success = True
                 delay = None
+                done = True
                 try:
                     logger.info(f"Task {task_id} starting in worker {self.id}...")
                     result = await asyncio.wait_for(
@@ -443,24 +463,33 @@ class Worker(Generic[WD]):
                         to_seconds(task.timeout) if task.timeout is not None else None,
                     )
                 except StreaqRetry as e:
+                    result = e
+                    success = False
+                    done = False
                     if e.delay is not None:
                         delay = to_seconds(e.delay)
                     else:
                         delay = task_try**2
                     logger.info(f"Retrying task {task_id} in {delay} seconds...")
-                    result = e
                 except asyncio.TimeoutError as e:
                     logger.info(f"Task {task_id} timed out!")
                     result = e
                     success = False
+                    done = True
                 except asyncio.CancelledError as e:
-                    logger.info(f"Task {task_id} cancelled, will be run again.")
+                    if task_id in self.aborting_tasks:
+                        logger.info(f"Task {task_id} aborted!")
+                        self.aborting_tasks.remove(task_id)
+                        done = True
+                    else:
+                        logger.info(f"Task {task_id} cancelled, will be run again.")
+                        done = False
                     result = e
                     success = False
                 except Exception as e:
-                    logger.info(f"Task {task_id} errored!")
                     result = e
                     success = False
+                    done = True
                 finally:
                     data = {
                         "s": success,
@@ -474,7 +503,7 @@ class Worker(Generic[WD]):
                             self.finish_task(
                                 task_id,
                                 message_id,
-                                success,
+                                done,
                                 raw,
                                 task.ttl,
                                 delay,
@@ -554,6 +583,7 @@ class Worker(Generic[WD]):
             )
             pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
             pipe.srem(self.queue_name + REDIS_ABORT, task_id)
+            pipe.zrem(self.queue_name + REDIS_TIMEOUT, message_id)
             pipe.xack(stream_key, self.group_name, message_id)
             pipe.xdel(stream_key, message_id)
             if result_data is not None:
@@ -655,17 +685,17 @@ class Worker(Generic[WD]):
         # register lua scripts
         self.scripts.update(register_scripts(self.redis))
         # user-defined deps
-        self._deps = await self.lifespan.__aenter__()
+        self._deps = await self.worker_lifespan.__aenter__()
         return self
 
     async def __aexit__(self, *exc):
-        await self.lifespan.__aexit__(*exc)
+        await self.worker_lifespan.__aexit__(*exc)
 
     def __len__(self):
         """
         Returns the number of functions (including cron jobs) registered.
         """
-        return len(self.registry) + len(self.cron_jobs)
+        return len(self.registry)
 
     def __repr__(self) -> str:
         return (

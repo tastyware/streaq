@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from typing import AsyncIterator
 from contextlib import asynccontextmanager
@@ -25,7 +26,7 @@ async def worker_lifespan() -> AsyncIterator[Context]:
         yield Context(http_client)
 
 
-worker = Worker(lifespan=worker_lifespan, tz=ZoneInfo("US/Eastern"))
+worker = Worker(worker_lifespan=worker_lifespan, tz=ZoneInfo("US/Eastern"))
 
 
 @worker.task()
@@ -35,6 +36,12 @@ async def foo(ctx: WrappedContext[Context], url: str) -> int:
     # even results of other jobs etc.
     r = await ctx.deps.http_client.get(url)
     return len(r.text)
+
+
+@worker.task(timeout=5)
+async def sleeper(ctx: WrappedContext[Context], time: int) -> None:
+    await asyncio.sleep(time)
+    print("slept!")
 
 
 @worker.cron("* * * * mon-fri")
@@ -70,6 +77,10 @@ async def main() -> None:
         task = await foo.enqueue("https://heroku.com/").start(delay=5)
         print(task)
         print(await task.result(timeout=10))
+
+        # test error handling
+        task2 = await sleeper.enqueue(7)
+        print(await task2.result())
 
 
 if __name__ == "__main__":
