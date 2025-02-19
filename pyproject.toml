@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
-    { name = "Graeme Holliday", email = "gr@emeholli.day" }
+    { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
     "crontab>=1.0.1",
@@ -48,3 +48,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["streaq"]
+
+[tool.ruff.lint]
+ignore = [
+    "E731",  # lambda-assignment
+]

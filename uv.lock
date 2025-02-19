@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.10"
 
 [[package]]
@@ -839,15 +840,14 @@ name = "streaq"
 source = { editable = "." }
 dependencies = [
     { name = "crontab" },
-    { name = "fast-depends" },
     { name = "redis", extra = ["hiredis"] },
     { name = "typer-slim" },
-    { name = "types-croniter" },
     { name = "watchfiles" },
 ]
 
 [package.optional-dependencies]
 fastapi = [
+    { name = "fast-depends" },
     { name = "fastapi" },
 ]
 
@@ -865,13 +865,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "crontab", specifier = ">=1.0.1" },
-    { name = "fast-depends", specifier = ">=2.4.12" },
+    { name = "fast-depends", marker = "extra == 'fastapi'", specifier = ">=2.4.12" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115.7" },
     { name = "redis", extras = ["hiredis"], specifier = ">=5.2.1" },
     { name = "typer-slim", specifier = ">=0.15.1" },
-    { name = "types-croniter", specifier = ">=5.0.1.20241205" },
     { name = "watchfiles", specifier = ">=1.0.4" },
 ]
+provides-extras = ["fastapi"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -955,15 +955,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f8/7d/f8e0a2678a44573b2bb1e20abecb10f937a7101ce2b8e07f4eab4c721a3d/typer_slim-0.15.1.tar.gz", hash = "sha256:b8ce8fd2a3c7d52f0d0c1318776e7f2bf897fa203daf899f3863514aa926c725", size = 99874 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1f/7b/032ecd581e2170513bb6dc3cdb2581e20fdb94a272bae70fe93f2bca580b/typer_slim-0.15.1-py3-none-any.whl", hash = "sha256:20233cb89938ea3cca633afee10b906a1b0e7c5330f31ed8c55f4f0779efe6df", size = 44968 },
-]
-
-[[package]]
-name = "types-croniter"
-version = "5.0.1.20241205"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/77/2f/f3298f148a7983df2a878d53c4a17ef1dd8654a155e11caa8decb7d79670/types_croniter-5.0.1.20241205.tar.gz", hash = "sha256:8a7cb10aa0b487c654a10c14d4e99098c92a5d68ee55c7a92a3df095831a6933", size = 10928 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/ec/ff0222b912fdff040a1908ea226f64ff5a1a384a4062a8714eb8b80ea5d9/types_croniter-5.0.1.20241205-py3-none-any.whl", hash = "sha256:e36e992d6a4600ddf510991a20d3273b888ecea5d77a19078348e00775ba54d3", size = 9375 },
 ]
 
 [[package]]
