@@ -11,7 +11,6 @@ WD = TypeVar("WD")
 
 @dataclass
 class StreamMessage:
-    fn_name: str
     message_id: str
     task_id: str
     score: int

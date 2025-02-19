@@ -9,9 +9,8 @@ local task_message_id_key = KEYS[2]
 local task_id = ARGV[1]
 local score = ARGV[2]
 local task_message_id_expire_ms = ARGV[3]
-local fn_name = ARGV[4]
 
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id, 'score', score, 'fn_name', fn_name)
+local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id, 'score', score)
 redis.call('set', task_message_id_key, message_id, 'px', task_message_id_expire_ms)
 return message_id
 """

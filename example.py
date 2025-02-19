@@ -25,34 +25,25 @@ async def worker_lifespan() -> AsyncIterator[Context]:
         yield Context(http_client)
 
 
-@asynccontextmanager
-async def job_lifespan(ctx: WrappedContext[Context]) -> AsyncIterator[None]:
-    print(f"Starting job {ctx.task_id} in worker {ctx.worker_id}")
-    yield
-    print("Finished job")
-
-
 worker = Worker(lifespan=worker_lifespan, tz=ZoneInfo("US/Eastern"))
 
 
-@worker.task(lifespan=job_lifespan, timeout=10, unique=True)
+@worker.task()
 async def foo(ctx: WrappedContext[Context], url: str) -> int:
     # ctx.deps here is of type MyWorkerDeps, that's enforced by static typing
     # FunctionContext will also provide access to a redis connection, retry count,
     # even results of other jobs etc.
     r = await ctx.deps.http_client.get(url)
-    print(f"{url}: {r.text[:40]!r}...")
     return len(r.text)
 
 
-@worker.cron("25 13 * * mon-fri")
+@worker.cron("* * * * mon-fri")
 async def cronjob(ctx: WrappedContext[Context]) -> None:
-    print("hi")
+    print("imma cron yay")
 
 
 async def main() -> None:
     async with worker:
-        await cronjob.run()
         # run the task directly, never sending it to a queue
         # result = await foo.run("https://www.google.com/")
         # these two are equivalent, param spec means the arguments are type safe
@@ -76,9 +67,9 @@ async def main() -> None:
             "https://linkedin.com/",
         ]:
             await foo.enqueue(url)
-        task = await foo.enqueue("https://apple.com/").start()
+        task = await foo.enqueue("https://heroku.com/").start(delay=5)
         print(task)
-        await foo.enqueue("https://amazon.com/").start(delay=5)
+        print(await task.result(timeout=10))
 
 
 if __name__ == "__main__":

@@ -71,9 +71,7 @@ class TaskResult(Generic[R]):
 
 @asynccontextmanager
 async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
-    logger.info(f"Task {ctx.task_id} started in worker {ctx.worker_id}.")
     yield
-    logger.info(f"Task {ctx.task_id} finished.")
 
 
 @dataclass
@@ -137,12 +135,7 @@ class Task(Generic[R]):
                         self.queue + REDIS_STREAM,
                         self.task_key(REDIS_MESSAGE),
                     ],
-                    args=[
-                        self.id,
-                        enqueue_time,
-                        ttl,
-                        self.parent.fn_name,
-                    ],
+                    args=[self.id, enqueue_time, ttl],
                     client=pipe,
                 )
             try:
@@ -178,7 +171,7 @@ class Task(Generic[R]):
 
     def serialize(self, enqueue_time: int) -> EncodableT:
         try:
-            return self.parent.serializer(
+            return self.parent.worker.serializer(
                 {
                     "f": self.parent.fn_name,
                     "a": self.args,
@@ -196,7 +189,7 @@ class Task(Generic[R]):
             await asyncio.wait_for(self._listen_for_result(), timeout_seconds)
             raw = await self.redis.get(self.task_key(REDIS_RESULT))
         try:
-            data = self.parent.deserializer(raw)
+            data = self.parent.worker.deserializer(raw)
             return TaskResult(
                 success=data["s"],
                 result=data["r"],
@@ -205,11 +198,13 @@ class Task(Generic[R]):
                 queue_name=self.queue,
             )
         except Exception as e:
-            raise StreaqError("Unable to deserialize result for task {self.id}!") from e
+            raise StreaqError(
+                f"Unable to deserialize result for task {self.id}:"
+            ) from e
 
     async def _listen_for_result(self) -> None:
         pubsub = self.redis.pubsub()
-        await pubsub.subscribe(REDIS_CHANNEL)
+        await pubsub.subscribe(self.queue + REDIS_CHANNEL)
         encoded_id = self.id.encode()
         async for msg in pubsub.listen():
             if msg.get("data") == encoded_id:
@@ -230,7 +225,7 @@ class Task(Generic[R]):
             pipe.get(self.task_key(REDIS_RETRY))
             pipe.zscore(self.queue + REDIS_QUEUE, self.id)
             raw, task_try, score = await pipe.execute()
-        data = self.parent.deserializer(raw)
+        data = self.parent.worker.deserializer(raw)
         dt = datetime.fromtimestamp(score, tz=self.parent.worker.tz) if score else None
         return TaskData(
             fn_name=self.parent.fn_name,
@@ -259,8 +254,6 @@ class Task(Generic[R]):
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
     fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]]
-    serializer: Callable[[Any], EncodableT]
-    deserializer: Callable[[EncodableT], Any]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     timeout: timedelta | int | None
@@ -312,8 +305,7 @@ class RegisteredTask(Generic[WD, P, R]):
 
     def __repr__(self):
         return (
-            f"<Task fn={self.fn_name} serializer={self.serializer} deserializer="
-            f"{self.deserializer} lifespan={self.lifespan} timeout={self.timeout} "
+            f"<Task fn={self.fn_name} lifespan={self.lifespan} timeout={self.timeout} "
             f"ttl={self.ttl}>"
         )
 
@@ -321,8 +313,6 @@ class RegisteredTask(Generic[WD, P, R]):
 @dataclass
 class RegisteredCron(Generic[WD, R]):
     fn: Callable[[WrappedContext[WD]], Awaitable[R]]
-    serializer: Callable[[Any], EncodableT]
-    deserializer: Callable[[EncodableT], Any]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     run_at_startup: bool
@@ -368,7 +358,10 @@ class RegisteredCron(Generic[WD, R]):
 
     @property
     def delay(self) -> int:
-        return round(self.schedule.next(now=datetime.now(self.worker.tz)))  # type: ignore
+        """
+        Number of milliseconds until the next run.
+        """
+        return round(self.schedule.next(now=datetime.now(self.worker.tz)) * 1000)  # type: ignore
 
     def next(self) -> datetime:
         ts = self.delay + round(time())
@@ -376,7 +369,6 @@ class RegisteredCron(Generic[WD, R]):
 
     def __repr__(self):
         return (
-            f"<Cron fn={self.fn_name} serializer={self.serializer} deserializer="
-            f"{self.deserializer} lifespan={self.lifespan} timeout={self.timeout} "
+            f"<Cron fn={self.fn_name} lifespan={self.lifespan} timeout={self.timeout} "
             f"ttl={self.ttl} schedule={self.next()}>"
         )

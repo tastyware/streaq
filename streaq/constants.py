@@ -1,4 +1,4 @@
-DEFAULT_QUEUE_NAME = "streaq"
+DEFAULT_QUEUE_NAME = "streaQ"
 DEFAULT_TTL = 86_400_000  # 1 day in ms
 REDIS_ABORT = ":aborted"
 REDIS_CHANNEL = ":channel"
