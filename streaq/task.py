@@ -220,7 +220,11 @@ class Task(Generic[R]):
             pipe.zscore(self.queue + REDIS_QUEUE, self.id)
             raw, task_try, score = await pipe.execute()
         data = self.parent.worker.deserializer(raw)
-        dt = datetime.fromtimestamp(score, tz=self.parent.worker.tz) if score else None
+        dt = (
+            datetime.fromtimestamp(score / 1000, tz=self.parent.worker.tz)
+            if score
+            else None
+        )
         return TaskData(
             fn_name=self.parent.fn_name,
             args=self.args,
