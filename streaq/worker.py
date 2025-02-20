@@ -202,7 +202,7 @@ class Worker(Generic[WD]):
         await self.main_task
 
     async def main(self):
-        logger.info(f"Starting worker {self.id} for {len(self)} functions...")
+        logger.info(f"starting worker {self.id} for {len(self)} functions")
         # create consumer group if it doesn't exist
         with suppress(ResponseError):
             await self.redis.xgroup_create(
@@ -401,7 +401,9 @@ class Worker(Generic[WD]):
                 pipe.expire(key(REDIS_RETRY), DEFAULT_TTL // 1000)
                 raw, task_try, abort, _ = await pipe.execute()
 
-            async def handle_failure(exc: BaseException) -> None:
+            async def handle_failure(
+                exc: BaseException, ttl: timedelta | int | None = 300
+            ) -> None:
                 self.counters["failed"] += 1
                 data = {
                     "s": False,
@@ -412,7 +414,7 @@ class Worker(Generic[WD]):
                 try:
                     raw = self.serializer(data)
                     await asyncio.shield(
-                        self.finish_failed_task(task_id, message_id, raw, task.ttl)
+                        self.finish_failed_task(task_id, message_id, raw, ttl)
                     )
                 except Exception as e:
                     raise StreaqError(
@@ -420,7 +422,7 @@ class Worker(Generic[WD]):
                     ) from e
 
             if not raw:
-                logger.warning(f"Task {task_id} expired.")
+                logger.warning(f"task {task_id} expired †")
                 return await handle_failure(StreaqError("Task execution failed!"))
 
             try:
@@ -433,8 +435,8 @@ class Worker(Generic[WD]):
             task = self.registry[fn_name]
 
             if abort:
-                logger.info(f"Task {task_id} aborted prior to start.")
-                return await handle_failure(asyncio.CancelledError())
+                logger.info(f"task {task_id} aborted ⊘")
+                return await handle_failure(asyncio.CancelledError(), ttl=task.ttl)
 
             timeout = (
                 "inf"
@@ -446,9 +448,10 @@ class Worker(Generic[WD]):
             )
 
             if task.max_tries and task_try > task.max_tries:
-                logger.warning(f"Max retry attempts reached for task {task_id}!")
+                logger.warning(f"max retry attempts reached for task {task_id}")
                 return await handle_failure(
-                    StreaqError(f"Max retry attempts reached for task {task_id}!")
+                    StreaqError(f"max retry attempts reached for task {task_id}"),
+                    ttl=task.ttl,
                 )
 
             ctx = self.build_context(task, task_id)
@@ -457,7 +460,7 @@ class Worker(Generic[WD]):
                 delay = None
                 done = True
                 try:
-                    logger.info(f"Task {task_id} starting in worker {self.id}...")
+                    logger.info(f"task {task_id} → worker {self.id}")
                     result = await asyncio.wait_for(
                         task.fn(ctx, *data["a"], **data["k"]),
                         to_seconds(task.timeout) if task.timeout is not None else None,
@@ -470,19 +473,19 @@ class Worker(Generic[WD]):
                         delay = to_seconds(e.delay)
                     else:
                         delay = task_try**2
-                    logger.info(f"Retrying task {task_id} in {delay} seconds...")
+                    logger.info(f"retrying ↻ task {task_id} in {delay}s")
                 except asyncio.TimeoutError as e:
-                    logger.info(f"Task {task_id} timed out!")
+                    logger.info(f"task {task_id} timed out †")
                     result = e
                     success = False
                     done = True
                 except asyncio.CancelledError as e:
                     if task_id in self.aborting_tasks:
-                        logger.info(f"Task {task_id} aborted!")
+                        logger.info(f"task {task_id} aborted ⊘")
                         self.aborting_tasks.remove(task_id)
                         done = True
                     else:
-                        logger.info(f"Task {task_id} cancelled, will be run again.")
+                        logger.info(f"task {task_id} cancelled, will be retried ↻")
                         done = False
                     result = e
                     success = False
@@ -490,44 +493,47 @@ class Worker(Generic[WD]):
                     result = e
                     success = False
                     done = True
+                    logger.info(f"task {task_id} failed †")
                 finally:
-                    data = {
-                        "s": success,
-                        "r": result,  # type: ignore
-                        "st": start_time,
-                        "ft": now_ms(),
-                    }
-                    try:
-                        raw = self.serializer(data)
-                        await asyncio.shield(
-                            self.finish_task(
-                                task_id,
-                                message_id,
-                                done,
-                                raw,
-                                task.ttl,
-                                delay,
-                            )
+                    await asyncio.shield(
+                        self.finish_task(
+                            task_id,
+                            message_id,
+                            finish=done,
+                            return_value=result,  # type: ignore
+                            ttl=task.ttl,
+                            delay=delay,
+                            success=success,
+                            start_time=start_time,
                         )
-                    except Exception as e:
-                        raise StreaqError(
-                            f"Failed to serialize result for task {task_id}!"
-                        ) from e
+                    )
 
     async def finish_task(
         self,
         task_id: str,
         message_id: str,
+        *,
         finish: bool,
-        result: EncodableT,
+        delay: int | None,
+        return_value: Any,
+        start_time: int,
+        success: bool,
         ttl: timedelta | int | None,
-        incr_score: int | None,
     ) -> None:
+        data = {
+            "s": success,
+            "r": return_value,
+            "st": start_time,
+            "ft": now_ms(),
+        }
+        try:
+            result = self.serializer(data)
+        except Exception as e:
+            raise StreaqError(f"Failed to serialize result for task {task_id}!") from e
         key = lambda mid: self.queue_name + mid + task_id
         async with self.redis.pipeline(transaction=True) as pipe:
-            delete_keys = set()
             stream_key = self.queue_name + REDIS_STREAM
-            delete_keys.add(key(REDIS_RUNNING))
+            pipe.delete(key(REDIS_RUNNING))
             pipe.xack(
                 stream_key,
                 self.group_name,
@@ -540,29 +546,29 @@ class Worker(Generic[WD]):
                 self.counters["completed"] += 1
                 if result and ttl != 0:
                     pipe.set(key(REDIS_RESULT), result, ex=ttl)
-                delete_keys.add(key(REDIS_RETRY))
-                delete_keys.add(key(REDIS_TASK))
-                delete_keys.add(key(REDIS_MESSAGE))
+                pipe.delete(
+                    key(REDIS_RETRY),
+                    key(REDIS_TASK),
+                    key(REDIS_MESSAGE),
+                )
                 pipe.zrem(self.queue_name + REDIS_TIMEOUT, message_id)
                 pipe.srem(self.queue_name + REDIS_ABORT, task_id)
-            elif incr_score:
+                logger.info(f"task {task_id} ← {str(return_value):.32}")
+            elif delay:
                 self.counters["retried"] += 1
-                delete_keys.add(key(REDIS_MESSAGE))
-                pipe.zadd(self.queue_name, {message_id: now_ms() + incr_score})
+                pipe.delete(key(REDIS_MESSAGE))
+                pipe.zadd(self.queue_name + REDIS_QUEUE, {task_id: now_ms() + delay})
             else:
                 self.counters["retried"] += 1
                 score = now_ms()
                 ttl_ms = to_ms(ttl) if ttl is not None else None
-                expire = ttl_ms or score + DEFAULT_TTL
+                expire = (ttl_ms or score) + DEFAULT_TTL
                 await self.scripts["publish_task"](
                     keys=[stream_key, key(REDIS_MESSAGE)],
                     args=[task_id, score, expire],
                     client=pipe,
                 )
-            if delete_keys:
-                pipe.delete(*delete_keys)
             await pipe.execute()
-        logger.info(f"Task {task_id} finished.")
 
     async def finish_failed_task(
         self,

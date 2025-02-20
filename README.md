@@ -55,7 +55,7 @@ You can then register async tasks with the worker like this:
 @worker.task(timeout=5)
 async def fetch(ctx: WrappedContext[Context], url: str) -> int:
     # ctx.deps here is of type Context, enforced by static typing
-    # ctx also provides access the Redis connection, retry count, etc.
+    # ctx also provides access to the Redis connection, retry count, etc.
     r = await ctx.deps.http_client.get(url)
     return len(r.text)
 
@@ -77,7 +77,7 @@ async with worker:
     print(await task.result(timeout=5))
 ```
 
-Putting this all together gives us [example.py](/blob/master/example.py). Let's spin up a worker:
+Putting this all together gives us [example.py](/example.py). Let's spin up a worker:
 ```
 $ streaq example.worker
 ```
@@ -89,19 +89,19 @@ $ python example.py
 Let's see what the output looks like:
 
 ```
-14:58:42: Starting worker 27c9a2413bdb44b6b4ea438d91db5954 for 2 functions...
-14:58:43: redis_version=7.2.5 mem_usage=1.71M clients_connected=6 db_keys=4 queued=0 scheduled=0
-14:58:49: Task 89a3deeb314e45198d85442c178e16c7 starting in worker 27c9a2413bdb44b6b4ea438d91db5954...
-14:58:49: Task 89a3deeb314e45198d85442c178e16c7 finished.
-14:58:53: Task 068313d7d792412e94a256985d988d7b starting in worker 27c9a2413bdb44b6b4ea438d91db5954...
-14:58:53: Task 068313d7d792412e94a256985d988d7b finished.
-14:59:00: Task cde2413d9593470babfd6d4e36cf4570 starting in worker 27c9a2413bdb44b6b4ea438d91db5954...
+15:43:51: starting worker d5d4977b18694380bf36f837d6658b7b for 2 functions
+15:43:52: redis_version=7.2.5 mem_usage=2.07M clients_connected=6 db_keys=4 queued=0 scheduled=0
+15:43:54: task d0b8ea4dc4c1442486f69926a042b024 → worker d5d4977b18694380bf36f837d6658b7b
+15:43:55: task d0b8ea4dc4c1442486f69926a042b024 ← 15
+15:43:58: task f00f6406d663448fa63ad1f1a79f71c8 → worker d5d4977b18694380bf36f837d6658b7b
+15:43:59: task f00f6406d663448fa63ad1f1a79f71c8 ← 295022
+15:44:00: task cde2413d9593470babfd6d4e36cf4570 → worker d5d4977b18694380bf36f837d6658b7b
 It's a bird... It's a plane... It's CRON!
-14:59:00: Task cde2413d9593470babfd6d4e36cf4570 finished.
+15:44:00: task cde2413d9593470babfd6d4e36cf4570 ← None
 ```
 ```
-TaskData(fn_name='fetch', args=('https://github.com/tastyware/streaq',), kwargs={}, enqueue_time=1740081530008, task_id='068313d7d792412e94a256985d988d7b', task_try=None, scheduled=datetime.datetime(2025, 2, 20, 19, 58, 53, 8000, tzinfo=datetime.timezone.utc))
-TaskResult(success=True, result=258795, start_time=1740081533010, finish_time=1740081533914, queue_name='streaq')
+TaskData(fn_name='fetch', args=('https://github.com/tastyware/streaq',), kwargs={}, enqueue_time=1740084235761, task_id='f00f6406d663448fa63ad1f1a79f71c8', task_try=None, scheduled=datetime.datetime(2025, 2, 20, 20, 43, 58, 761000, tzinfo=datetime.timezone.utc))
+TaskResult(success=True, result=295022, start_time=1740084238762, finish_time=1740084239756, queue_name='streaq')
 ```
 
 For more examples, check out the [documentation](https://streaq.readthedocs.io/en/latest/).
