@@ -87,7 +87,7 @@ class Worker(Generic[WD]):
         self.group_name = group_name
         self.queue_fetch_limit = queue_fetch_limit or concurrency * 4
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
-        self.counters = defaultdict(lambda: 0)
+        self.counters = defaultdict(int)
         self.worker_lifespan = worker_lifespan()
         self.loop = asyncio.get_event_loop()
         self.task_lifespan = task_lifespan
@@ -177,7 +177,7 @@ class Worker(Generic[WD]):
 
         return wrapped
 
-    def run(self) -> None:
+    def run_sync(self) -> None:
         """
         Sync function to run the worker, finally closes worker connections.
         """
@@ -188,6 +188,16 @@ class Worker(Generic[WD]):
             pass
         finally:
             self.loop.run_until_complete(self.close())
+
+    async def run_async(self) -> None:
+        """
+        Async function to run the worker for use with watchfiles.
+        """
+        self.main_task = self.loop.create_task(self.main())
+        try:
+            await self.main_task
+        except asyncio.CancelledError:
+            pass
 
     async def main(self):
         logger.info(f"starting worker {self.id} for {len(self)} functions")

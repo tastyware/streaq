@@ -34,27 +34,9 @@ redis.call('zrem', delayed_queue_key, task_id)
 return 1
 """
 
-FETCH_TASK_LUA = """
-local stream_key = KEYS[1]
-local task_message_id_key = KEYS[2]
-
-local message_id = redis.call('get', task_message_id_key)
-if message_id == false then
-    return nil
-end
-
-local task = redis.call('xrange', stream_key, message_id, message_id)
-if task == nil then
-    return nil
-end
-
-return task[1]
-"""
-
 
 def register_scripts(redis: Redis) -> dict[str, AsyncScript]:
     return {
         "publish_task": redis.register_script(PUBLISH_TASK_LUA),
         "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK_LUA),
-        "fetch_task": redis.register_script(FETCH_TASK_LUA),
     }

@@ -51,10 +51,7 @@ class TaskStatus(str, Enum):
 @dataclass
 class TaskData:
     fn_name: str
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
     enqueue_time: int
-    task_id: str | None = None
     task_try: int | None = None
     scheduled: datetime | None = None
 
@@ -228,10 +225,7 @@ class Task(Generic[R]):
         )
         return TaskData(
             fn_name=self.parent.fn_name,
-            args=self.args,
-            kwargs=self.kwargs,
             enqueue_time=data["t"],
-            task_id=self.id,
             task_try=task_try,
             scheduled=dt,
         )
