@@ -207,10 +207,11 @@ class Task(Generic[R]):
     async def abort(self, timeout: timedelta | int | None = None) -> bool:
         await self.redis.sadd(self.queue + REDIS_ABORT, self.id)  # type: ignore
         try:
-            await self.result(timeout=timeout)
+            result = await self.result(timeout=timeout)
+            return not result.success and isinstance(
+                result.result, asyncio.CancelledError
+            )
         except asyncio.CancelledError:
-            return True
-        else:
             return False
 
     async def info(self) -> TaskData:

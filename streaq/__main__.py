@@ -47,8 +47,8 @@ def main(
     worker = cast(Worker, import_string(worker_path))
     if workers > 1:
         for _ in range(workers - 1):
-            Process(target=worker.run_sync).start()
-    worker.run_sync()
+            Process(target=worker.run).start()
+    worker.run()
 
 
 if __name__ == "__main__":
