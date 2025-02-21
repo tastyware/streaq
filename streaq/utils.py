@@ -10,7 +10,7 @@ class StreaqError(Exception):
 
 def import_string(dotted_path: str) -> Any:
     """
-    Taken from pydantic.utils.
+    Taken from pydantic.utils. Import and return the object at a path.
     """
 
     try:

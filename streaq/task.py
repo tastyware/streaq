@@ -50,6 +50,11 @@ class TaskStatus(str, Enum):
 
 @dataclass
 class TaskData:
+    """
+    Dataclass containing additional task information not stored locally,
+    such as try and time enqueued.
+    """
+
     fn_name: str
     enqueue_time: int
     task_try: int | None = None
@@ -58,6 +63,11 @@ class TaskData:
 
 @dataclass
 class TaskResult(Generic[R]):
+    """
+    Dataclass wrapping the result of a task with additional information
+    like run time and whether execution terminated successfully.
+    """
+
     success: bool
     result: R | Exception
     start_time: int
@@ -68,7 +78,7 @@ class TaskResult(Generic[R]):
 @dataclass
 class Task(Generic[R]):
     """
-    Represents a job that has been enqueued or scheduled.
+    Represents a task that has been enqueued or scheduled.
     """
 
     args: tuple[Any, ...]
@@ -91,9 +101,13 @@ class Task(Generic[R]):
         self, delay: timedelta | int | None = None, schedule: datetime | None = None
     ) -> "Task[R]":
         """
+        Enqueues a task immediately, for running after a delay, or for running
+        at a specified time.
 
-        :param delay: duration to wait before running the job
-        :param schedule: datetime at which to run the job
+        :param delay: duration to wait before running the task
+        :param schedule: datetime at which to run the task
+
+        :return: self
         """
         if delay and schedule:
             raise StreaqError(
@@ -101,9 +115,9 @@ class Task(Generic[R]):
             )
         ttl_ms = to_ms(self.parent.ttl) if self.parent.ttl is not None else None
         async with self.redis.pipeline(transaction=True) as pipe:
-            key = self.task_key(REDIS_TASK)
+            key = self._task_key(REDIS_TASK)
             await pipe.watch(key)
-            if await pipe.exists(key, self.task_key(REDIS_RESULT)):
+            if await pipe.exists(key, self._task_key(REDIS_RESULT)):
                 await pipe.reset()
                 logger.debug("Task is unique and already exists, not enqueuing!")
                 return self
@@ -124,7 +138,7 @@ class Task(Generic[R]):
                 await self.parent.worker.scripts["publish_task"](
                     keys=[
                         self.queue + REDIS_STREAM,
-                        self.task_key(REDIS_MESSAGE),
+                        self._task_key(REDIS_MESSAGE),
                     ],
                     args=[self.id, enqueue_time, ttl],
                     client=pipe,
@@ -140,11 +154,14 @@ class Task(Generic[R]):
         return self.start().__await__()
 
     async def status(self) -> TaskStatus:
+        """
+        Fetch the current status of the task.
+        """
         async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.exists(self.task_key(REDIS_RESULT))
-            pipe.exists(self.task_key(REDIS_RUNNING))
+            pipe.exists(self._task_key(REDIS_RESULT))
+            pipe.exists(self._task_key(REDIS_RUNNING))
             pipe.zscore(self.queue + REDIS_QUEUE, self.id)
-            pipe.exists(self.task_key(REDIS_MESSAGE))
+            pipe.exists(self._task_key(REDIS_MESSAGE))
             is_complete, is_in_progress, score, queued = await pipe.execute()
 
         if is_complete:
@@ -157,10 +174,17 @@ class Task(Generic[R]):
             return TaskStatus.SCHEDULED
         return TaskStatus.PENDING
 
-    def task_key(self, mid: str) -> str:
+    def _task_key(self, mid: str) -> str:
         return self.queue + mid + self.id
 
     def serialize(self, enqueue_time: int) -> EncodableT:
+        """
+        Serializes the task data for sending to the queue.
+
+        :param enqueue_time: the time at which the task was enqueued
+
+        :return: serialized task data
+        """
         try:
             return self.parent.worker.serializer(
                 {
@@ -174,11 +198,18 @@ class Task(Generic[R]):
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
 
     async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R]:
-        raw = await self.redis.get(self.task_key(REDIS_RESULT))
+        """
+        Wait for and return the task's result, optionally with a timeout.
+
+        :param timeout: amount of time to wait before raising a `TimeoutError`
+
+        :return: wrapped result object
+        """
+        raw = await self.redis.get(self._task_key(REDIS_RESULT))
         if raw is None:
             timeout_seconds = to_seconds(timeout) if timeout is not None else None
             await asyncio.wait_for(self._listen_for_result(), timeout_seconds)
-            raw = await self.redis.get(self.task_key(REDIS_RESULT))
+            raw = await self.redis.get(self._task_key(REDIS_RESULT))
         try:
             data = self.parent.worker.deserializer(raw)
             return TaskResult(
@@ -202,6 +233,13 @@ class Task(Generic[R]):
                 break
 
     async def abort(self, timeout: timedelta | int | None = None) -> bool:
+        """
+        Notify workers that the task should be aborted.
+
+        :param timeout: how long to wait to confirm abortion was successful
+
+        :return: whether the task was aborted successfully
+        """
         await self.redis.sadd(self.queue + REDIS_ABORT, self.id)  # type: ignore
         try:
             result = await self.result(timeout=timeout)
@@ -212,9 +250,14 @@ class Task(Generic[R]):
             return False
 
     async def info(self) -> TaskData:
+        """
+        Fetch info about a previously enqueued task.
+
+        :return: task info object
+        """
         async with self.redis.pipeline(transaction=False) as pipe:
-            pipe.get(self.task_key(REDIS_TASK))
-            pipe.get(self.task_key(REDIS_RETRY))
+            pipe.get(self._task_key(REDIS_TASK))
+            pipe.get(self._task_key(REDIS_RETRY))
             pipe.zscore(self.queue + REDIS_QUEUE, self.id)
             raw, task_try, score = await pipe.execute()
         data = self.parent.worker.deserializer(raw)
@@ -229,11 +272,6 @@ class Task(Generic[R]):
             task_try=task_try,
             scheduled=dt,
         )
-
-    def depends(self):
-        return self
-
-    async def then(self): ...
 
     @property
     def redis(self) -> Redis:
@@ -254,24 +292,20 @@ class RegisteredTask(Generic[WD, P, R]):
     unique: bool
     worker: "Worker"
 
-    # TODO: add exception handler
-    # TODO: add dependency injection
-    # TODO: optimizations, __slots__?
-
     def enqueue(
         self,
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> Task[R]:
         """
-        Serialize the job and send it to the queue for later execution by an active worker.
+        Serialize the task and send it to the queue for later execution by an active worker.
         Though this isn't async, it should be awaited as it returns an object that should be.
         """
         return Task(args, kwargs, self)
 
     async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """
-        Run the task directly with the given params and return the result.
+        Run the task in the local event loop with the given params and return the result.
         This skips enqueuing and result storing in Redis.
         """
         deps = WrappedContext(
@@ -317,14 +351,14 @@ class RegisteredCron(Generic[WD, R]):
 
     def enqueue(self) -> Task[R]:
         """
-        Serialize the job and send it to the queue for later execution by an active worker.
+        Serialize the task and send it to the queue for later execution by an active worker.
         Though this isn't async, it should be awaited as it returns an object that should be.
         """
         return Task((), {}, self)
 
     async def run(self) -> R:
         """
-        Run the task directly and return the result.
+        Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.
         """
         deps = WrappedContext(

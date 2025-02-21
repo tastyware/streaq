@@ -27,7 +27,7 @@ Fast, async, type-safe job queuing with Redis streams
 
 .. toctree::
    :maxdepth: 2
-   :caption: SDK Reference:
+   :caption: API Reference:
 
    streaq
 

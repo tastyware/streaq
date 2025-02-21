@@ -43,12 +43,14 @@ class StreaqRetry(StreaqError):
     An exception you can manually raise in your tasks to make sure the task
     is retried.
 
+    :param msg: error message to show
     :param delay:
-        amount of time to wait before retrying the job; if none, will be the
-        square of the number of attempts
+        amount of time to wait before retrying the task; if none, will be the
+        square of the number of attempts in seconds
     """
 
-    def __init__(self, delay: timedelta | int | None = None):
+    def __init__(self, msg: str, delay: timedelta | int | None = None):
+        super().__init__(msg)
         self.delay = delay
 
 
@@ -63,6 +65,24 @@ async def worker_lifespan() -> AsyncIterator[None]:
 
 
 class Worker(Generic[WD]):
+    """
+    Worker object that fetches and executes tasks from a queue.
+
+    :param redis_url: connection URI for Redis
+    :param concurrency: number of tasks the worker can run simultaneously
+    :param queue_name: name of queue in Redis
+    :param group_name: name of consumer group for the Redis stream
+    :param queue_fetch_limit: max number of tasks to prefetch from Redis
+    :param task_lifespan: async context manager that will wrap tasks
+    :param worker_lifespan:
+        async context manager that wraps worker execution and provides task
+        dependencies
+    :param serializer: function to serialize task data for Redis
+    :param deserializer: function to deserialize task data from Redis
+    :param tz: timezone to use for cron jobs
+    :param health_check_interval: frequency to print health information
+    """
+
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
@@ -81,27 +101,40 @@ class Worker(Generic[WD]):
         tz: tzinfo = timezone.utc,
         health_check_interval: timedelta | int = 300,
     ):
+        # TODO: optimizations, __slots__?
+        #: Redis connection
         self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
         self.queue_name = queue_name
         self.group_name = group_name
-        self.queue_fetch_limit = queue_fetch_limit or concurrency * 4
+        self.queue_fetch_limit = queue_fetch_limit or concurrency * 2
+        #: semaphore controlling concurrency
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
+        #: mapping of type of task -> number of tasks of that type
+        #: eg {"completed": 4, "failed": 1, "retried": 0}
         self.counters = defaultdict(int)
         self.worker_lifespan = worker_lifespan()
+        #: event loop for running tasks
         self.loop = asyncio.get_event_loop()
         self.task_lifespan = task_lifespan
         self._deps: WD | None = None
+        #: Redis scripts for common operations
         self.scripts: dict[str, AsyncScript] = {}
+        #: mapping of task name -> task wrapper
         self.registry: dict[str, RegisteredCron | RegisteredTask] = {}
+        #: mapping of task name -> cron wrapper
         self.cron_jobs: dict[str, RegisteredCron] = {}
+        #: mapping of task name -> next execution time in ms
         self.cron_schedule: dict[str, int] = {}
+        #: unique ID of worker
         self.id = uuid4().hex
         self.serializer = serializer
         self.deserializer = deserializer
+        #: mapping of task ID -> asyncio Task
         self.tasks: dict[str, asyncio.Task] = {}
         self.health_check_interval = health_check_interval
         self.tz: tzinfo = tz
+        #: set of tasks currently scheduled for abortion
         self.aborting_tasks: set[str] = set()
         self._block_new_tasks: bool = False
 
@@ -114,6 +147,9 @@ class Worker(Generic[WD]):
     def build_context(
         self, registered_task: RegisteredCron | RegisteredTask, id: str, tries: int = 1
     ) -> WrappedContext[WD]:
+        """
+        Creates the context for a task to be run given task metadata
+        """
         return WrappedContext(
             deps=self.deps,
             redis=self.redis,
@@ -133,6 +169,21 @@ class Worker(Generic[WD]):
         ttl: timedelta | int | None = 0,
         unique: bool = True,
     ):
+        """
+        Registers a task to be run at regular intervals as specified.
+
+        :param tab:
+            crontab for scheduling, follows the specification
+            `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
+        :param max_tries:
+            number of times to retry the task should it fail during execution
+        :param run_at_startup:
+            whether to run the task at worker startup, regardless of crontab content
+        :param timeout: time after which to abort the task, if None will never time out
+        :param ttl: time to store results in Redis, if None will never expire
+        :param unique: whether multiple instances of the task can exist simultaneously
+        """
+
         def wrapped(
             fn: Callable[[WrappedContext[WD]], Awaitable[R]],
         ) -> RegisteredCron[WD, R]:
@@ -160,6 +211,16 @@ class Worker(Generic[WD]):
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
     ):
+        """
+        Registers a task with the worker which can later be enqueued by the user.
+
+        :param max_tries:
+            number of times to retry the task should it fail during execution
+        :param timeout: time after which to abort the task, if None will never time out
+        :param ttl: time to store results in Redis, if None will never expire
+        :param unique: whether multiple instances of the task can exist simultaneously
+        """
+
         def wrapped(
             fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]],
         ) -> RegisteredTask[WD, P, R]:
@@ -189,17 +250,10 @@ class Worker(Generic[WD]):
         finally:
             self.loop.run_until_complete(self.close())
 
-    async def run_async(self) -> None:
-        """
-        Async function to run the worker for use with watchfiles.
-        """
-        self.main_task = self.loop.create_task(self.main())
-        try:
-            await self.main_task
-        except asyncio.CancelledError:
-            pass
-
     async def main(self):
+        """
+        Main loop for handling worker tasks, aggregates and runs other tasks
+        """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
         # create consumer group if it doesn't exist
         with suppress(ResponseError):
@@ -227,6 +281,9 @@ class Worker(Generic[WD]):
             )
 
     async def consumer_cleanup(self) -> None:
+        """
+        Infrequently check for offline consumers to delete
+        """
         while True:
             await asyncio.sleep(300)  # every 5 minutes
             consumers_info = await self.redis.xinfo_consumers(
@@ -248,6 +305,11 @@ class Worker(Generic[WD]):
                     )
 
     async def listen_queue(self) -> None:
+        """
+        Periodically check the future queue (sorted set) for tasks, adding
+        them to the live queue (stream) when ready, as well as adding cron
+        jobs to the live queue when ready.
+        """
         set_name = self.queue_name + REDIS_ABORT
         while not self._block_new_tasks:
             start_time = time()
@@ -279,7 +341,7 @@ class Worker(Generic[WD]):
                         args=[decoded, expire_ms],
                         client=pipe,
                     )
-                # Go through job_ids in the aborted tasks set and cancel those tasks.
+                # Go through task_ids in the aborted tasks set and cancel those tasks.
                 aborted: set[str] = set()
                 for task_id_bytes in aborted_ids:
                     task_id = task_id_bytes.decode()
@@ -316,12 +378,16 @@ class Worker(Generic[WD]):
                 await asyncio.sleep(0.5 - delay)
 
     async def listen_stream(self):
+        """
+        Listen for new tasks from the stream, and periodically check for tasks
+        that were never XACK'd but have timed out to reclaim.
+        """
         while not self._block_new_tasks:
             messages: list[StreamMessage] = []
-            active_jobs = self.active
-            count = self.queue_fetch_limit - active_jobs
-            if active_jobs < self.concurrency:
-                expired = await self.get_idle_tasks(count)
+            active_tasks = self.active
+            count = self.queue_fetch_limit - active_tasks
+            if active_tasks < self.concurrency:
+                expired = await self._get_idle_tasks(count)
                 count -= len(expired)
                 messages.extend(expired)
             if count > 0:
@@ -348,7 +414,7 @@ class Worker(Generic[WD]):
                 coro = self.run_task(message.task_id, message.message_id)
                 self.tasks[message.task_id] = self.loop.create_task(coro)
 
-    async def get_idle_tasks(self, count: int) -> list[StreamMessage]:
+    async def _get_idle_tasks(self, count: int) -> list[StreamMessage]:
         ids = await self.redis.zrangebyscore(
             self.queue_name + REDIS_TIMEOUT, 0, now_ms()
         )
@@ -512,6 +578,9 @@ class Worker(Generic[WD]):
         success: bool,
         ttl: timedelta | int | None,
     ) -> None:
+        """
+        Cleanup for a task that executed successfully or will be retried.
+        """
         data = {
             "s": success,
             "r": return_value,
@@ -570,6 +639,9 @@ class Worker(Generic[WD]):
         result_data: EncodableT,
         ttl: timedelta | int | None,
     ) -> None:
+        """
+        Cleanup for a task that failed during execution.
+        """
         key = lambda mid: self.queue_name + mid + task_id
         stream_key = self.queue_name + REDIS_STREAM
         self.counters["failed"] += 1
@@ -590,13 +662,17 @@ class Worker(Generic[WD]):
             await pipe.execute()
 
     async def redis_health_check(self):
+        """
+        Checks Redis for current state and logs to the console.
+        Only one worker can run this at a time.
+        """
         timeout = to_seconds(self.health_check_interval)
-        async with self.redis.lock(
-            self.queue_name + REDIS_LOCK,
-            sleep=timeout + 1,
-            timeout=timeout,
-        ):
-            while True:
+        while True:
+            async with self.redis.lock(
+                self.queue_name + REDIS_LOCK,
+                sleep=timeout,
+                timeout=timeout,
+            ):
                 async with self.redis.pipeline(transaction=False) as pipe:
                     pipe.info(section="Server")
                     pipe.info(section="Memory")
@@ -631,6 +707,9 @@ class Worker(Generic[WD]):
                 await asyncio.sleep(timeout)
 
     async def health_check(self):
+        """
+        Periodically logs info about the worker to the console.
+        """
         while True:
             await asyncio.sleep(to_seconds(self.health_check_interval))
             health = repr(self)[1:-1]
@@ -652,9 +731,15 @@ class Worker(Generic[WD]):
 
     @property
     def active(self) -> int:
+        """
+        The number of currently active tasks for the worker
+        """
         return sum(not t.done() for t in self.tasks.values())
 
     async def close(self) -> None:
+        """
+        Cleanup worker and Redis connection
+        """
         self._block_new_tasks = True
         for t in self.tasks.values():
             if not t.done():
@@ -664,8 +749,6 @@ class Worker(Generic[WD]):
         await asyncio.gather(*self.tasks.values())
         for t in self.tasks.values():
             t.result()
-        # delete health hash
-        await self.redis.delete(self.queue_name + REDIS_HEALTH)
         await self.redis.close(close_connection_pool=True)
         logger.info(
             f"shutdown worker {self.id} completed={self.counters['completed']} failed="
@@ -684,9 +767,6 @@ class Worker(Generic[WD]):
         await self.worker_lifespan.__aexit__(*exc)
 
     def __len__(self):
-        """
-        Returns the number of functions (including cron jobs) registered.
-        """
         return len(self.registry)
 
     def __repr__(self) -> str:
