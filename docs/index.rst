@@ -1,17 +1,39 @@
-.. streaQ documentation master file, created by
-   sphinx-quickstart on Tue Jan 28 14:24:42 2025.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+.. image:: https://readthedocs.org/projects/streaq/badge/?version=latest
+   :target: https://streaq.readthedocs.io/en/latest/?badge=latest
+   :alt: Documentation Status
+
+.. image:: https://img.shields.io/pypi/v/streaq
+   :target: https://pypi.org/project/streaq
+   :alt: PyPI Package
+
+.. image:: https://static.pepy.tech/badge/streaq
+   :target: https://pepy.tech/project/streaq
+   :alt: PyPI Downloads
+
+.. image:: https://img.shields.io/github/v/release/tastyware/streaq?label=release%20notes
+   :target: https://github.com/tastyware/streaq/releases
+   :alt: Release
 
 streaQ documentation
 ====================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
-
+Fast, async, type-safe job queuing with Redis streams
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Documentation:
 
+   installation
+
+.. toctree::
+   :maxdepth: 2
+   :caption: SDK Reference:
+
+   streaq
+
+Indices and tables
+==================
+
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`

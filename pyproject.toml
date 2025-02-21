@@ -23,10 +23,8 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-fastapi = [
+ui = [
     "fastapi>=0.115.7",
-    "fast-depends>=2.4.12",
-    #msgpack
 ]
 
 [project.scripts]
@@ -34,6 +32,7 @@ streaq = "streaq.__main__:cli"
 
 [dependency-groups]
 dev = [
+    "enum-tools[sphinx]>=0.12.0",
     "pyright>=1.1.392.post0",
     "pytest>=8.3.4",
     "pytest-cov>=6.0.0",

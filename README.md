@@ -89,19 +89,19 @@ $ python example.py
 Let's see what the output looks like:
 
 ```
-15:43:51: starting worker d5d4977b18694380bf36f837d6658b7b for 2 functions
-15:43:52: redis_version=7.2.5 mem_usage=2.07M clients_connected=6 db_keys=4 queued=0 scheduled=0
-15:43:54: task d0b8ea4dc4c1442486f69926a042b024 → worker d5d4977b18694380bf36f837d6658b7b
-15:43:55: task d0b8ea4dc4c1442486f69926a042b024 ← 15
-15:43:58: task f00f6406d663448fa63ad1f1a79f71c8 → worker d5d4977b18694380bf36f837d6658b7b
-15:43:59: task f00f6406d663448fa63ad1f1a79f71c8 ← 295022
-15:44:00: task cde2413d9593470babfd6d4e36cf4570 → worker d5d4977b18694380bf36f837d6658b7b
+13:25:08: starting worker 0cb8bb10870442e4ba0543c8c5effd29 for 2 functions
+13:25:08: redis_version=7.2.5 mem_usage=1.98M clients_connected=6 db_keys=8 queued=0 scheduled=0
+13:25:11: task dba141e367f949589fc67d1a12e0f1a5 → worker 0cb8bb10870442e4ba0543c8c5effd29
+13:25:12: task dba141e367f949589fc67d1a12e0f1a5 ← 15
+13:25:16: task 62f5671e7cde44d1bb26cd1fc16d126e → worker 0cb8bb10870442e4ba0543c8c5effd29
+13:25:17: task 62f5671e7cde44d1bb26cd1fc16d126e ← 294815
+13:26:00: task cde2413d9593470babfd6d4e36cf4570 → worker 0cb8bb10870442e4ba0543c8c5effd29
 It's a bird... It's a plane... It's CRON!
-15:44:00: task cde2413d9593470babfd6d4e36cf4570 ← None
+13:26:00: task cde2413d9593470babfd6d4e36cf4570 ← None
 ```
 ```
-TaskData(fn_name='fetch', args=('https://github.com/tastyware/streaq',), kwargs={}, enqueue_time=1740084235761, task_id='f00f6406d663448fa63ad1f1a79f71c8', task_try=None, scheduled=datetime.datetime(2025, 2, 20, 20, 43, 58, 761000, tzinfo=datetime.timezone.utc))
-TaskResult(success=True, result=295022, start_time=1740084238762, finish_time=1740084239756, queue_name='streaq')
+TaskData(fn_name='fetch', enqueue_time=1740162312862, task_try=None, scheduled=datetime.datetime(2025, 2, 21, 18, 25, 15, 862000, tzinfo=datetime.timezone.utc))
+TaskResult(success=True, result=294815, start_time=1740162316157, finish_time=1740162317140, queue_name='streaq')
 ```
 
 For more examples, check out the [documentation](https://streaq.readthedocs.io/en/latest/).
