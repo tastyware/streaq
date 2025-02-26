@@ -1,11 +1,10 @@
 import asyncio
 import pickle
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from datetime import timedelta, timezone, tzinfo
 from time import time
-from typing import Any, AsyncIterator, Concatenate, Generic
+from typing import Any, AsyncIterator, Callable, Concatenate, Coroutine, Generic, cast
 from uuid import uuid4
 
 from crontab import CronTab
@@ -36,6 +35,13 @@ from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
 from streaq.utils import StreaqError, now_ms, to_ms, to_seconds
 from streaq.task import RegisteredCron, RegisteredTask
+
+"""
+Empty object representing uninitialized dependencies. This is distinct from
+None because it is possible for an initialized worker to have no dependencies
+(implying the WD type is 'None').
+"""
+uninitialized = object()
 
 
 class StreaqRetry(StreaqError):
@@ -102,6 +108,7 @@ class Worker(Generic[WD]):
         health_check_interval: timedelta | int = 300,
     ):
         # TODO: optimizations, __slots__?
+
         #: Redis connection
         self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
@@ -111,13 +118,13 @@ class Worker(Generic[WD]):
         #: semaphore controlling concurrency
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
         #: mapping of type of task -> number of tasks of that type
-        #: eg {"completed": 4, "failed": 1, "retried": 0}
+        #: eg ```{"completed": 4, "failed": 1, "retried": 0}```
         self.counters = defaultdict(int)
         self.worker_lifespan = worker_lifespan()
         #: event loop for running tasks
         self.loop = asyncio.get_event_loop()
         self.task_lifespan = task_lifespan
-        self._deps: WD | None = None
+        self._deps = uninitialized
         #: Redis scripts for common operations
         self.scripts: dict[str, AsyncScript] = {}
         #: mapping of task name -> task wrapper
@@ -130,19 +137,25 @@ class Worker(Generic[WD]):
         self.id = uuid4().hex
         self.serializer = serializer
         self.deserializer = deserializer
-        #: mapping of task ID -> asyncio Task
+        #: mapping of task ID -> asyncio Task wrapper
+        self.task_wrappers: dict[str, asyncio.Task] = {}
+        #: mapping of task ID -> asyncio Task for task
         self.tasks: dict[str, asyncio.Task] = {}
         self.health_check_interval = health_check_interval
-        self.tz: tzinfo = tz
+        self.tz = tz
         #: set of tasks currently scheduled for abortion
         self.aborting_tasks: set[str] = set()
-        self._block_new_tasks: bool = False
+        self._block_new_tasks = False
+        self._aentered = False
+        self._aexited = False
 
     @property
     def deps(self) -> WD:
-        if self._deps is None:
-            raise StreaqError("Worker did not start correctly!")
-        return self._deps
+        if self._deps == uninitialized:
+            raise StreaqError(
+                "Worker did not initialize correctly, are you using the async context manager?"
+            )
+        return cast(WD, self._deps)
 
     def build_context(
         self, registered_task: RegisteredCron | RegisteredTask, id: str, tries: int = 1
@@ -166,7 +179,6 @@ class Worker(Generic[WD]):
         max_tries: int | None = 3,
         run_at_startup: bool = False,
         timeout: timedelta | int | None = None,
-        ttl: timedelta | int | None = 0,
         unique: bool = True,
     ):
         """
@@ -180,12 +192,11 @@ class Worker(Generic[WD]):
         :param run_at_startup:
             whether to run the task at worker startup, regardless of crontab content
         :param timeout: time after which to abort the task, if None will never time out
-        :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
         def wrapped(
-            fn: Callable[[WrappedContext[WD]], Awaitable[R]],
+            fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]],
         ) -> RegisteredCron[WD, R]:
             task = RegisteredCron(
                 fn,
@@ -194,7 +205,7 @@ class Worker(Generic[WD]):
                 run_at_startup,
                 CronTab(tab),
                 timeout,
-                ttl,
+                0,  # ttl of 0 always
                 unique,
                 self,
             )
@@ -222,7 +233,7 @@ class Worker(Generic[WD]):
         """
 
         def wrapped(
-            fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]],
+            fn: Callable[Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]],
         ) -> RegisteredTask[WD, P, R]:
             task = RegisteredTask(
                 fn,
@@ -250,7 +261,14 @@ class Worker(Generic[WD]):
         finally:
             self.loop.run_until_complete(self.close())
 
-    async def main(self):
+    async def run_async(self) -> None:
+        """
+        Async function to run the worker. Cleanup should be handled separately.
+        """
+        self.main_task = self.loop.create_task(self.main())
+        await self.main_task
+
+    async def main(self) -> None:
         """
         Main loop for handling worker tasks, aggregates and runs other tasks
         """
@@ -272,13 +290,16 @@ class Worker(Generic[WD]):
                 self.cron_schedule[name] = cron_job.next()
         # run loops
         async with self:
-            await asyncio.gather(
-                self.listen_queue(),
-                self.listen_stream(),
-                self.consumer_cleanup(),
-                self.health_check(),
-                self.redis_health_check(),
-            )
+            try:
+                await asyncio.gather(
+                    self.listen_queue(),
+                    self.listen_stream(),
+                    self.consumer_cleanup(),
+                    self.health_check(),
+                    self.redis_health_check(),
+                )
+            except asyncio.CancelledError:
+                pass
 
     async def consumer_cleanup(self) -> None:
         """
@@ -353,6 +374,15 @@ class Worker(Generic[WD]):
                     pipe.srem(set_name, *aborted)
                 await pipe.execute()
 
+            async def enqueue_cron(
+                name: str, cron_job: RegisteredCron, delay: timedelta
+            ):
+                task = await cron_job.enqueue().start(delay=delay)
+                # only schedule upcoming if enqueue succeeds, important for very
+                # frequent and short jobs (eg once/second)
+                if task._enqueued:
+                    self.cron_schedule[name] = cron_job._upcoming()
+
             # cron jobs
             futures = set()
             ts = now_ms()
@@ -360,16 +390,15 @@ class Worker(Generic[WD]):
                 diff = max(0, self.cron_schedule[name] - ts)
                 if diff < 1000:
                     futures.add(
-                        cron_job.enqueue().start(delay=timedelta(milliseconds=diff))
+                        enqueue_cron(name, cron_job, timedelta(milliseconds=diff))
                     )
-                    self.cron_schedule[name] = cron_job._upcoming()
             if futures:
                 await asyncio.gather(*futures)
 
             # cleanup aborted tasks
-            for task_id, task in list(self.tasks.items()):
+            for task_id, task in list(self.task_wrappers.items()):
                 if task.done():
-                    del self.tasks[task_id]
+                    del self.task_wrappers[task_id]
                     # propagate error
                     task.result()
 
@@ -377,7 +406,7 @@ class Worker(Generic[WD]):
             if delay < 0.5:
                 await asyncio.sleep(0.5 - delay)
 
-    async def listen_stream(self):
+    async def listen_stream(self) -> None:
         """
         Listen for new tasks from the stream, and periodically check for tasks
         that were never XACK'd but have timed out to reclaim.
@@ -412,7 +441,7 @@ class Worker(Generic[WD]):
             # start new tasks
             for message in messages:
                 coro = self.run_task(message.task_id, message.message_id)
-                self.tasks[message.task_id] = self.loop.create_task(coro)
+                self.task_wrappers[message.task_id] = self.loop.create_task(coro)
 
     async def _get_idle_tasks(self, count: int) -> list[StreamMessage]:
         ids = await self.redis.zrangebyscore(
@@ -487,6 +516,11 @@ class Worker(Generic[WD]):
                 return await handle_failure(e)
 
             fn_name = data["f"]
+            if fn_name not in self.registry:
+                logger.error(
+                    f"Missing function {fn_name}, can't execute task {task_id}!"
+                )
+                return await handle_failure(StreaqError("Nonexistent function!"))
             task = self.registry[fn_name]
 
             if abort:
@@ -498,9 +532,13 @@ class Worker(Generic[WD]):
                 if task.timeout is None
                 else round(time()) + to_seconds(task.timeout) + 1
             )
-            await self.redis.zadd(
-                self.queue_name + REDIS_TIMEOUT, {message_id: timeout}
-            )
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.zadd(self.queue_name + REDIS_TIMEOUT, {message_id: timeout})
+                if timeout == "inf":
+                    pipe.set(key(REDIS_RUNNING), 1)
+                else:
+                    pipe.setex(key(REDIS_RUNNING), timeout, 1)
+                await pipe.execute()
 
             if task.max_tries and task_try > task.max_tries:
                 logger.warning(
@@ -516,12 +554,23 @@ class Worker(Generic[WD]):
                 success = True
                 delay = None
                 done = True
+                finish_time = None
                 try:
                     logger.info(f"task {task_id} → worker {self.id}")
-                    result = await asyncio.wait_for(
-                        task.fn(ctx, *data["a"], **data["k"]),
-                        to_seconds(task.timeout) if task.timeout is not None else None,
+                    self.tasks[task_id] = self.loop.create_task(
+                        task.fn(ctx, *data["a"], **data["k"])
                     )
+                    try:
+                        result = await asyncio.wait_for(
+                            self.tasks[task_id],
+                            to_seconds(task.timeout)
+                            if task.timeout is not None
+                            else None,
+                        )
+                    # pass exceptions through
+                    finally:
+                        del self.tasks[task_id]
+                        finish_time = now_ms()
                 except StreaqRetry as e:
                     result = e
                     success = False
@@ -558,11 +607,12 @@ class Worker(Generic[WD]):
                             task_id,
                             message_id,
                             finish=done,
-                            return_value=result,  # type: ignore
-                            ttl=task.ttl,
                             delay=delay,
-                            success=success,
+                            return_value=result,  # type: ignore
                             start_time=start_time,
+                            finish_time=finish_time or now_ms(),
+                            success=success,
+                            ttl=task.ttl,
                         )
                     )
 
@@ -570,11 +620,11 @@ class Worker(Generic[WD]):
         self,
         task_id: str,
         message_id: str,
-        *,
         finish: bool,
         delay: int | None,
         return_value: Any,
         start_time: int,
+        finish_time: int,
         success: bool,
         ttl: timedelta | int | None,
     ) -> None:
@@ -585,7 +635,7 @@ class Worker(Generic[WD]):
             "s": success,
             "r": return_value,
             "st": start_time,
-            "ft": now_ms(),
+            "ft": finish_time,
         }
         try:
             result = self.serializer(data)
@@ -604,7 +654,10 @@ class Worker(Generic[WD]):
             pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
 
             if finish:
-                self.counters["completed"] += 1
+                if success:
+                    self.counters["completed"] += 1
+                else:
+                    self.counters["aborted"] += 1
                 if result and ttl != 0:
                     pipe.set(key(REDIS_RESULT), result, ex=ttl)
                 pipe.delete(
@@ -712,10 +765,9 @@ class Worker(Generic[WD]):
         """
         while True:
             await asyncio.sleep(to_seconds(self.health_check_interval))
-            health = repr(self)[1:-1]
-            logger.info(health)
+            logger.info(self)
             await self.redis.hset(  # type: ignore
-                self.queue_name + REDIS_HEALTH, self.id, health
+                self.queue_name + REDIS_HEALTH, self.id, str(self)
             )
 
     async def queue_size(self) -> int:
@@ -741,37 +793,39 @@ class Worker(Generic[WD]):
         Cleanup worker and Redis connection
         """
         self._block_new_tasks = True
-        for t in self.tasks.values():
+        for t in self.task_wrappers.values():
             if not t.done():
                 t.cancel()
                 self.counters["interrupted"] += 1
         self.main_task.cancel()
-        await asyncio.gather(*self.tasks.values())
-        for t in self.tasks.values():
-            t.result()
-        await self.redis.close(close_connection_pool=True)
-        logger.info(
-            f"shutdown worker {self.id} completed={self.counters['completed']} failed="
-            f"{self.counters['failed']} retried={self.counters['retried']} interrupted="
-            f"{self.counters['interrupted']}"
+        await asyncio.gather(
+            *self.task_wrappers.values(), self.main_task, return_exceptions=True
         )
+        await self.redis.close(close_connection_pool=True)
+        logger.info(f"shutdown {str(self)}")
 
     async def __aenter__(self):
-        # register lua scripts
-        self.scripts.update(register_scripts(self.redis))
-        # user-defined deps
-        self._deps = await self.worker_lifespan.__aenter__()
+        # reentrant
+        if not self._aentered:
+            self._aentered = True
+            # register lua scripts
+            self.scripts.update(register_scripts(self.redis))
+            # user-defined deps
+            self._deps = await self.worker_lifespan.__aenter__()
         return self
 
     async def __aexit__(self, *exc):
-        await self.worker_lifespan.__aexit__(*exc)
+        # reentrant
+        if not self._aexited:
+            self._aexited = True
+            await self.worker_lifespan.__aexit__(*exc)
 
     def __len__(self):
         return len(self.registry)
 
+    def __str__(self) -> str:
+        counters_str = dict.__repr__(self.counters).replace("'", "")
+        return f"worker {self.id} {counters_str}"
+
     def __repr__(self) -> str:
-        return (
-            f"<Worker {self.id}: completed={self.counters['completed']} failed="
-            f"{self.counters['failed']} retried={self.counters['retried']} running="
-            f"{self.active}>"
-        )
+        return f"<{str(self)}>"

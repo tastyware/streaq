@@ -821,15 +821,15 @@ wheels = [
 ]
 
 [[package]]
-name = "pytest-aio"
-version = "1.9.0"
+name = "pytest-asyncio"
+version = "0.25.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pytest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/26/1eaef5fd99c7e66fbf0cf9d774e3055268328f58b22262d39feb73bbd185/pytest_aio-1.9.0.tar.gz", hash = "sha256:aa72e6ca4672b7f5a08ce44e7c6254dca988d3d578bf0c9485a47c3bff393ac1", size = 5702 }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/a8/ecbc8ede70921dd2f544ab1cadd3ff3bf842af27f87bbdea774c7baa1d38/pytest_asyncio-0.25.3.tar.gz", hash = "sha256:fc1da2cf9f125ada7e710b4ddad05518d4cee187ae9412e9ac9271003497f07a", size = 54239 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/85/f58b1fb37f4a4e78af6ee6900b5351c97671a63a88aa5e09d45d9c32c430/pytest_aio-1.9.0-py3-none-any.whl", hash = "sha256:12a72816224863d402921b325086b398df8a0f4ca767639968a8097d762ac548", size = 6605 },
+    { url = "https://files.pythonhosted.org/packages/67/17/3493c5624e48fd97156ebaec380dcaafee9506d7e2c46218ceebbb57d7de/pytest_asyncio-0.25.3-py3-none-any.whl", hash = "sha256:9e89518e0f9bd08928f97a3482fdc4e244df17529460bc038291ccaf8f85c7c3", size = 19467 },
 ]
 
 [[package]]
@@ -1255,7 +1255,7 @@ dev = [
     { name = "enum-tools", extra = ["sphinx"] },
     { name = "pyright" },
     { name = "pytest" },
-    { name = "pytest-aio" },
+    { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "sphinx" },
@@ -1277,7 +1277,7 @@ dev = [
     { name = "enum-tools", extras = ["sphinx"], specifier = ">=0.12.0" },
     { name = "pyright", specifier = ">=1.1.392.post0" },
     { name = "pytest", specifier = ">=8.3.4" },
-    { name = "pytest-aio", specifier = ">=1.9.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.3" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "ruff", specifier = ">=0.9.3" },
     { name = "sphinx", specifier = ">=8.1.3" },

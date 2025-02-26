@@ -8,9 +8,9 @@ from time import time
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
     Callable,
     Concatenate,
+    Coroutine,
     Generic,
 )
 from uuid import UUID, uuid4
@@ -96,6 +96,7 @@ class Task(Generic[R]):
             self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
         else:
             self.id = uuid4().hex
+        self._enqueued = False
 
     async def start(
         self, delay: timedelta | int | None = None, schedule: datetime | None = None
@@ -145,6 +146,7 @@ class Task(Generic[R]):
                 )
             try:
                 await pipe.execute()
+                self._enqueued = True
             except WatchError:
                 logger.debug("Task is unique and already exists, not enqueuing!")
 
@@ -210,6 +212,10 @@ class Task(Generic[R]):
             timeout_seconds = to_seconds(timeout) if timeout is not None else None
             await asyncio.wait_for(self._listen_for_result(), timeout_seconds)
             raw = await self.redis.get(self._task_key(REDIS_RESULT))
+        if raw is None:
+            raise StreaqError(
+                "Task finished but result was not stored, did you set ttl=0?"
+            )
         try:
             data = self.parent.worker.deserializer(raw)
             return TaskResult(
@@ -284,7 +290,7 @@ class Task(Generic[R]):
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
-    fn: Callable[Concatenate[WrappedContext[WD], P], Awaitable[R]]
+    fn: Callable[Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     timeout: timedelta | int | None
@@ -339,7 +345,7 @@ class RegisteredTask(Generic[WD, P, R]):
 
 @dataclass
 class RegisteredCron(Generic[WD, R]):
-    fn: Callable[[WrappedContext[WD]], Awaitable[R]]
+    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     run_at_startup: bool
@@ -407,5 +413,5 @@ class RegisteredCron(Generic[WD, R]):
     def __repr__(self):
         return (
             f"<Cron fn={self.fn_name} lifespan={self.lifespan} timeout={self.timeout} "
-            f"ttl={self.ttl} schedule={self.schedule()}>"
+            f"schedule={self.schedule()}>"
         )

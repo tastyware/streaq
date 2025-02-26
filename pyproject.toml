@@ -34,7 +34,7 @@ dev = [
     "enum-tools[sphinx]>=0.12.0",
     "pyright>=1.1.392.post0",
     "pytest>=8.3.4",
-    "pytest-aio>=1.9.0",
+    "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
     "ruff>=0.9.3",
     "sphinx>=8.1.3",
@@ -52,3 +52,8 @@ where = ["streaq"]
 ignore = [
     "E731",  # lambda-assignment
 ]
+
+[tool.pytest.ini_options]
+testpaths = "tests"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
