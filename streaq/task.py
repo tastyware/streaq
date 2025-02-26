@@ -40,6 +40,22 @@ if TYPE_CHECKING:
     from streaq.worker import Worker
 
 
+class StreaqRetry(StreaqError):
+    """
+    An exception you can manually raise in your tasks to make sure the task
+    is retried.
+
+    :param msg: error message to show
+    :param delay:
+        amount of time to wait before retrying the task; if none, will be the
+        square of the number of attempts in seconds
+    """
+
+    def __init__(self, msg: str, delay: timedelta | int | None = None):
+        super().__init__(msg)
+        self.delay = delay
+
+
 class TaskStatus(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
@@ -96,7 +112,6 @@ class Task(Generic[R]):
             self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
         else:
             self.id = uuid4().hex
-        self._enqueued = False
 
     async def start(
         self, delay: timedelta | int | None = None, schedule: datetime | None = None
@@ -146,7 +161,6 @@ class Task(Generic[R]):
                 )
             try:
                 await pipe.execute()
-                self._enqueued = True
             except WatchError:
                 logger.debug("Task is unique and already exists, not enqueuing!")
 

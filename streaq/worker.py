@@ -34,7 +34,7 @@ from streaq.constants import (
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
 from streaq.utils import StreaqError, now_ms, to_ms, to_seconds
-from streaq.task import RegisteredCron, RegisteredTask
+from streaq.task import RegisteredCron, RegisteredTask, StreaqRetry
 
 """
 Empty object representing uninitialized dependencies. This is distinct from
@@ -42,22 +42,6 @@ None because it is possible for an initialized worker to have no dependencies
 (implying the WD type is 'None').
 """
 uninitialized = object()
-
-
-class StreaqRetry(StreaqError):
-    """
-    An exception you can manually raise in your tasks to make sure the task
-    is retried.
-
-    :param msg: error message to show
-    :param delay:
-        amount of time to wait before retrying the task; if none, will be the
-        square of the number of attempts in seconds
-    """
-
-    def __init__(self, msg: str, delay: timedelta | int | None = None):
-        super().__init__(msg)
-        self.delay = delay
 
 
 @asynccontextmanager
@@ -103,7 +87,7 @@ class Worker(Generic[WD]):
             [], AbstractAsyncContextManager[WD]
         ] = worker_lifespan,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
-        deserializer: Callable[[EncodableT], Any] = pickle.loads,  # type: ignore
+        deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         health_check_interval: timedelta | int = 300,
     ):
@@ -118,7 +102,7 @@ class Worker(Generic[WD]):
         #: semaphore controlling concurrency
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
         #: mapping of type of task -> number of tasks of that type
-        #: eg ```{"completed": 4, "failed": 1, "retried": 0}```
+        #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
         self.counters = defaultdict(int)
         self.worker_lifespan = worker_lifespan()
         #: event loop for running tasks
@@ -132,7 +116,7 @@ class Worker(Generic[WD]):
         #: mapping of task name -> cron wrapper
         self.cron_jobs: dict[str, RegisteredCron] = {}
         #: mapping of task name -> next execution time in ms
-        self.cron_schedule: dict[str, int] = {}
+        self.cron_schedule: dict[str, int] = defaultdict(int)
         #: unique ID of worker
         self.id = uuid4().hex
         self.serializer = serializer
@@ -145,6 +129,8 @@ class Worker(Generic[WD]):
         self.tz = tz
         #: set of tasks currently scheduled for abortion
         self.aborting_tasks: set[str] = set()
+        #: whether to shut down the worker when the queue is empty; set via CLI
+        self.burst = False
         self._block_new_tasks = False
         self._aentered = False
         self._aexited = False
@@ -211,6 +197,7 @@ class Worker(Generic[WD]):
             )
             self.cron_jobs[task.fn_name] = task
             self.registry[task.fn_name] = task
+            logger.debug(f"cron job {task.fn_name} registered in worker {self.id}")
             return task
 
         return wrapped
@@ -245,6 +232,7 @@ class Worker(Generic[WD]):
                 self,
             )
             self.registry[task.fn_name] = task
+            logger.debug(f"task {task.fn_name} registered in worker {self.id}")
             return task
 
         return wrapped
@@ -257,7 +245,7 @@ class Worker(Generic[WD]):
         try:
             self.loop.run_until_complete(self.main_task)
         except asyncio.CancelledError:
-            pass
+            logger.debug(f"main loop interrupted, closing worker {self.id}")
         finally:
             self.loop.run_until_complete(self.close())
 
@@ -281,25 +269,25 @@ class Worker(Generic[WD]):
                 id=0,
                 mkstream=True,
             )
-        # set schedule for cron jobs
-        ts = now_ms()
-        for name, cron_job in self.cron_jobs.items():
-            if cron_job.run_at_startup and name not in self.cron_schedule:
-                self.cron_schedule[name] = ts
-            else:
-                self.cron_schedule[name] = cron_job.next()
+            logger.debug(f"consumer group {self.group_name} created!")
         # run loops
         async with self:
-            try:
-                await asyncio.gather(
+            done, pending = await asyncio.wait(
+                [
                     self.listen_queue(),
                     self.listen_stream(),
                     self.consumer_cleanup(),
                     self.health_check(),
                     self.redis_health_check(),
-                )
-            except asyncio.CancelledError:
-                pass
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            logger.debug(f"main loop wrapping up execution for worker {self.id}")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
 
     async def consumer_cleanup(self) -> None:
         """
@@ -323,6 +311,10 @@ class Worker(Generic[WD]):
                         name=self.queue_name + REDIS_STREAM,
                         groupname=self.group_name,
                         consumername=consumer_info["name"],
+                    )
+                    logger.debug(
+                        f"deleted idle consumer {consumer_info['name']} from group "
+                        f"{self.group_name}"
                     )
 
     async def listen_queue(self) -> None:
@@ -362,6 +354,9 @@ class Worker(Generic[WD]):
                         args=[decoded, expire_ms],
                         client=pipe,
                     )
+                logger.debug(
+                    f"enqueuing {len(task_ids)} delayed tasks in worker {self.id}"
+                )
                 # Go through task_ids in the aborted tasks set and cancel those tasks.
                 aborted: set[str] = set()
                 for task_id_bytes in aborted_ids:
@@ -370,29 +365,24 @@ class Worker(Generic[WD]):
                         self.tasks[task_id].cancel()
                         aborted.add(task_id)
                 if aborted:
+                    logger.debug(f"aborting {len(aborted)} tasks in worker {self.id}")
                     self.aborting_tasks.update(aborted)
                     pipe.srem(set_name, *aborted)
                 await pipe.execute()
-
-            async def enqueue_cron(
-                name: str, cron_job: RegisteredCron, delay: timedelta
-            ):
-                task = await cron_job.enqueue().start(delay=delay)
-                # only schedule upcoming if enqueue succeeds, important for very
-                # frequent and short jobs (eg once/second)
-                if task._enqueued:
-                    self.cron_schedule[name] = cron_job._upcoming()
 
             # cron jobs
             futures = set()
             ts = now_ms()
             for name, cron_job in self.cron_jobs.items():
-                diff = max(0, self.cron_schedule[name] - ts)
-                if diff < 1000:
+                if self.cron_schedule[name] < ts + 500:
+                    self.cron_schedule[name] = cron_job._upcoming()
                     futures.add(
-                        enqueue_cron(name, cron_job, timedelta(milliseconds=diff))
+                        cron_job.enqueue().start(
+                            delay=timedelta(milliseconds=cron_job.next() - ts)
+                        )
                     )
             if futures:
+                logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
                 await asyncio.gather(*futures)
 
             # cleanup aborted tasks
@@ -439,9 +429,13 @@ class Worker(Generic[WD]):
                         ]
                     )
             # start new tasks
+            logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
             for message in messages:
                 coro = self.run_task(message.task_id, message.message_id)
                 self.task_wrappers[message.task_id] = self.loop.create_task(coro)
+            # wrap things up if we burstin
+            if self.burst and not messages and self.active == 0:
+                self._block_new_tasks = True
 
     async def _get_idle_tasks(self, count: int) -> list[StreamMessage]:
         ids = await self.redis.zrangebyscore(
@@ -461,6 +455,7 @@ class Worker(Generic[WD]):
                 message_ids=ids,
             )
             _, msgs = await pipe.execute()
+        logger.debug(f"found {len(msgs)} idle tasks to rerun in worker {self.id}")
         return [
             StreamMessage(
                 message_id=msg_id.decode(),
@@ -567,7 +562,8 @@ class Worker(Generic[WD]):
                             if task.timeout is not None
                             else None,
                         )
-                    # pass exceptions through
+                    except Exception as e:
+                        raise e  # re-raise for outer try/except
                     finally:
                         del self.tasks[task_id]
                         finish_time = now_ms()
@@ -796,7 +792,6 @@ class Worker(Generic[WD]):
         for t in self.task_wrappers.values():
             if not t.done():
                 t.cancel()
-                self.counters["interrupted"] += 1
         self.main_task.cancel()
         await asyncio.gather(
             *self.task_wrappers.values(), self.main_task, return_exceptions=True

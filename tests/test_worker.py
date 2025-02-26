@@ -37,8 +37,6 @@ async def test_worker_lifespan(redis_url: str):
         res = await foobar.run()
         assert res == NAME_STR
 
-    # TODO: clear out redis
-
 
 async def test_health_check(redis_url: str):
     worker = Worker(
