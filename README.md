@@ -10,11 +10,12 @@ Fast, async, type-safe job queuing with Redis streams
 
 ## Features
 
-- Up to ?x faster than competitors
+- Up to ?x faster than competitors (TBB - To Be Benchmarked)
 - 100% type safe
-- 95%+ unit test coverage
+- 90%+ unit test coverage
 - Comprehensive documentation
 - Support for delayed tasks and cron jobs
+- Dead simple--under 2k lines of code
 
 ## Installation
 
