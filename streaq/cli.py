@@ -5,15 +5,16 @@ from multiprocessing import Process
 from typing import Annotated, cast
 
 from typer import Exit, Option, Typer
+from watchfiles import run_process
 
-from streaq import VERSION
+from streaq import VERSION, logger
 from streaq.utils import default_log_config, import_string
 from streaq.worker import Worker
 
 cli = Typer(context_settings={"help_option_names": ["-h", "--help"]})
 
 
-def version_callback(value: bool):
+def version_callback(value: bool) -> None:
     if value:
         print(f"streaQ v{VERSION}")
         raise Exit()
@@ -50,14 +51,11 @@ def main(
         ),
     ] = False,
 ):
-    logging.config.dictConfig(default_log_config(verbose))
-    sys.path.append(os.getcwd())
-
     if workers == 1:
-        run_worker(worker_path, burst)
+        run_worker(worker_path, burst, watch, verbose)
     else:
         processes = [
-            Process(target=run_worker, args=(worker_path, burst))
+            Process(target=run_worker, args=(worker_path, burst, watch, verbose))
             for _ in range(workers)
         ]
         for p in processes:
@@ -66,7 +64,34 @@ def main(
             p.join()
 
 
-def run_worker(path: str, burst: bool):
+def run_worker(path: str, burst: bool, watch: bool, verbose: bool):
+    """
+    Run a worker with the given options.
+    """
+    sys.path.append(os.getcwd())
+    if watch:
+        run_process(
+            ".",
+            target=run_worker_watch,
+            args=(path, burst, verbose),
+            callback=lambda _: logger.info("changes detected, reloading"),
+        )
+    else:
+        logging.config.dictConfig(default_log_config(verbose))
+        worker = cast(Worker, import_string(path))
+        worker.burst = burst
+        try:
+            worker.run_sync()
+        except KeyboardInterrupt:
+            pass
+
+
+def run_worker_watch(path: str, burst: bool, verbose: bool):
+    """
+    Run a worker, reloading when changes are detected in the local directory.
+    """
+    logging.config.dictConfig(default_log_config(verbose))
+    sys.path.append(os.getcwd())
     worker = cast(Worker, import_string(path))
     worker.burst = burst
     try:

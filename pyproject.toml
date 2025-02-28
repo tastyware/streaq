@@ -18,6 +18,7 @@ dependencies = [
     "crontab>=1.0.1",
     "redis[hiredis]>=5.2.1",
     "typer-slim>=0.15.1",
+    "watchfiles>=1.0.4",
 ]
 dynamic = ["version"]
 
