@@ -19,7 +19,7 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
-          --health-retires 5
+          --health-retries 5
     steps:
     - uses: actions/checkout@v2
     - name: Set up Python 3.10
