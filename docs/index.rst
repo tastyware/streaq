@@ -24,6 +24,10 @@ Fast, async, type-safe job queuing with Redis streams
    :caption: Documentation:
 
    installation
+   getting-started
+   task
+   worker
+   cli
 
 .. toctree::
    :maxdepth: 2

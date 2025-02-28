@@ -50,7 +50,7 @@ async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
 
 
 @asynccontextmanager
-async def worker_lifespan() -> AsyncIterator[None]:
+async def worker_lifespan(worker: "Worker") -> AsyncIterator[None]:
     yield
 
 
@@ -84,7 +84,7 @@ class Worker(Generic[WD]):
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
         ] = task_lifespan,
         worker_lifespan: Callable[
-            [], AbstractAsyncContextManager[WD]
+            ["Worker"], AbstractAsyncContextManager[WD]
         ] = worker_lifespan,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
@@ -104,7 +104,6 @@ class Worker(Generic[WD]):
         #: mapping of type of task -> number of tasks of that type
         #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
         self.counters = defaultdict(int)
-        self.worker_lifespan = worker_lifespan()
         #: event loop for running tasks
         self.loop = asyncio.get_event_loop()
         self.task_lifespan = task_lifespan
@@ -134,6 +133,7 @@ class Worker(Generic[WD]):
         self._block_new_tasks = False
         self._aentered = False
         self._aexited = False
+        self.worker_lifespan = worker_lifespan(self)
 
     @property
     def deps(self) -> WD:
@@ -163,7 +163,6 @@ class Worker(Generic[WD]):
         self,
         tab: str,
         max_tries: int | None = 3,
-        run_at_startup: bool = False,
         timeout: timedelta | int | None = None,
         unique: bool = True,
     ):
@@ -175,20 +174,17 @@ class Worker(Generic[WD]):
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param max_tries:
             number of times to retry the task should it fail during execution
-        :param run_at_startup:
-            whether to run the task at worker startup, regardless of crontab content
         :param timeout: time after which to abort the task, if None will never time out
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
         def wrapped(
-            fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]],
-        ) -> RegisteredCron[WD, R]:
+            fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, None]],
+        ) -> RegisteredCron[WD]:
             task = RegisteredCron(
                 fn,
                 task_lifespan,
                 max_tries,
-                run_at_startup,
                 CronTab(tab),
                 timeout,
                 0,  # ttl of 0 always
@@ -270,6 +266,19 @@ class Worker(Generic[WD]):
                 mkstream=True,
             )
             logger.debug(f"consumer group {self.group_name} created!")
+        # schedule initial cron jobs
+        futures = set()
+        ts = now_ms()
+        for name, cron_job in self.cron_jobs.items():
+            self.cron_schedule[name] = cron_job._upcoming()
+            futures.add(
+                cron_job.enqueue().start(
+                    delay=timedelta(milliseconds=cron_job.next() - ts)
+                )
+            )
+        if futures:
+            logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
+            await asyncio.gather(*futures)
         # run loops
         async with self:
             tasks = [

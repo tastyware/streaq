@@ -43,7 +43,7 @@ class Context:
     http_client: AsyncClient
 
 @asynccontextmanager
-async def worker_lifespan() -> AsyncIterator[Context]:
+async def worker_lifespan(worker: Worker) -> AsyncIterator[Context]:
     async with AsyncClient() as http_client:
         yield Context(http_client)
 

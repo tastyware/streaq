@@ -77,13 +77,13 @@ async def test_task_cron(worker: Worker):
         pass
 
     @worker.cron("* * * * * * *")  # once/second
-    async def cron2(ctx: WrappedContext[None]) -> bool:
-        return True
+    async def cron2(ctx: WrappedContext[None]) -> None:
+        pass
 
     async with worker:
         schedule = cron1.schedule()
         assert schedule.day == 1 and schedule.month == 1
-        assert await cron2.run()
+        await cron2.run()
         task = cron2.enqueue()
         done, _ = await asyncio.wait(
             [

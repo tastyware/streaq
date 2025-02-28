@@ -133,7 +133,7 @@ class Task(Generic[R]):
         async with self.redis.pipeline(transaction=True) as pipe:
             key = self._task_key(REDIS_TASK)
             await pipe.watch(key)
-            if await pipe.exists(key, self._task_key(REDIS_RESULT)):
+            if await pipe.exists(key):
                 await pipe.reset()
                 logger.debug("Task is unique and already exists, not enqueuing!")
                 return self
@@ -358,25 +358,24 @@ class RegisteredTask(Generic[WD, P, R]):
 
 
 @dataclass
-class RegisteredCron(Generic[WD, R]):
-    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]]
+class RegisteredCron(Generic[WD]):
+    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, None]]
     lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
-    run_at_startup: bool
     crontab: CronTab
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
     worker: "Worker"
 
-    def enqueue(self) -> Task[R]:
+    def enqueue(self) -> Task[None]:
         """
         Serialize the task and send it to the queue for later execution by an active worker.
         Though this isn't async, it should be awaited as it returns an object that should be.
         """
         return Task((), {}, self)
 
-    async def run(self) -> R:
+    async def run(self) -> None:
         """
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.

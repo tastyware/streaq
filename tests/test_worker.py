@@ -25,7 +25,7 @@ class Context:
 
 
 @asynccontextmanager
-async def deps() -> AsyncIterator[Context]:
+async def deps(worker: Worker) -> AsyncIterator[Context]:
     yield Context(NAME_STR)
 
 
