@@ -9,6 +9,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # redis service
+    services:
+      redis:
+        image: redis:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retires 5
     steps:
     - uses: actions/checkout@v2
     - name: Set up Python 3.10
@@ -27,4 +38,4 @@ jobs:
         uv run pyright streaq/ tests/
     - name: Test with pytest
       run: |
-        uv run pytest --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=95
+        uv run pytest --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=90

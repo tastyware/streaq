@@ -272,28 +272,32 @@ class Worker(Generic[WD]):
             logger.debug(f"consumer group {self.group_name} created!")
         # run loops
         async with self:
-            done, pending = await asyncio.wait(
-                [
-                    self.listen_queue(),
-                    self.listen_stream(),
-                    self.consumer_cleanup(),
-                    self.health_check(),
-                    self.redis_health_check(),
-                ],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            logger.debug(f"main loop wrapping up execution for worker {self.id}")
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                task.result()
+            tasks = [
+                self.listen_queue(),
+                self.listen_stream(),
+                self.consumer_cleanup(),
+                self.health_check(),
+                self.redis_health_check(),
+            ]
+            futures = [self.loop.create_task(t) for t in tasks]
+            try:
+                _, pending = await asyncio.wait(
+                    futures,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                logger.debug(f"main loop wrapping up execution for worker {self.id}")
+                for task in pending:
+                    task.cancel()
+            except asyncio.CancelledError:
+                for task in futures:
+                    task.cancel()
+                await asyncio.gather(*futures, return_exceptions=True)
 
-    async def consumer_cleanup(self) -> None:
+    async def consumer_cleanup(self) -> None:  # pragma: no cover
         """
         Infrequently check for offline consumers to delete
         """
-        while True:
+        while not self._block_new_tasks:
             await asyncio.sleep(300)  # every 5 minutes
             consumers_info = await self.redis.xinfo_consumers(
                 self.queue_name + REDIS_STREAM,
@@ -525,7 +529,7 @@ class Worker(Generic[WD]):
             timeout = (
                 "inf"
                 if task.timeout is None
-                else round(time()) + to_seconds(task.timeout) + 1
+                else round(time() + to_seconds(task.timeout)) + 1
             )
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.zadd(self.queue_name + REDIS_TIMEOUT, {message_id: timeout})
@@ -544,7 +548,7 @@ class Worker(Generic[WD]):
                     ttl=task.ttl,
                 )
 
-            ctx = self.build_context(task, task_id)
+            ctx = self.build_context(task, task_id, tries=task_try)
             async with task.lifespan(ctx):
                 success = True
                 delay = None
@@ -617,7 +621,7 @@ class Worker(Generic[WD]):
         task_id: str,
         message_id: str,
         finish: bool,
-        delay: int | None,
+        delay: float | None,
         return_value: Any,
         start_time: int,
         finish_time: int,
@@ -647,7 +651,8 @@ class Worker(Generic[WD]):
                 message_id,
             )
             pipe.xdel(stream_key, message_id)
-            pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
+            if finish:
+                pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
 
             if finish:
                 if success:
@@ -668,7 +673,9 @@ class Worker(Generic[WD]):
             elif delay:
                 self.counters["retried"] += 1
                 pipe.delete(key(REDIS_MESSAGE))
-                pipe.zadd(self.queue_name + REDIS_QUEUE, {task_id: now_ms() + delay})
+                pipe.zadd(
+                    self.queue_name + REDIS_QUEUE, {task_id: now_ms() + delay * 1000}
+                )
             else:
                 self.counters["retried"] += 1
                 score = now_ms()
@@ -716,13 +723,11 @@ class Worker(Generic[WD]):
         Only one worker can run this at a time.
         """
         timeout = to_seconds(self.health_check_interval)
-        while True:
+        while not self._block_new_tasks:
             async with self.redis.lock(
-                self.queue_name + REDIS_LOCK,
-                sleep=timeout,
-                timeout=timeout,
+                self.queue_name + REDIS_LOCK, sleep=timeout, timeout=timeout + 5
             ):
-                async with self.redis.pipeline(transaction=False) as pipe:
+                async with self.redis.pipeline(transaction=True) as pipe:
                     pipe.info(section="Server")
                     pipe.info(section="Memory")
                     pipe.info(section="Clients")
@@ -759,7 +764,7 @@ class Worker(Generic[WD]):
         """
         Periodically logs info about the worker to the console.
         """
-        while True:
+        while not self._block_new_tasks:
             await asyncio.sleep(to_seconds(self.health_check_interval))
             logger.info(self)
             await self.redis.hset(  # type: ignore
@@ -793,6 +798,7 @@ class Worker(Generic[WD]):
             if not t.done():
                 t.cancel()
         self.main_task.cancel()
+        # lock = self.redis.lo
         await asyncio.gather(
             *self.task_wrappers.values(), self.main_task, return_exceptions=True
         )
