@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container position-absolute top-50 start-50 translate-middle" style="width: 400px;">
+    <div class="row my-5">
+        <form method="POST">
+            <div class="mb-3">
+                <input type="text" required placeholder="Username" name="username" class="form-control">
+            </div>
+            <div class="mb-3">
+                <input type="password" required placeholder="Password" name="password" class="form-control">
+            </div>
+            <button type="submit" class="btn btn-primary">Login</button>
+        </form>
+    </div>
+    {% if error %}
+    <div class="text-danger font-weight-bold">{{error}}</div>
+    {% endif %}
+</div>
+{% endblock %}

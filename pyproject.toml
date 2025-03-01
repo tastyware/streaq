@@ -23,9 +23,15 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-ui = [
+web = [
     "fastapi>=0.115.7",
+    "jinja2>=3.1.5",
+    "uvicorn>=0.34.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["streaq"]
+include = ["streaq/**/*"]
 
 [project.scripts]
 streaq = "streaq.__main__:cli"

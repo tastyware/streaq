@@ -18,19 +18,21 @@ async def worker_no_cleanup(redis_url: str) -> AsyncGenerator[Worker, None]:
 
 def test_burst(worker_no_cleanup: Worker):
     setattr(test_module, "test_worker", worker_no_cleanup)
-    result = runner.invoke(cli, ["tests.test_cli.test_worker", "-b"])
+    result = runner.invoke(cli, ["tests.test_cli.test_worker", "--burst"])
     assert result.exit_code == 0
 
 
 def test_multiple_workers(worker_no_cleanup: Worker):
     setattr(test_module, "test_worker", worker_no_cleanup)
-    result = runner.invoke(cli, ["-b", "--workers", "2", "tests.test_cli.test_worker"])
+    result = runner.invoke(
+        cli, ["--burst", "--workers", "2", "tests.test_cli.test_worker"]
+    )
     assert result.exit_code == 0
 
 
 def test_verbose(worker_no_cleanup: Worker):
     setattr(test_module, "test_worker", worker_no_cleanup)
-    result = runner.invoke(cli, ["tests.test_cli.test_worker", "-bv"])
+    result = runner.invoke(cli, ["tests.test_cli.test_worker", "--burst", "--verbose"])
     assert result.exit_code == 0
     assert "enqueuing" in result.stdout
 

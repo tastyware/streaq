@@ -9,9 +9,10 @@ from watchfiles import run_process
 
 from streaq import VERSION, logger
 from streaq.utils import default_log_config, import_string
+from streaq.web import run_app
 from streaq.worker import Worker
 
-cli = Typer(context_settings={"help_option_names": ["-h", "--help"]})
+cli = Typer()
 
 
 def version_callback(value: bool) -> None:
@@ -24,12 +25,26 @@ def version_callback(value: bool) -> None:
 def main(
     worker_path: str,
     workers: Annotated[
-        int, Option("--workers", help="Number of worker processes to spin up")
+        int, Option("--workers", "-w", help="Number of worker processes to spin up")
     ] = 1,
     burst: Annotated[
         bool,
         Option(
             "--burst", "-b", help="Whether to shut down worker when the queue is empty"
+        ),
+    ] = False,
+    host: Annotated[
+        str,
+        Option("--host", "-h", help="Host for web UI process"),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        Option("--port", "-p", help="Port for web UI process"),
+    ] = 8001,
+    reload: Annotated[
+        bool,
+        Option(
+            "--reload", "-r", help="Whether to reload the worker upon changes detected"
         ),
     ] = False,
     verbose: Annotated[
@@ -44,24 +59,25 @@ def main(
         bool,
         Option("--version", callback=version_callback, help="Show installed version"),
     ] = False,
-    watch: Annotated[
-        bool,
-        Option(
-            "--watch", "-w", help="Whether to reload the worker upon changes detected"
-        ),
+    web: Annotated[
+        bool, Option("--web", help="Whether to run web UI to monitor tasks")
     ] = False,
 ):
-    if workers == 1:
-        run_worker(worker_path, burst, watch, verbose)
-    else:
-        processes = [
-            Process(target=run_worker, args=(worker_path, burst, watch, verbose))
-            for _ in range(workers)
-        ]
-        for p in processes:
-            p.start()
-        for p in processes:
-            p.join()
+    processes = []
+    if web:
+        processes.append(Process(target=run_web, args=(host, port)))
+    if workers > 1:
+        processes.extend(
+            [
+                Process(target=run_worker, args=(worker_path, burst, reload, verbose))
+                for _ in range(workers - 1)
+            ]
+        )
+    for p in processes:
+        p.start()
+    run_worker(worker_path, burst, reload, verbose)
+    for p in processes:
+        p.join()
 
 
 def run_worker(path: str, burst: bool, watch: bool, verbose: bool):
@@ -98,3 +114,10 @@ def run_worker_watch(path: str, burst: bool, verbose: bool):
         worker.run_sync()
     except KeyboardInterrupt:
         pass
+
+
+def run_web(host: str, port: int):
+    """
+    Run the web UI in a separate process
+    """
+    run_app(host, port)
