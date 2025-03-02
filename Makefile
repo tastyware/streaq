@@ -1,7 +1,7 @@
 .PHONY: install lint test docs
 
 install:
-	uv sync
+	uv sync --all-extras
 
 lint:
 	uv run ruff format streaq/ tests/

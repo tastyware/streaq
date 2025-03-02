@@ -29,7 +29,7 @@ jobs:
     - uses: yezz123/setup-uv@v4
     - name: Setup uv venv
       run: |
-        uv sync
+        uv sync --all-extras
     - name: Lint with ruff
       run: |
         uv run ruff check streaq/ tests/

@@ -16,6 +16,7 @@ authors = [
 ]
 dependencies = [
     "crontab>=1.0.1",
+    "pydantic<2.10",
     "redis[hiredis]>=5.2.1",
     "typer-slim>=0.15.1",
     "watchfiles>=1.0.4",
@@ -25,13 +26,9 @@ dynamic = ["version"]
 [project.optional-dependencies]
 web = [
     "fastapi>=0.115.7",
-    "jinja2>=3.1.5",
+    "fastui>=0.7.0",
     "uvicorn>=0.34.0",
 ]
-
-[tool.hatch.build.targets.wheel]
-packages = ["streaq"]
-include = ["streaq/**/*"]
 
 [project.scripts]
 streaq = "streaq.__main__:cli"
