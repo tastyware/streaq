@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container position-absolute top-50 start-50 translate-middle" style="width: 400px;">
-    <div class="row my-5">
+<div class="container position-absolute top-50 start-50 translate-middle col-md-8 col-12">
+    <div class="row">
         <form method="POST">
             <div class="mb-3">
                 <input type="text" required placeholder="Username" name="username" class="form-control">
@@ -13,8 +13,5 @@
             <button type="submit" class="btn btn-primary">Login</button>
         </form>
     </div>
-    {% if error %}
-    <div class="text-danger font-weight-bold">{{error}}</div>
-    {% endif %}
 </div>
 {% endblock %}
