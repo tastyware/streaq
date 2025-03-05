@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 import pytest
 
-from streaq.constants import REDIS_HEALTH, REDIS_QUEUE
+from streaq.constants import REDIS_HEALTH, REDIS_PREFIX, REDIS_QUEUE
 from streaq.types import WrappedContext
 from streaq.utils import StreaqError
 from streaq.worker import Worker
@@ -52,7 +52,9 @@ async def test_health_check(worker: Worker):
 
     async def get_health_after_delay() -> str | None:
         await asyncio.sleep(1)
-        return await worker.redis.hget(worker.queue_name + REDIS_HEALTH, worker.id)  # type: ignore
+        return await worker.redis.hget(
+            REDIS_PREFIX + worker.queue_name + REDIS_HEALTH, worker.id
+        )  # type: ignore
 
     done, _ = await asyncio.wait(
         [
@@ -70,7 +72,9 @@ async def test_redis_health_check(worker: Worker):
 
     async def get_health_after_delay() -> str | None:
         await asyncio.sleep(1)
-        return await worker.redis.hget(worker.queue_name + REDIS_HEALTH, "redis")  # type: ignore
+        return await worker.redis.hget(
+            REDIS_PREFIX + worker.queue_name + REDIS_HEALTH, "redis"
+        )  # type: ignore
 
     done, _ = await asyncio.wait(
         [
@@ -85,7 +89,7 @@ async def test_redis_health_check(worker: Worker):
 
 async def test_queue_size(redis_url: str):
     worker = Worker(redis_url=redis_url)
-    await worker.redis.delete(worker.queue_name + REDIS_QUEUE)
+    await worker.redis.delete(REDIS_PREFIX + worker.queue_name + REDIS_QUEUE)
     assert await worker.queue_size() == 0
 
 

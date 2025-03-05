@@ -23,15 +23,12 @@ from redis.typing import EncodableT
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
-    REDIS_ABORT,
-    REDIS_CHANNEL,
     REDIS_MESSAGE,
-    REDIS_QUEUE,
+    REDIS_PREFIX,
     REDIS_RESULT,
     REDIS_RETRY,
-    REDIS_RUNNING,
-    REDIS_STREAM,
     REDIS_TASK,
+    REDIS_TIMEOUT,
 )
 from streaq.types import P, R, WD, WrappedContext
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
@@ -149,11 +146,11 @@ class Task(Generic[R]):
             pipe.multi()
             pipe.psetex(key, ttl, data)
             if score is not None:
-                pipe.zadd(self.queue + REDIS_QUEUE, {self.id: score})
+                pipe.zadd(self.parent.worker._queue_key, {self.id: score})
             else:
                 await self.parent.worker.scripts["publish_task"](
                     keys=[
-                        self.queue + REDIS_STREAM,
+                        self.parent.worker._stream_key,
                         self._task_key(REDIS_MESSAGE),
                     ],
                     args=[self.id, enqueue_time, ttl],
@@ -175,8 +172,8 @@ class Task(Generic[R]):
         """
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.exists(self._task_key(REDIS_RESULT))
-            pipe.exists(self._task_key(REDIS_RUNNING))
-            pipe.zscore(self.queue + REDIS_QUEUE, self.id)
+            pipe.zscore(self.parent.worker._timeout_key, self.id)
+            pipe.zscore(self.parent.worker._queue_key, self.id)
             pipe.exists(self._task_key(REDIS_MESSAGE))
             is_complete, is_in_progress, score, queued = await pipe.execute()
 
@@ -191,7 +188,7 @@ class Task(Generic[R]):
         return TaskStatus.PENDING
 
     def _task_key(self, mid: str) -> str:
-        return self.queue + mid + self.id
+        return REDIS_PREFIX + self.queue + mid + self.id
 
     def serialize(self, enqueue_time: int) -> EncodableT:
         """
@@ -246,7 +243,7 @@ class Task(Generic[R]):
 
     async def _listen_for_result(self) -> None:
         pubsub = self.redis.pubsub()
-        await pubsub.subscribe(self.queue + REDIS_CHANNEL)
+        await pubsub.subscribe(self.parent.worker._channel_key)
         encoded_id = self.id.encode()
         async for msg in pubsub.listen():
             if msg.get("data") == encoded_id:
@@ -260,7 +257,7 @@ class Task(Generic[R]):
 
         :return: whether the task was aborted successfully
         """
-        await self.redis.sadd(self.queue + REDIS_ABORT, self.id)  # type: ignore
+        await self.redis.sadd(self.parent.worker._abort_key, self.id)  # type: ignore
         try:
             result = await self.result(timeout=timeout)
             return not result.success and isinstance(
@@ -278,7 +275,7 @@ class Task(Generic[R]):
         async with self.redis.pipeline(transaction=False) as pipe:
             pipe.get(self._task_key(REDIS_TASK))
             pipe.get(self._task_key(REDIS_RETRY))
-            pipe.zscore(self.queue + REDIS_QUEUE, self.id)
+            pipe.zscore(self.parent.worker._queue_key, self.id)
             raw, task_try, score = await pipe.execute()
         data = self.parent.worker.deserializer(raw)
         dt = (

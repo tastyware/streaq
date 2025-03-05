@@ -23,10 +23,10 @@ from streaq.constants import (
     REDIS_HEALTH,
     REDIS_LOCK,
     REDIS_MESSAGE,
+    REDIS_PREFIX,
     REDIS_QUEUE,
     REDIS_RESULT,
     REDIS_RETRY,
-    REDIS_RUNNING,
     REDIS_STREAM,
     REDIS_TASK,
     REDIS_TIMEOUT,
@@ -61,7 +61,6 @@ class Worker(Generic[WD]):
     :param redis_url: connection URI for Redis
     :param concurrency: number of tasks the worker can run simultaneously
     :param queue_name: name of queue in Redis
-    :param group_name: name of consumer group for the Redis stream
     :param queue_fetch_limit: max number of tasks to prefetch from Redis
     :param task_lifespan: async context manager that will wrap tasks
     :param worker_lifespan:
@@ -78,7 +77,6 @@ class Worker(Generic[WD]):
         redis_url: str = "redis://localhost:6379",
         concurrency: int = 16,
         queue_name: str = DEFAULT_QUEUE_NAME,
-        group_name: str = REDIS_GROUP,
         queue_fetch_limit: int | None = None,
         task_lifespan: Callable[
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
@@ -97,7 +95,7 @@ class Worker(Generic[WD]):
         self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
         self.queue_name = queue_name
-        self.group_name = group_name
+        self.group_name = REDIS_GROUP
         self.queue_fetch_limit = queue_fetch_limit or concurrency * 2
         #: semaphore controlling concurrency
         self.bs = asyncio.BoundedSemaphore(concurrency + 1)
@@ -134,6 +132,12 @@ class Worker(Generic[WD]):
         self._aentered = False
         self._aexited = False
         self.worker_lifespan = worker_lifespan(self)
+        self._queue_key = REDIS_PREFIX + self.queue_name + REDIS_QUEUE
+        self._stream_key = REDIS_PREFIX + self.queue_name + REDIS_STREAM
+        self._timeout_key = REDIS_PREFIX + self.queue_name + REDIS_TIMEOUT
+        self._abort_key = REDIS_PREFIX + self.queue_name + REDIS_ABORT
+        self._health_key = REDIS_PREFIX + self.queue_name + REDIS_HEALTH
+        self._channel_key = REDIS_PREFIX + self.queue_name + REDIS_CHANNEL
 
     @property
     def deps(self) -> WD:
@@ -260,7 +264,7 @@ class Worker(Generic[WD]):
         # create consumer group if it doesn't exist
         with suppress(ResponseError):
             await self.redis.xgroup_create(
-                name=self.queue_name + REDIS_STREAM,
+                name=self._stream_key,
                 groupname=self.group_name,
                 id=0,
                 mkstream=True,
@@ -309,7 +313,7 @@ class Worker(Generic[WD]):
         while not self._block_new_tasks:
             await asyncio.sleep(300)  # every 5 minutes
             consumers_info = await self.redis.xinfo_consumers(
-                self.queue_name + REDIS_STREAM,
+                self._stream_key,
                 groupname=self.group_name,
             )
             for consumer_info in consumers_info:
@@ -321,7 +325,7 @@ class Worker(Generic[WD]):
 
                 if pending == 0 and idle > DEFAULT_TTL / 1000:
                     await self.redis.xgroup_delconsumer(
-                        name=self.queue_name + REDIS_STREAM,
+                        name=self._stream_key,
                         groupname=self.group_name,
                         consumername=consumer_info["name"],
                     )
@@ -336,12 +340,11 @@ class Worker(Generic[WD]):
         them to the live queue (stream) when ready, as well as adding cron
         jobs to the live queue when ready.
         """
-        set_name = self.queue_name + REDIS_ABORT
         while not self._block_new_tasks:
             start_time = time()
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.zrange(
-                    self.queue_name + REDIS_QUEUE,
+                    self._queue_key,
                     start=0,
                     end=now_ms(),
                     num=self.queue_fetch_limit,
@@ -349,7 +352,7 @@ class Worker(Generic[WD]):
                     withscores=True,
                     byscore=True,
                 )
-                pipe.smembers(set_name)
+                pipe.smembers(self._abort_key)
                 task_ids, aborted_ids = await pipe.execute()
             async with self.redis.pipeline(transaction=False) as pipe:
                 for task_id, score in task_ids:
@@ -360,9 +363,9 @@ class Worker(Generic[WD]):
                     decoded = task_id.decode()
                     await self.scripts["publish_delayed_task"](
                         keys=[
-                            self.queue_name + REDIS_QUEUE,
-                            self.queue_name + REDIS_STREAM,
-                            self.queue_name + REDIS_MESSAGE + decoded,
+                            self._queue_key,
+                            self._stream_key,
+                            REDIS_PREFIX + self.queue_name + REDIS_MESSAGE + decoded,
                         ],
                         args=[decoded, expire_ms],
                         client=pipe,
@@ -380,7 +383,7 @@ class Worker(Generic[WD]):
                 if aborted:
                     logger.debug(f"aborting {len(aborted)} tasks in worker {self.id}")
                     self.aborting_tasks.update(aborted)
-                    pipe.srem(set_name, *aborted)
+                    pipe.srem(self._abort_key, *aborted)
                 await pipe.execute()
 
             # cron jobs
@@ -426,7 +429,7 @@ class Worker(Generic[WD]):
                 res = await self.redis.xreadgroup(
                     groupname=self.group_name,
                     consumername=self.id,
-                    streams={self.queue_name + REDIS_STREAM: ">"},
+                    streams={self._stream_key: ">"},
                     block=500,
                     count=count,
                 )
@@ -451,17 +454,15 @@ class Worker(Generic[WD]):
                 self._block_new_tasks = True
 
     async def _get_idle_tasks(self, count: int) -> list[StreamMessage]:
-        ids = await self.redis.zrangebyscore(
-            self.queue_name + REDIS_TIMEOUT, 0, now_ms()
-        )
+        ids = await self.redis.zrangebyscore(self._timeout_key, 0, now_ms())
         if not ids:
             return []
         if len(ids) > count:
             ids = ids[:count]
         async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.zrem(self.queue_name + REDIS_TIMEOUT, *ids)
+            pipe.zrem(self._timeout_key, *ids)
             pipe.xclaim(
-                self.queue_name + REDIS_STREAM,
+                self._stream_key,
                 groupname=self.group_name,
                 consumername=self.id,
                 min_idle_time=1000,
@@ -482,15 +483,15 @@ class Worker(Generic[WD]):
         """
         Execute the registered task, then store the result in Redis.
         """
-        key = lambda mid: self.queue_name + mid + task_id
+        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + task_id
         # acquire semaphore
         async with self.bs:
             start_time = now_ms()
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.get(key(REDIS_TASK))
                 pipe.incr(key(REDIS_RETRY))
-                pipe.srem(self.queue_name + REDIS_ABORT, task_id)
-                pipe.expire(key(REDIS_RETRY), DEFAULT_TTL // 1000)
+                pipe.srem(self._abort_key, task_id)
+                pipe.pexpire(key(REDIS_RETRY), DEFAULT_TTL)
                 raw, task_try, abort, _ = await pipe.execute()
 
             async def handle_failure(
@@ -535,18 +536,12 @@ class Worker(Generic[WD]):
                 logger.info(f"task {task_id} aborted ⊘ prior to run")
                 return await handle_failure(asyncio.CancelledError(), ttl=task.ttl)
 
-            timeout = (
+            expire = (
                 "inf"
                 if task.timeout is None
-                else round(time() + to_seconds(task.timeout)) + 1
+                else round((time() + 1) * 1000 + to_ms(task.timeout)) + start_time
             )
-            async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.zadd(self.queue_name + REDIS_TIMEOUT, {message_id: timeout})
-                if timeout == "inf":
-                    pipe.set(key(REDIS_RUNNING), 1)
-                else:
-                    pipe.setex(key(REDIS_RUNNING), timeout, 1)
-                await pipe.execute()
+            await self.redis.zadd(self._timeout_key, {message_id: expire})
 
             if task.max_tries and task_try > task.max_tries:
                 logger.warning(
@@ -599,6 +594,8 @@ class Worker(Generic[WD]):
                         logger.info(f"task {task_id} aborted ⊘")
                         self.aborting_tasks.remove(task_id)
                         done = True
+                        self.counters["aborted"] += 1
+                        self.counters["failed"] -= 1
                     else:
                         logger.info(f"task {task_id} cancelled, will be retried ↻")
                         done = False
@@ -650,24 +647,22 @@ class Worker(Generic[WD]):
             result = self.serializer(data)
         except Exception as e:
             raise StreaqError(f"Failed to serialize result for task {task_id}!") from e
-        key = lambda mid: self.queue_name + mid + task_id
+        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + task_id
         async with self.redis.pipeline(transaction=True) as pipe:
-            stream_key = self.queue_name + REDIS_STREAM
-            pipe.delete(key(REDIS_RUNNING))
             pipe.xack(
-                stream_key,
+                self._stream_key,
                 self.group_name,
                 message_id,
             )
-            pipe.xdel(stream_key, message_id)
+            pipe.xdel(self._stream_key, message_id)
             if finish:
-                pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
+                pipe.publish(self._channel_key, task_id)
 
             if finish:
                 if success:
                     self.counters["completed"] += 1
                 else:
-                    self.counters["aborted"] += 1
+                    self.counters["failed"] += 1
                 if result and ttl != 0:
                     pipe.set(key(REDIS_RESULT), result, ex=ttl)
                 pipe.delete(
@@ -675,23 +670,21 @@ class Worker(Generic[WD]):
                     key(REDIS_TASK),
                     key(REDIS_MESSAGE),
                 )
-                pipe.zrem(self.queue_name + REDIS_TIMEOUT, message_id)
-                pipe.srem(self.queue_name + REDIS_ABORT, task_id)
+                pipe.zrem(self._timeout_key, message_id)
+                pipe.srem(self._abort_key, task_id)
                 if success:
                     logger.info(f"task {task_id} ← {str(return_value):.32}")
             elif delay:
                 self.counters["retried"] += 1
                 pipe.delete(key(REDIS_MESSAGE))
-                pipe.zadd(
-                    self.queue_name + REDIS_QUEUE, {task_id: now_ms() + delay * 1000}
-                )
+                pipe.zadd(self._queue_key, {task_id: now_ms() + delay * 1000})
             else:
                 self.counters["retried"] += 1
                 score = now_ms()
                 ttl_ms = to_ms(ttl) if ttl is not None else None
                 expire = (ttl_ms or score) + DEFAULT_TTL
                 await self.scripts["publish_task"](
-                    keys=[stream_key, key(REDIS_MESSAGE)],
+                    keys=[self._stream_key, key(REDIS_MESSAGE)],
                     args=[task_id, score, expire],
                     client=pipe,
                 )
@@ -707,21 +700,19 @@ class Worker(Generic[WD]):
         """
         Cleanup for a task that failed during execution.
         """
-        key = lambda mid: self.queue_name + mid + task_id
-        stream_key = self.queue_name + REDIS_STREAM
+        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + task_id
         self.counters["failed"] += 1
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete(
                 key(REDIS_RETRY),
-                key(REDIS_RUNNING),
                 key(REDIS_TASK),
                 key(REDIS_MESSAGE),
             )
-            pipe.publish(self.queue_name + REDIS_CHANNEL, task_id)
-            pipe.srem(self.queue_name + REDIS_ABORT, task_id)
-            pipe.zrem(self.queue_name + REDIS_TIMEOUT, message_id)
-            pipe.xack(stream_key, self.group_name, message_id)
-            pipe.xdel(stream_key, message_id)
+            pipe.publish(self._channel_key, task_id)
+            pipe.srem(self._abort_key, task_id)
+            pipe.zrem(self._timeout_key, message_id)
+            pipe.xack(self._stream_key, self.group_name, message_id)
+            pipe.xdel(self._stream_key, message_id)
             if result_data is not None:
                 pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
             await pipe.execute()
@@ -732,17 +723,16 @@ class Worker(Generic[WD]):
         Only one worker can run this at a time.
         """
         timeout = to_seconds(self.health_check_interval)
+        lock_name = REDIS_PREFIX + self.queue_name + REDIS_LOCK
         while not self._block_new_tasks:
-            async with self.redis.lock(
-                self.queue_name + REDIS_LOCK, sleep=timeout, timeout=timeout + 5
-            ):
+            async with self.redis.lock(lock_name, sleep=timeout, timeout=timeout + 5):
                 async with self.redis.pipeline(transaction=True) as pipe:
                     pipe.info(section="Server")
                     pipe.info(section="Memory")
                     pipe.info(section="Clients")
                     pipe.dbsize()
-                    pipe.xlen(self.queue_name + REDIS_STREAM)
-                    pipe.zcard(self.queue_name + REDIS_QUEUE)
+                    pipe.xlen(self._stream_key)
+                    pipe.zcard(self._queue_key)
                     (
                         info_server,
                         info_memory,
@@ -764,9 +754,7 @@ class Worker(Generic[WD]):
                     f"scheduled={queue_size}"
                 )
                 logger.info(health)
-                await self.redis.hset(  # type: ignore
-                    self.queue_name + REDIS_HEALTH, "redis", health
-                )
+                await self.redis.hset(self._health_key, "redis", health)  # type: ignore
                 await asyncio.sleep(timeout)
 
     async def health_check(self):
@@ -776,17 +764,15 @@ class Worker(Generic[WD]):
         while not self._block_new_tasks:
             await asyncio.sleep(to_seconds(self.health_check_interval))
             logger.info(self)
-            await self.redis.hset(  # type: ignore
-                self.queue_name + REDIS_HEALTH, self.id, str(self)
-            )
+            await self.redis.hset(self._health_key, self.id, str(self))  # type: ignore
 
     async def queue_size(self) -> int:
         """
         Returns the number of tasks currently queued in Redis.
         """
         async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.xlen(self.queue_name + REDIS_STREAM)
-            pipe.zcard(self.queue_name + REDIS_QUEUE)
+            pipe.xlen(self._stream_key)
+            pipe.zcard(self._queue_key)
             stream_size, queue_size = await pipe.execute()
 
         return stream_size + queue_size
@@ -807,9 +793,14 @@ class Worker(Generic[WD]):
             if not t.done():
                 t.cancel()
         self.main_task.cancel()
-        # lock = self.redis.lo
         await asyncio.gather(
             *self.task_wrappers.values(), self.main_task, return_exceptions=True
+        )
+        # delete consumer
+        await self.redis.xgroup_delconsumer(
+            name=self._stream_key,
+            groupname=self.group_name,
+            consumername=self.id,
         )
         await self.redis.close(close_connection_pool=True)
         logger.info(f"shutdown {str(self)}")
