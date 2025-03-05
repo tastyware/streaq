@@ -27,6 +27,7 @@ from streaq.constants import (
     REDIS_QUEUE,
     REDIS_RESULT,
     REDIS_RETRY,
+    REDIS_RUNNING,
     REDIS_STREAM,
     REDIS_TASK,
     REDIS_TIMEOUT,
@@ -536,12 +537,15 @@ class Worker(Generic[WD]):
                 logger.info(f"task {task_id} aborted ⊘ prior to run")
                 return await handle_failure(asyncio.CancelledError(), ttl=task.ttl)
 
-            expire = (
-                "inf"
+            timeout = (
+                None
                 if task.timeout is None
-                else round((time() + 1) * 1000 + to_ms(task.timeout)) + start_time
+                else start_time + 1000 + to_ms(task.timeout)
             )
-            await self.redis.zadd(self._timeout_key, {message_id: expire})
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.zadd(self._timeout_key, {message_id: timeout or "inf"})
+                pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
+                await pipe.execute()
 
             if task.max_tries and task_try > task.max_tries:
                 logger.warning(

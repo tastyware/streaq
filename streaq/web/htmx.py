@@ -62,7 +62,7 @@ async def get_root(
     return templates.TemplateResponse(request, "index.html", context={"queues": queues})
 
 
-@router.get("/queue/{name}")
+@router.get("/queues/{name}")
 async def get_queue(
     request: Request, redis: Annotated[Redis, Depends(get_redis)], name: str
 ) -> HTMLResponse:

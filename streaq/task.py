@@ -27,8 +27,8 @@ from streaq.constants import (
     REDIS_PREFIX,
     REDIS_RESULT,
     REDIS_RETRY,
+    REDIS_RUNNING,
     REDIS_TASK,
-    REDIS_TIMEOUT,
 )
 from streaq.types import P, R, WD, WrappedContext
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
@@ -172,7 +172,7 @@ class Task(Generic[R]):
         """
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.exists(self._task_key(REDIS_RESULT))
-            pipe.zscore(self.parent.worker._timeout_key, self.id)
+            pipe.exists(self._task_key(REDIS_RUNNING))
             pipe.zscore(self.parent.worker._queue_key, self.id)
             pipe.exists(self._task_key(REDIS_MESSAGE))
             is_complete, is_in_progress, score, queued = await pipe.execute()
