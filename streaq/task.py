@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -302,7 +301,6 @@ class Task(Generic[R]):
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
     fn: Callable[Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]]
-    lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     timeout: timedelta | int | None
     ttl: timedelta | int | None
@@ -334,7 +332,7 @@ class RegisteredTask(Generic[WD, P, R]):
             ttl=self.ttl,
             worker_id=self.worker.id,
         )
-        async with self.lifespan(deps):
+        async with self.worker.task_lifespan(deps):
             try:
                 return await asyncio.wait_for(
                     self.fn(deps, *args, **kwargs),
@@ -348,16 +346,12 @@ class RegisteredTask(Generic[WD, P, R]):
         return self.fn.__qualname__
 
     def __repr__(self):
-        return (
-            f"<Task fn={self.fn_name} lifespan={self.lifespan} timeout={self.timeout} "
-            f"ttl={self.ttl}>"
-        )
+        return f"<Task fn={self.fn_name} timeout={self.timeout} ttl={self.ttl}>"
 
 
 @dataclass
 class RegisteredCron(Generic[WD]):
     fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, None]]
-    lifespan: Callable[[WrappedContext[WD]], AbstractAsyncContextManager[None]]
     max_tries: int | None
     crontab: CronTab
     timeout: timedelta | int | None
@@ -386,7 +380,7 @@ class RegisteredCron(Generic[WD]):
             ttl=self.ttl,
             worker_id=self.worker.id,
         )
-        async with self.lifespan(deps):
+        async with self.worker.task_lifespan(deps):
             try:
                 return await asyncio.wait_for(
                     self.fn(deps),
@@ -422,6 +416,6 @@ class RegisteredCron(Generic[WD]):
 
     def __repr__(self):
         return (
-            f"<Cron fn={self.fn_name} lifespan={self.lifespan} timeout={self.timeout} "
+            f"<Cron fn={self.fn_name} timeout={self.timeout} "
             f"schedule={self.schedule()}>"
         )

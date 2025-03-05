@@ -46,12 +46,12 @@ uninitialized = object()
 
 
 @asynccontextmanager
-async def task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
+async def _task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
     yield
 
 
 @asynccontextmanager
-async def worker_lifespan(worker: "Worker") -> AsyncIterator[None]:
+async def _worker_lifespan(worker: "Worker") -> AsyncIterator[None]:
     yield
 
 
@@ -73,6 +73,43 @@ class Worker(Generic[WD]):
     :param health_check_interval: frequency to print health information
     """
 
+    __slots__ = (
+        "redis",
+        "concurrency",
+        "queue_name",
+        "group_name",
+        "queue_fetch_limit",
+        "bs",
+        "counters",
+        "loop",
+        "task_lifespan",
+        "_deps",
+        "scripts",
+        "registry",
+        "cron_jobs",
+        "cron_schedule",
+        "id",
+        "serializer",
+        "deserializer",
+        "task_wrappers",
+        "tasks",
+        "health_check_interval",
+        "tz",
+        "aborting_tasks",
+        "burst",
+        "_block_new_tasks",
+        "_aentered",
+        "_aexited",
+        "worker_lifespan",
+        "_queue_key",
+        "_stream_key",
+        "_timeout_key",
+        "_abort_key",
+        "_health_key",
+        "_channel_key",
+        "main_task",
+    )
+
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
@@ -81,17 +118,15 @@ class Worker(Generic[WD]):
         queue_fetch_limit: int | None = None,
         task_lifespan: Callable[
             [WrappedContext[WD]], AbstractAsyncContextManager[None]
-        ] = task_lifespan,
+        ] = _task_lifespan,
         worker_lifespan: Callable[
             ["Worker"], AbstractAsyncContextManager[WD]
-        ] = worker_lifespan,
+        ] = _worker_lifespan,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         health_check_interval: timedelta | int = 300,
     ):
-        # TODO: optimizations, __slots__?
-
         #: Redis connection
         self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
@@ -188,7 +223,6 @@ class Worker(Generic[WD]):
         ) -> RegisteredCron[WD]:
             task = RegisteredCron(
                 fn,
-                task_lifespan,
                 max_tries,
                 CronTab(tab),
                 timeout,
@@ -225,7 +259,6 @@ class Worker(Generic[WD]):
         ) -> RegisteredTask[WD, P, R]:
             task = RegisteredTask(
                 fn,
-                task_lifespan,
                 max_tries,
                 timeout,
                 ttl,
@@ -557,7 +590,7 @@ class Worker(Generic[WD]):
                 )
 
             ctx = self.build_context(task, task_id, tries=task_try)
-            async with task.lifespan(ctx):
+            async with self.task_lifespan(ctx):
                 success = True
                 delay = None
                 done = True
