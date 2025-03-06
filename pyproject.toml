@@ -5,6 +5,12 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "streaq/__init__.py"
 
+[tool.hatch.build.targets.sdist]
+exclude = ["benchmarks"]
+
+[tool.hatch.build.targets.wheel]
+exclude = ["benchmarks"]
+
 [project]
 name = "streaq"
 description = "Fast, async, type-safe job queuing with Redis streams"
@@ -17,7 +23,7 @@ authors = [
 dependencies = [
     "crontab>=1.0.1",
     "redis[hiredis]>=5.2.1",
-    "typer-slim>=0.15.1",
+    "typer>=0.15.2",
     "watchfiles>=1.0.4",
 ]
 dynamic = ["version"]
@@ -27,6 +33,10 @@ web = [
     "fastapi>=0.115.7",
     "jinja2>=3.1.5",
     "uvicorn>=0.34.0",
+]
+benchmark = [
+    "arq",
+    "saq[hiredis]>=0.22.2",
 ]
 
 [project.scripts]
@@ -61,3 +71,6 @@ ignore = [
 testpaths = "tests"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.uv.sources]
+arq = { git = "https://github.com/graeme22/arq" }

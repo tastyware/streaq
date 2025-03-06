@@ -15,7 +15,6 @@ from typing import (
 from uuid import UUID, uuid4
 
 from crontab import CronTab
-from redis import WatchError
 from redis.asyncio import Redis
 from redis.typing import EncodableT
 
@@ -125,40 +124,28 @@ class Task(Generic[R]):
             raise StreaqError(
                 "Use either 'delay' or 'schedule' when enqueuing tasks, not both!"
             )
-        ttl_ms = to_ms(self.parent.ttl) if self.parent.ttl is not None else None
-        async with self.redis.pipeline(transaction=True) as pipe:
-            key = self._task_key(REDIS_TASK)
-            await pipe.watch(key)
-            if await pipe.exists(key):
-                await pipe.reset()
-                logger.debug("Task is unique and already exists, not enqueuing!")
-                return self
-            enqueue_time = now_ms()
-            if schedule:
-                score = datetime_ms(schedule)
-            elif delay is not None:
-                score = enqueue_time + to_ms(delay)
-            else:
-                score = None
-            ttl = ttl_ms or (score or enqueue_time) - enqueue_time + DEFAULT_TTL
-            data = self.serialize(enqueue_time)
-            pipe.multi()
-            pipe.psetex(key, ttl, data)
-            if score is not None:
-                pipe.zadd(self.parent.worker._queue_key, {self.id: score})
-            else:
-                await self.parent.worker.scripts["publish_task"](
-                    keys=[
-                        self.parent.worker._stream_key,
-                        self._task_key(REDIS_MESSAGE),
-                    ],
-                    args=[self.id, enqueue_time, ttl],
-                    client=pipe,
-                )
-            try:
-                await pipe.execute()
-            except WatchError:
-                logger.debug("Task is unique and already exists, not enqueuing!")
+        enqueue_time = now_ms()
+        if schedule:
+            score = datetime_ms(schedule)
+        elif delay is not None:
+            score = enqueue_time + to_ms(delay)
+        else:
+            score = None
+        ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
+        data = self.serialize(enqueue_time)
+        keys = [
+            self.parent.worker._stream_key,
+            self._task_key(REDIS_MESSAGE),
+            self._task_key(REDIS_TASK),
+        ]
+        args = [self.id, enqueue_time, ttl, data]
+        if score is not None:
+            keys.append(self.parent.worker._queue_key)
+            args.append(score)
+        res = await self.parent.worker.scripts["publish_task"](keys=keys, args=args)
+        if res == 0:
+            logger.debug("Task is unique and already exists, not enqueuing!")
+            return self
 
         return self
 

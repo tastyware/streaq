@@ -108,6 +108,7 @@ class Worker(Generic[WD]):
         "_health_key",
         "_channel_key",
         "main_task",
+        "_start_time",
     )
 
     def __init__(
@@ -134,7 +135,7 @@ class Worker(Generic[WD]):
         self.group_name = REDIS_GROUP
         self.queue_fetch_limit = queue_fetch_limit or concurrency * 2
         #: semaphore controlling concurrency
-        self.bs = asyncio.BoundedSemaphore(concurrency + 1)
+        self.bs = asyncio.BoundedSemaphore(concurrency)
         #: mapping of type of task -> number of tasks of that type
         #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
         self.counters = defaultdict(int)
@@ -174,6 +175,7 @@ class Worker(Generic[WD]):
         self._abort_key = REDIS_PREFIX + self.queue_name + REDIS_ABORT
         self._health_key = REDIS_PREFIX + self.queue_name + REDIS_HEALTH
         self._channel_key = REDIS_PREFIX + self.queue_name + REDIS_CHANNEL
+        self._start_time = now_ms()
 
     @property
     def deps(self) -> WD:
@@ -304,21 +306,21 @@ class Worker(Generic[WD]):
                 mkstream=True,
             )
             logger.debug(f"consumer group {self.group_name} created!")
-        # schedule initial cron jobs
-        futures = set()
-        ts = now_ms()
-        for name, cron_job in self.cron_jobs.items():
-            self.cron_schedule[name] = cron_job._upcoming()
-            futures.add(
-                cron_job.enqueue().start(
-                    delay=timedelta(milliseconds=cron_job.next() - ts)
-                )
-            )
-        if futures:
-            logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
-            await asyncio.gather(*futures)
-        # run loops
         async with self:
+            # schedule initial cron jobs
+            futures = set()
+            ts = now_ms()
+            for name, cron_job in self.cron_jobs.items():
+                self.cron_schedule[name] = cron_job._upcoming()
+                futures.add(
+                    cron_job.enqueue().start(
+                        delay=timedelta(milliseconds=cron_job.next() - ts)
+                    )
+                )
+            if futures:
+                logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
+                await asyncio.gather(*futures)
+            # run loops
             tasks = [
                 self.listen_queue(),
                 self.listen_stream(),
@@ -435,13 +437,6 @@ class Worker(Generic[WD]):
                 logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
                 await asyncio.gather(*futures)
 
-            # cleanup aborted tasks
-            for task_id, task in list(self.task_wrappers.items()):
-                if task.done():
-                    del self.task_wrappers[task_id]
-                    # propagate error
-                    task.result()
-
             delay = time() - start_time
             if delay < 0.5:
                 await asyncio.sleep(0.5 - delay)
@@ -453,8 +448,9 @@ class Worker(Generic[WD]):
         """
         while not self._block_new_tasks:
             messages: list[StreamMessage] = []
-            active_tasks = self.active
-            count = self.queue_fetch_limit - active_tasks
+            active_tasks = self.concurrency - self.bs._value
+            pending_tasks = len(self.task_wrappers)
+            count = self.queue_fetch_limit - pending_tasks
             if active_tasks < self.concurrency:
                 expired = await self._get_idle_tasks(count)
                 count -= len(expired)
@@ -478,14 +474,29 @@ class Worker(Generic[WD]):
                             for msg_id, msg in msgs
                         ]
                     )
+            else:
+                # yield control
+                await asyncio.sleep(0)
             # start new tasks
             logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
             for message in messages:
                 coro = self.run_task(message.task_id, message.message_id)
                 self.task_wrappers[message.task_id] = self.loop.create_task(coro)
-            # wrap things up if we burstin
-            if self.burst and not messages and self.active == 0:
+            # wrap things up if we burstin'
+            if (
+                self.burst
+                and not messages
+                and active_tasks == 0
+                and count > 0
+                and not self.task_wrappers
+            ):
                 self._block_new_tasks = True
+            # cleanup aborted tasks
+            for task_id, task in list(self.task_wrappers.items()):
+                if task.done():
+                    del self.task_wrappers[task_id]
+                    # propagate error
+                    task.result()
 
     async def _get_idle_tasks(self, count: int) -> list[StreamMessage]:
         ids = await self.redis.zrangebyscore(self._timeout_key, 0, now_ms())
@@ -704,6 +715,7 @@ class Worker(Generic[WD]):
                     pipe.set(key(REDIS_RESULT), result, ex=ttl)
                 pipe.delete(
                     key(REDIS_RETRY),
+                    key(REDIS_RUNNING),
                     key(REDIS_TASK),
                     key(REDIS_MESSAGE),
                 )
@@ -720,7 +732,7 @@ class Worker(Generic[WD]):
                 score = now_ms()
                 ttl_ms = to_ms(ttl) if ttl is not None else None
                 expire = (ttl_ms or score) + DEFAULT_TTL
-                await self.scripts["publish_task"](
+                await self.scripts["retry_task"](
                     keys=[self._stream_key, key(REDIS_MESSAGE)],
                     args=[task_id, score, expire],
                     client=pipe,
@@ -742,6 +754,7 @@ class Worker(Generic[WD]):
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete(
                 key(REDIS_RETRY),
+                key(REDIS_RUNNING),
                 key(REDIS_TASK),
                 key(REDIS_MESSAGE),
             )
@@ -840,7 +853,8 @@ class Worker(Generic[WD]):
             consumername=self.id,
         )
         await self.redis.close(close_connection_pool=True)
-        logger.info(f"shutdown {str(self)}")
+        run_time = now_ms() - self._start_time
+        logger.info(f"shutdown {str(self)} after {run_time}ms")
 
     async def __aenter__(self):
         # reentrant
