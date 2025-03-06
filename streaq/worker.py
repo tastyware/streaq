@@ -309,15 +309,9 @@ class Worker(Generic[WD]):
         async with self:
             # schedule initial cron jobs
             futures = set()
-            ts = now_ms()
             for name, cron_job in self.cron_jobs.items():
-                run_time_ms = cron_job.next()
-                self.cron_schedule[name] = run_time_ms
-                futures.add(
-                    cron_job.enqueue().start(
-                        delay=timedelta(milliseconds=run_time_ms - ts)
-                    )
-                )
+                self.cron_schedule[name] = cron_job.next()
+                futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
             if futures:
                 logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
                 await asyncio.gather(*futures)
@@ -428,13 +422,8 @@ class Worker(Generic[WD]):
             ts = now_ms()
             for name, cron_job in self.cron_jobs.items():
                 if ts - 500 > self.cron_schedule[name]:
-                    run_time_ts = cron_job.next()
-                    self.cron_schedule[name] = run_time_ts
-                    futures.add(
-                        cron_job.enqueue().start(
-                            delay=timedelta(milliseconds=run_time_ts - ts)
-                        )
-                    )
+                    self.cron_schedule[name] = cron_job.next()
+                    futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
             if futures:
                 logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
                 await asyncio.gather(*futures)
