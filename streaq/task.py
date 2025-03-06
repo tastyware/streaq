@@ -392,11 +392,6 @@ class RegisteredCron(Generic[WD]):
         """
         return round((time() + self.delay) * 1000)
 
-    def _upcoming(self) -> int:
-        # Timestamp in ms for run after next run.
-        diff = self.crontab.next(now=self.schedule())  # type: ignore
-        return self.next() + round(diff * 1000)
-
     @property
     def delay(self) -> float:
         return self.crontab.next(now=datetime.now(self.worker.tz))  # type: ignore

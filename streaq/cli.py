@@ -9,7 +9,6 @@ from watchfiles import run_process
 
 from streaq import VERSION, logger
 from streaq.utils import default_log_config, import_string
-from streaq.web import run_app
 from streaq.worker import Worker
 
 cli = Typer()
@@ -65,7 +64,9 @@ def main(
 ):
     processes = []
     if web:
-        processes.append(Process(target=run_web, args=(host, port)))
+        from streaq.web import run_app
+
+        processes.append(Process(target=run_app, args=(host, port)))
     if workers > 1:
         processes.extend(
             [
@@ -114,10 +115,3 @@ def run_worker_watch(path: str, burst: bool, verbose: bool):
         worker.run_sync()
     except KeyboardInterrupt:
         pass
-
-
-def run_web(host: str, port: int):
-    """
-    Run the web UI in a separate process
-    """
-    run_app(host, port)

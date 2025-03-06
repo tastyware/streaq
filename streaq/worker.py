@@ -311,10 +311,11 @@ class Worker(Generic[WD]):
             futures = set()
             ts = now_ms()
             for name, cron_job in self.cron_jobs.items():
-                self.cron_schedule[name] = cron_job._upcoming()
+                run_time_ms = cron_job.next()
+                self.cron_schedule[name] = run_time_ms
                 futures.add(
                     cron_job.enqueue().start(
-                        delay=timedelta(milliseconds=cron_job.next() - ts)
+                        delay=timedelta(milliseconds=run_time_ms - ts)
                     )
                 )
             if futures:
@@ -426,11 +427,12 @@ class Worker(Generic[WD]):
             futures = set()
             ts = now_ms()
             for name, cron_job in self.cron_jobs.items():
-                if self.cron_schedule[name] < ts + 500:
-                    self.cron_schedule[name] = cron_job._upcoming()
+                if ts - 500 > self.cron_schedule[name]:
+                    run_time_ts = cron_job.next()
+                    self.cron_schedule[name] = run_time_ts
                     futures.add(
                         cron_job.enqueue().start(
-                            delay=timedelta(milliseconds=cron_job.next() - ts)
+                            delay=timedelta(milliseconds=run_time_ts - ts)
                         )
                     )
             if futures:
