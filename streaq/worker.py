@@ -1,8 +1,11 @@
 import asyncio
+from functools import partial
 import pickle
+import signal
 from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from datetime import timedelta, timezone, tzinfo
+from signal import Signals
 from time import time
 from typing import Any, AsyncIterator, Callable, Concatenate, Coroutine, Generic, cast
 from uuid import uuid4
@@ -19,6 +22,8 @@ from streaq.constants import (
     DEFAULT_TTL,
     REDIS_ABORT,
     REDIS_CHANNEL,
+    REDIS_DEPENDENTS,
+    REDIS_DEPENDENCIES,
     REDIS_GROUP,
     REDIS_HEALTH,
     REDIS_LOCK,
@@ -70,6 +75,7 @@ class Worker(Generic[WD]):
     :param serializer: function to serialize task data for Redis
     :param deserializer: function to deserialize task data from Redis
     :param tz: timezone to use for cron jobs
+    :param handle_signals: whether to handle signals for graceful shutdown
     :param health_check_interval: frequency to print health information
     """
 
@@ -97,6 +103,7 @@ class Worker(Generic[WD]):
         "tz",
         "aborting_tasks",
         "burst",
+        "_handle_signals",
         "_block_new_tasks",
         "_aentered",
         "_aexited",
@@ -126,6 +133,7 @@ class Worker(Generic[WD]):
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
+        handle_signals: bool = True,
         health_check_interval: timedelta | int = 300,
     ):
         #: Redis connection
@@ -159,6 +167,7 @@ class Worker(Generic[WD]):
         self.task_wrappers: dict[str, asyncio.Task] = {}
         #: mapping of task ID -> asyncio Task for task
         self.tasks: dict[str, asyncio.Task] = {}
+        self._handle_signals = handle_signals
         self.health_check_interval = health_check_interval
         self.tz = tz
         #: set of tasks currently scheduled for abortion
@@ -283,7 +292,9 @@ class Worker(Generic[WD]):
         except asyncio.CancelledError:
             logger.debug(f"main loop interrupted, closing worker {self.id}")
         finally:
-            self.loop.run_until_complete(self.close())
+            # if we handled a signal, close was already called
+            if not self._block_new_tasks:
+                self.loop.run_until_complete(self.close())
 
     async def run_async(self) -> None:
         """
@@ -297,6 +308,10 @@ class Worker(Generic[WD]):
         Main loop for handling worker tasks, aggregates and runs other tasks
         """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
+        # register signal handlers
+        if self._handle_signals:
+            self._add_signal_handler(signal.SIGINT)
+            self._add_signal_handler(signal.SIGTERM)
         # create consumer group if it doesn't exist
         with suppress(ResponseError):
             await self.redis.xgroup_create(
@@ -634,7 +649,7 @@ class Worker(Generic[WD]):
                         self.aborting_tasks.remove(task_id)
                         done = True
                         self.counters["aborted"] += 1
-                        self.counters["failed"] -= 1
+                        self.counters["failed"] -= 1  # this will get incremented later
                     else:
                         logger.info(f"task {task_id} cancelled, will be retried ↻")
                         done = False
@@ -696,8 +711,6 @@ class Worker(Generic[WD]):
             pipe.xdel(self._stream_key, message_id)
             if finish:
                 pipe.publish(self._channel_key, task_id)
-
-            if finish:
                 if success:
                     self.counters["completed"] += 1
                 else:
@@ -712,6 +725,7 @@ class Worker(Generic[WD]):
                 )
                 pipe.zrem(self._timeout_key, message_id)
                 pipe.srem(self._abort_key, task_id)
+                pipe.smembers(key(REDIS_DEPENDENTS))
                 if success:
                     logger.info(f"task {task_id} ← {str(return_value):.32}")
             elif delay:
@@ -728,7 +742,39 @@ class Worker(Generic[WD]):
                     args=[task_id, score, expire],
                     client=pipe,
                 )
-            await pipe.execute()
+            res = await pipe.execute()
+            # handle dependencies
+            if finish and res[-1]:
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    pipe.delete(key(REDIS_DEPENDENTS))
+                    if not success:
+                        data = {
+                            "s": False,
+                            "r": StreaqError("Dependency failed, not running task!"),
+                            "st": -1,
+                            "ft": -1,
+                        }
+                        try:
+                            result = self.serializer(data)
+                        except Exception as e:
+                            raise StreaqError(
+                                f"Failed to serialize result for task {task_id}!"
+                            ) from e
+                    for dep in res[-1]:
+                        dep_id = dep.decode()
+                        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + dep_id
+                        deps_key = key(REDIS_DEPENDENCIES)
+                        pipe.srem(deps_key, task_id)
+                        if not success:
+                            pipe.set(key(REDIS_RESULT), result, ex=timedelta(minutes=5))
+                            pipe.publish(self._channel_key, dep_id)
+                        else:
+                            await self.scripts["publish_dependant_task"](
+                                keys=[self._stream_key, key(REDIS_MESSAGE), deps_key],
+                                args=[dep_id, now_ms(), DEFAULT_TTL],
+                                client=pipe,
+                            )
+                    await pipe.execute()
 
     async def finish_failed_task(
         self,
@@ -756,7 +802,32 @@ class Worker(Generic[WD]):
             pipe.xdel(self._stream_key, message_id)
             if result_data is not None:
                 pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
-            await pipe.execute()
+            pipe.smembers(REDIS_PREFIX + REDIS_DEPENDENTS + task_id)
+            res = await pipe.execute()
+            # handle dependencies
+            if res[-1]:
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    pipe.delete(key(REDIS_DEPENDENTS))
+                    data = {
+                        "s": False,
+                        "r": StreaqError("Dependency failed, not running task!"),
+                        "st": -1,
+                        "ft": -1,
+                    }
+                    try:
+                        result = self.serializer(data)
+                    except Exception as e:
+                        raise StreaqError(
+                            f"Failed to serialize result for task {task_id}!"
+                        ) from e
+                    for dep in res[-1]:
+                        dep_id = dep.decode()
+                        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + dep_id
+                        deps_key = key(REDIS_DEPENDENCIES)
+                        pipe.srem(deps_key, task_id)
+                        pipe.set(key(REDIS_RESULT), result, ex=timedelta(minutes=5))
+                        pipe.publish(self._channel_key, dep_id)
+                    await pipe.execute()
 
     async def redis_health_check(self):
         """
@@ -824,6 +895,19 @@ class Worker(Generic[WD]):
         The number of currently active tasks for the worker
         """
         return sum(not t.done() for t in self.tasks.values())
+
+    def _add_signal_handler(self, signum: Signals) -> None:
+        try:
+            self.loop.add_signal_handler(signum, partial(self.handle_signal, signum))
+        except NotImplementedError:
+            logger.error("Windows does not support handling Unix signals!")
+
+    def handle_signal(self, signum: Signals) -> None:
+        """
+        Gracefully shutdown the worker when a signal is received.
+        """
+        logger.info(f"received signal {signum.name}, shutting down worker {self.id}")
+        self.loop.create_task(self.close())
 
     async def close(self) -> None:
         """
