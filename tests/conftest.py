@@ -14,12 +14,12 @@ def redis_container() -> Generator[RedisContainer, Any, None]:
 
 @fixture(scope="function")
 def redis_url(redis_container: RedisContainer) -> Generator[str, None, None]:
-    yield f"redis://{redis_container.get_container_host_ip()}:{redis_container.port}/13"
+    yield f"redis://{redis_container.get_container_host_ip()}:{redis_container.port}"
     redis_container.get_client().flushdb()
 
 
 @fixture(scope="function")
 async def worker(redis_url: str) -> AsyncGenerator[Worker, None]:
-    w = Worker(redis_url=redis_url)
+    w = Worker(redis_url=redis_url, queue_name="test")
     yield w
     await w.close()

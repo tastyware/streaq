@@ -103,7 +103,7 @@ def register_scripts(redis: Redis) -> dict[str, AsyncScript]:
     return {
         "publish_task": redis.register_script(PUBLISH_TASK),
         "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
-        "publish_dependant_task": redis.register_script(PUBLISH_DEPENDENT_TASK),
+        "publish_dependent_task": redis.register_script(PUBLISH_DEPENDENT_TASK),
         "retry_task": redis.register_script(RETRY_TASK),
         "update_dependencies": redis.register_script(UPDATE_DEPENDENCIES),
     }

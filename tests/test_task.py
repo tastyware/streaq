@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from streaq import StreaqError, WrappedContext, Worker
-from streaq.task import StreaqRetry, TaskResult, TaskStatus
+from streaq.task import StreaqRetry, TaskStatus
 
 
 async def test_result_timeout(worker: Worker):
@@ -11,13 +11,11 @@ async def test_result_timeout(worker: Worker):
     async def foobar(ctx: WrappedContext[None]) -> bool:
         return False
 
-    worker.burst = True
     async with worker:
         task = await foobar.enqueue()
-        res = await asyncio.gather(
-            task.result(5), worker.run_async(), return_exceptions=True
-        )
-        assert isinstance(res[0], StreaqError)
+        worker.loop.create_task(worker.run_async())
+        with pytest.raises(StreaqError):
+            await task.result(3)
 
 
 async def test_task_timeout(worker: Worker):
@@ -25,27 +23,27 @@ async def test_task_timeout(worker: Worker):
     async def foobar(ctx: WrappedContext[None]) -> None:
         await asyncio.sleep(5)
 
-    worker.burst = True
     async with worker:
         task = await foobar.enqueue()
-        res = await asyncio.gather(task.result(), worker.run_async())
-        assert not res[0].success
-        assert isinstance(res[0].result, asyncio.TimeoutError)
+        worker.loop.create_task(worker.run_async())
+        res = await task.result(3)
+        assert not res.success
+        assert isinstance(res.result, asyncio.TimeoutError)
 
 
 async def test_task_status(worker: Worker):
     @worker.task()
     async def foobar(ctx: WrappedContext[None]) -> None:
-        await asyncio.sleep(3)
+        await asyncio.sleep(1)
 
-    worker.burst = True
     async with worker:
         task = foobar.enqueue()
         assert await task.status() == TaskStatus.PENDING
         await task.start()
         task2 = await foobar.enqueue().start(delay=5)
         assert await task.status() == TaskStatus.QUEUED
-        await asyncio.gather(task.result(), worker.run_async())
+        worker.loop.create_task(worker.run_async())
+        await task.result(3)
         assert await task.status() == TaskStatus.DONE
         assert await task2.status() == TaskStatus.SCHEDULED
 
@@ -55,20 +53,12 @@ async def test_task_status_running(worker: Worker):
     async def foobar(ctx: WrappedContext[None]) -> None:
         await asyncio.sleep(3)
 
-    worker.burst = True
     async with worker:
         task = await foobar.enqueue().start()
-
-        async def get_status_after_delay() -> tuple[TaskStatus, bool]:
-            await asyncio.sleep(1)
-            status = await task.status()
-            aborted = await task.abort()
-            return status, aborted
-
-        res = await asyncio.gather(get_status_after_delay(), worker.run_async())
-        status, aborted = res[0]
-        assert status == TaskStatus.RUNNING
-        assert aborted
+        worker.loop.create_task(worker.run_async())
+        await asyncio.sleep(1)
+        assert await task.status() == TaskStatus.RUNNING
+        assert await task.abort()
 
 
 async def test_task_cron(worker: Worker):
@@ -85,16 +75,9 @@ async def test_task_cron(worker: Worker):
         assert schedule.day == 1 and schedule.month == 1
         await cron2.run()
         task = cron2.enqueue()
-        done, _ = await asyncio.wait(
-            [
-                asyncio.ensure_future(task.result(3)),
-                asyncio.ensure_future(worker.run_async()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for finished in done:
-            with pytest.raises(StreaqError):
-                finished.result()
+        worker.loop.create_task(worker.run_async())
+        with pytest.raises(StreaqError):
+            await task.result(3)
 
 
 async def test_task_info(redis_url: str):
@@ -120,18 +103,11 @@ async def test_task_retry(worker: Worker):
 
     async with worker:
         task = await foobar.enqueue()
-        done, _ = await asyncio.wait(
-            [
-                asyncio.ensure_future(task.result(6)),
-                asyncio.ensure_future(worker.run_async()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for finished in done:
-            res = finished.result()
-            assert res is not None
-            assert res.success
-            assert res.result == 3
+        worker.loop.create_task(worker.run_async())
+        res = await task.result(6)
+        assert res is not None
+        assert res.success
+        assert res.result == 3
 
 
 async def test_task_retry_with_delay(worker: Worker):
@@ -143,24 +119,13 @@ async def test_task_retry_with_delay(worker: Worker):
 
     async with worker:
         task = await foobar.enqueue()
-
-        async def get_result_twice() -> TaskResult:
-            with pytest.raises(asyncio.TimeoutError):
-                await task.result(3)
-            return await task.result(1)
-
-        done, _ = await asyncio.wait(
-            [
-                asyncio.ensure_future(get_result_twice()),
-                asyncio.ensure_future(worker.run_async()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for finished in done:
-            res = finished.result()
-            assert res is not None
-            assert res.success
-            assert res.result == 2
+        worker.loop.create_task(worker.run_async())
+        with pytest.raises(asyncio.TimeoutError):
+            await task.result(3)
+        res = await task.result(1)
+        assert res is not None
+        assert res.success
+        assert res.result == 2
 
 
 async def test_task_failure(worker: Worker):
@@ -168,12 +133,12 @@ async def test_task_failure(worker: Worker):
     async def foobar(ctx: WrappedContext[None]) -> None:
         raise Exception("That wasn't supposed to happen!")
 
-    worker.burst = True
     async with worker:
         task = await foobar.enqueue()
-        res = await asyncio.gather(task.result(), worker.run_async())
-        assert not res[0].success
-        assert isinstance(res[0].result, Exception)
+        worker.loop.create_task(worker.run_async())
+        res = await task.result(3)
+        assert not res.success
+        assert isinstance(res.result, Exception)
 
 
 async def test_task_retry_no_delay(worker: Worker):
@@ -185,18 +150,11 @@ async def test_task_retry_no_delay(worker: Worker):
 
     async with worker:
         task = await foobar.enqueue()
-        done, _ = await asyncio.wait(
-            [
-                asyncio.ensure_future(task.result(3)),
-                asyncio.ensure_future(worker.run_async()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for finished in done:
-            res = finished.result()
-            assert res is not None
-            assert res.success
-            assert res.result
+        worker.loop.create_task(worker.run_async())
+        res = await task.result(3)
+        assert res is not None
+        assert res.success
+        assert res.result
 
 
 async def test_task_max_retries(worker: Worker):
@@ -206,18 +164,11 @@ async def test_task_max_retries(worker: Worker):
 
     async with worker:
         task = await foobar.enqueue()
-        done, _ = await asyncio.wait(
-            [
-                asyncio.ensure_future(task.result(3)),
-                asyncio.ensure_future(worker.run_async()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for finished in done:
-            res = finished.result()
-            assert res is not None
-            assert not res.success
-            assert isinstance(res.result, StreaqError)
+        worker.loop.create_task(worker.run_async())
+        res = await task.result(3)
+        assert res is not None
+        assert not res.success
+        assert isinstance(res.result, StreaqError)
 
 
 async def test_task_failed_abort(worker: Worker):
@@ -234,3 +185,69 @@ async def test_task_failed_abort(worker: Worker):
         assert result.result
         aborted = await task.abort()
         assert not aborted
+
+
+async def test_task_nonexistent_or_finished_dependency(worker: Worker):
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        pass
+
+    async with worker:
+        task = await foobar.enqueue().start(after="nonexistent")
+        worker.loop.create_task(worker.run_async())
+        result = await task.result(3)
+        assert result.success
+
+
+async def test_task_dependency(worker: Worker):
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(1)
+
+    async with worker:
+        task = await foobar.enqueue().start(delay=1)
+        task2 = await foobar.enqueue().start(after=task.id)
+        worker.loop.create_task(worker.run_async())
+        assert await task2.status() == TaskStatus.PENDING
+        await task.result(3)
+        result = await task2.result(3)
+        assert result.success
+
+
+async def test_task_dependency_multiple(worker: Worker):
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(1)
+
+    async with worker:
+        task = await foobar.enqueue().start()
+        task2 = await foobar.enqueue().start(after=task.id)
+        task3 = await foobar.enqueue().start(after=[task.id, task2.id])
+        worker.loop.create_task(worker.run_async())
+        assert await task2.status() == TaskStatus.PENDING
+        assert await task3.status() == TaskStatus.PENDING
+        res1 = await task.result(3)
+        assert res1.success
+        assert await task3.status() == TaskStatus.PENDING
+        res2 = await task2.result(3)
+        assert res2.success
+        res3 = await task3.result(3)
+        assert res3.success
+
+
+async def test_task_dependency_failed(worker: Worker):
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        raise Exception("Oh no!")
+
+    @worker.task()
+    async def do_nothing(ctx: WrappedContext[None]) -> None:
+        pass
+
+    async with worker:
+        task = await foobar.enqueue().start()
+        dep = await do_nothing.enqueue().start(after=task.id)
+        worker.loop.create_task(worker.run_async())
+        res = await dep.result(3)
+        assert not res.success
+        assert isinstance(res.result, StreaqError)

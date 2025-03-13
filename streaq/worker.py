@@ -292,9 +292,7 @@ class Worker(Generic[WD]):
         except asyncio.CancelledError:
             logger.debug(f"main loop interrupted, closing worker {self.id}")
         finally:
-            # if we handled a signal, close was already called
-            if not self._block_new_tasks:
-                self.loop.run_until_complete(self.close())
+            self.loop.run_until_complete(self.close())
 
     async def run_async(self) -> None:
         """
@@ -416,9 +414,10 @@ class Worker(Generic[WD]):
                         args=[decoded, expire_ms],
                         client=pipe,
                     )
-                logger.debug(
-                    f"enqueuing {len(task_ids)} delayed tasks in worker {self.id}"
-                )
+                if task_ids:
+                    logger.debug(
+                        f"enqueuing {len(task_ids)} delayed tasks in worker {self.id}"
+                    )
                 # Go through task_ids in the aborted tasks set and cancel those tasks.
                 aborted: set[str] = set()
                 for task_id_bytes in aborted_ids:
@@ -484,7 +483,8 @@ class Worker(Generic[WD]):
                 # yield control
                 await asyncio.sleep(0)
             # start new tasks
-            logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
+            if messages:
+                logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
             for message in messages:
                 coro = self.run_task(message.task_id, message.message_id)
                 self.task_wrappers[message.task_id] = self.loop.create_task(coro)
@@ -769,7 +769,7 @@ class Worker(Generic[WD]):
                             pipe.set(key(REDIS_RESULT), result, ex=timedelta(minutes=5))
                             pipe.publish(self._channel_key, dep_id)
                         else:
-                            await self.scripts["publish_dependant_task"](
+                            await self.scripts["publish_dependent_task"](
                                 keys=[self._stream_key, key(REDIS_MESSAGE), deps_key],
                                 args=[dep_id, now_ms(), DEFAULT_TTL],
                                 client=pipe,
@@ -907,7 +907,7 @@ class Worker(Generic[WD]):
         Gracefully shutdown the worker when a signal is received.
         """
         logger.info(f"received signal {signum.name}, shutting down worker {self.id}")
-        self.loop.create_task(self.close())
+        self._block_new_tasks = True
 
     async def close(self) -> None:
         """
