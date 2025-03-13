@@ -21,6 +21,8 @@ from redis.typing import EncodableT
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
+    REDIS_DEPENDENTS,
+    REDIS_DEPENDENCIES,
     REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
@@ -109,20 +111,24 @@ class Task(Generic[R]):
             self.id = uuid4().hex
 
     async def start(
-        self, delay: timedelta | int | None = None, schedule: datetime | None = None
+        self,
+        after: str | list[str] | None = None,
+        delay: timedelta | int | None = None,
+        schedule: datetime | None = None,
     ) -> "Task[R]":
         """
         Enqueues a task immediately, for running after a delay, or for running
         at a specified time.
 
+        :param after: task ID(s) to wait for before running this task
         :param delay: duration to wait before running the task
         :param schedule: datetime at which to run the task
 
         :return: self
         """
-        if delay and schedule:
+        if (delay and schedule) or (delay and after) or (schedule and after):
             raise StreaqError(
-                "Use either 'delay' or 'schedule' when enqueuing tasks, not both!"
+                "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not multiple!"
             )
         enqueue_time = now_ms()
         if schedule:
@@ -133,19 +139,41 @@ class Task(Generic[R]):
             score = None
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
-        keys = [
-            self.parent.worker._stream_key,
-            self._task_key(REDIS_MESSAGE),
-            self._task_key(REDIS_TASK),
-        ]
-        args = [self.id, enqueue_time, ttl, data]
-        if score is not None:
-            keys.append(self.parent.worker._queue_key)
-            args.append(score)
-        res = await self.parent.worker.scripts["publish_task"](keys=keys, args=args)
-        if res == 0:
-            logger.debug("Task is unique and already exists, not enqueuing!")
-            return self
+        dependencies_finished = False
+        if after:
+            if isinstance(after, str):
+                after = [after]
+            async with self.redis.pipeline(transaction=True) as pipe:
+                for task_id in after:
+                    await self.parent.worker.scripts["update_dependencies"](
+                        keys=[
+                            REDIS_PREFIX + self.queue + REDIS_DEPENDENTS + task_id,
+                            self._task_key(REDIS_DEPENDENCIES),
+                            REDIS_PREFIX + self.queue + REDIS_TASK + task_id,
+                            self._task_key(REDIS_TASK),
+                            task_id,
+                            self.id,
+                        ],
+                        args=[data, ttl],
+                        client=pipe,
+                    )
+                res = await pipe.execute()
+                # if none of the deps were valid, enqueue now
+                dependencies_finished = not any(res)
+        if not after or dependencies_finished:
+            keys = [
+                self.parent.worker._stream_key,
+                self._task_key(REDIS_MESSAGE),
+                self._task_key(REDIS_TASK),
+            ]
+            args = [self.id, enqueue_time, ttl, data]
+            if score is not None:
+                keys.append(self.parent.worker._queue_key)
+                args.append(score)
+            res = await self.parent.worker.scripts["publish_task"](keys=keys, args=args)
+            if res == 0:
+                logger.debug("Task is unique and already exists, not enqueuing!")
+                return self
 
         return self
 

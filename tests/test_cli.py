@@ -34,7 +34,7 @@ def test_verbose(worker_no_cleanup: Worker):
     setattr(test_module, "test_worker", worker_no_cleanup)
     result = runner.invoke(cli, ["tests.test_cli.test_worker", "--burst", "--verbose"])
     assert result.exit_code == 0
-    assert "enqueuing" in result.stdout
+    assert "main loop" in result.stdout
 
 
 def test_version(worker_no_cleanup: Worker):

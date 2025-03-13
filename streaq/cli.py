@@ -97,10 +97,7 @@ def run_worker(path: str, burst: bool, watch: bool, verbose: bool):
         logging.config.dictConfig(default_log_config(verbose))
         worker = cast(Worker, import_string(path))
         worker.burst = burst
-        try:
-            worker.run_sync()
-        except KeyboardInterrupt:
-            pass
+        worker.run_sync()
 
 
 def run_worker_watch(path: str, burst: bool, verbose: bool):
@@ -111,7 +108,4 @@ def run_worker_watch(path: str, burst: bool, verbose: bool):
     sys.path.append(os.getcwd())
     worker = cast(Worker, import_string(path))
     worker.burst = burst
-    try:
-        worker.run_sync()
-    except KeyboardInterrupt:
-        pass
+    worker.run_sync()
