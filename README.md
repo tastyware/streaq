@@ -11,10 +11,13 @@ Fast, async, type-safe job queuing with Redis streams
 ## Features
 
 - Up to [5x-15x faster](/benchmarks) than arq
-- 100% typed
+- Strongly typed
 - 90%+ unit test coverage
 - Comprehensive documentation
-- Support for delayed tasks and cron jobs
+- Support for delayed/scheduled tasks
+- Cron jobs
+- Task sequencing via dependencies
+- Second-class support for synchronous tasks (run in separate threads)
 - Dead simple--under 2k lines of code
 - Web UI included (work in progress!)
 

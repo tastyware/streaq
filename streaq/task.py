@@ -365,8 +365,8 @@ class RegisteredTask(Generic[WD, P, R]):
 
 
 @dataclass
-class RegisteredCron(Generic[WD]):
-    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, None]]
+class RegisteredCron(Generic[WD, R]):
+    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]]
     max_tries: int | None
     crontab: CronTab
     timeout: timedelta | int | None
@@ -381,7 +381,7 @@ class RegisteredCron(Generic[WD]):
         """
         return Task((), {}, self)
 
-    async def run(self) -> None:
+    async def run(self) -> R:
         """
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.

@@ -7,7 +7,15 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppres
 from datetime import timedelta, timezone, tzinfo
 from signal import Signals
 from time import time
-from typing import Any, AsyncIterator, Callable, Concatenate, Coroutine, Generic, cast
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Concatenate,
+    Coroutine,
+    Generic,
+    cast,
+)
 from uuid import uuid4
 
 from crontab import CronTab
@@ -39,7 +47,7 @@ from streaq.constants import (
 )
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
-from streaq.utils import StreaqError, now_ms, to_ms, to_seconds
+from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds
 from streaq.task import RegisteredCron, RegisteredTask, StreaqRetry
 
 """
@@ -215,6 +223,7 @@ class Worker(Generic[WD]):
         tab: str,
         max_tries: int | None = 3,
         timeout: timedelta | int | None = None,
+        ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
     ):
         """
@@ -226,18 +235,25 @@ class Worker(Generic[WD]):
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param timeout: time after which to abort the task, if None will never time out
+        :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
         def wrapped(
-            fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, None]],
-        ) -> RegisteredCron[WD]:
+            fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R] | R],
+        ) -> RegisteredCron[WD, R]:
+            if not asyncio.iscoroutinefunction(fn):
+                _fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]] = asyncify(
+                    fn
+                )  # type: ignore
+            else:
+                _fn = fn
             task = RegisteredCron(
-                fn,
+                _fn,
                 max_tries,
                 CronTab(tab),
                 timeout,
-                0,  # ttl of 0 always
+                ttl,
                 unique,
                 self,
             )
@@ -266,10 +282,18 @@ class Worker(Generic[WD]):
         """
 
         def wrapped(
-            fn: Callable[Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]],
+            fn: Callable[
+                Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R] | R
+            ],
         ) -> RegisteredTask[WD, P, R]:
+            if not asyncio.iscoroutinefunction(fn):
+                _fn: Callable[
+                    Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]
+                ] = asyncify(fn)  # type: ignore
+            else:
+                _fn = fn
             task = RegisteredTask(
-                fn,
+                _fn,
                 max_tries,
                 timeout,
                 ttl,

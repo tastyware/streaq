@@ -21,6 +21,7 @@ authors = [
     { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
+    "anyio>=4.8.0",
     "crontab>=1.0.1",
     "redis[hiredis]>=5.2.1",
     "typer>=0.15.2",

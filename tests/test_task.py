@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -251,3 +252,17 @@ async def test_task_dependency_failed(worker: Worker):
         res = await dep.result(3)
         assert not res.success
         assert isinstance(res.result, StreaqError)
+
+
+async def test_sync_task(worker: Worker):
+    @worker.task()
+    def foobar(ctx: WrappedContext[None]) -> None:
+        time.sleep(2)
+
+    async with worker:
+        task = await foobar.enqueue()
+        task2 = await foobar.enqueue()
+        worker.loop.create_task(worker.run_async())
+        # this would time out if these were running sequentially
+        results = await asyncio.gather(task.result(3), task2.result(3))
+        assert all(res.success for res in results)
