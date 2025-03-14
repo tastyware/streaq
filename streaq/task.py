@@ -374,7 +374,7 @@ class RegisteredCron(Generic[WD, R]):
     unique: bool
     worker: "Worker"
 
-    def enqueue(self) -> Task[None]:
+    def enqueue(self) -> Task[R]:
         """
         Serialize the task and send it to the queue for later execution by an active worker.
         Though this isn't async, it should be awaited as it returns an object that should be.
