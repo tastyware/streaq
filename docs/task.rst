@@ -1,6 +1,20 @@
 Tasks
 =====
 
+Task execution
+--------------
+
+streaQ preserves arq's task execution model, called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will be cancelled immediately and will remain in the queue to be run again when the worker starts up again (or gets run by another worker which is still running).
+
+All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid making it twice.
+
+streaQ handles exceptions in the following manner:
+
+* ``StreaqRetry`` exceptions result in retrying the task, sometimes after a delay (see below).
+* ``asyncio.CancelledError`` exceptions result in the task failing if the task was aborted by the user, or being retried if the worker was shut down unexpectedly.
+* ``asyncio.TimeoutError`` exceptions result in the task failing if the task took too long to run.
+* Any other ``Exception`` will result in the task failing.
+
 Registering tasks
 -----------------
 
@@ -54,6 +68,15 @@ We can also defer task execution to a later time:
    async with worker:
        await sleeper.enqueue(3).start(delay=10)  # start after 10 seconds
        await sleeper.enqueue(3).start(schedule=datetime(...))  # start at a specific time
+
+Tasks can depend on other tasks, meaning they won't be enqueued until their dependencies have finished successfully. If the dependency fails, the dependent task will not be enqueued.
+
+.. code-block:: python
+
+   async with worker:
+       task1 = await sleeper.enqueue(1)
+       task2 = await sleeper.enqueue(2).start(after=task1.id)
+       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
 Task status & results
 ---------------------
@@ -123,43 +146,26 @@ streaQ also includes cron jobs, which allow you to run code at regular, schedule
    async def cron(ctx: WrappedContext[None]) -> None:
        print("Itsa me, Mario!")
 
-The ``cron`` decorator has one required parameter, the crontab to use which follows the format specified `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_, as well as many of the same optional parameters as the ``task`` decorator.
+The ``cron`` decorator has one required parameter, the crontab to use which follows the format specified `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_, as well as the same optional parameters as the ``task`` decorator.
 
 The timezone used for the scheduler can be controlled via the worker's ``tz`` parameter.
 
-Synchronous calls
------------------
+Synchronous functions
+---------------------
 
-Functions that can block the loop for extended periods should be run in an executor like ``concurrent.futures.ThreadPoolExecutor`` or ``concurrent.futures.ProcessPoolExecutor``:
+streaQ also supports synchronous functions as second-class citizens for use with mixed codebases. Sync functions will be run in a separate thread, so they won't block the event loop.
+
+Note that if the task waiting for its completion is cancelled, the thread will still run its course but its return value (or any raised exception) will be ignored.
 
 .. code-block:: python
 
-   import asyncio
    import time
-   from concurrent.futures import ProcessPoolExecutor
-   from contextlib import asynccontextmanager
-   from dataclasses import dataclass
-   from functools import partial
-   from typing import AsyncIterator
-   from streaq import Worker, WrappedContext
 
-   @dataclass
-   class Context:
-       pool: ProcessPoolExecutor
-
-   @asynccontextmanager
-   async def lifespan(worker: Worker) -> AsyncIterator[Context]:
-       with ProcessPoolExecutor() as executor:
-           yield Context(executor)
-
-   worker = Worker(worker_lifespan=lifespan)
-
+   @worker.task()
    def sync_sleep(seconds: int) -> int:
        time.sleep(seconds)
        return seconds
 
-   @worker.task()
-   async def do_work(ctx: WrappedContext[Context], seconds: int) -> int:
-       loop = asyncio.get_running_loop()
-       blocking = partial(sync_sleep, seconds)
-       return await loop.run_in_executor(ctx.deps.pool, blocking)
+   async with worker:
+      task = await sync_sleep.enqueue(1)
+      print(await task.result(3))

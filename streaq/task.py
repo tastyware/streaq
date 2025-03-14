@@ -365,8 +365,8 @@ class RegisteredTask(Generic[WD, P, R]):
 
 
 @dataclass
-class RegisteredCron(Generic[WD]):
-    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, None]]
+class RegisteredCron(Generic[WD, R]):
+    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]]
     max_tries: int | None
     crontab: CronTab
     timeout: timedelta | int | None
@@ -374,14 +374,14 @@ class RegisteredCron(Generic[WD]):
     unique: bool
     worker: "Worker"
 
-    def enqueue(self) -> Task[None]:
+    def enqueue(self) -> Task[R]:
         """
         Serialize the task and send it to the queue for later execution by an active worker.
         Though this isn't async, it should be awaited as it returns an object that should be.
         """
         return Task((), {}, self)
 
-    async def run(self) -> None:
+    async def run(self) -> R:
         """
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.

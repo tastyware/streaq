@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -67,17 +68,17 @@ async def test_task_cron(worker: Worker):
         pass
 
     @worker.cron("* * * * * * *")  # once/second
-    async def cron2(ctx: WrappedContext[None]) -> None:
-        pass
+    async def cron2(ctx: WrappedContext[None]) -> bool:
+        return True
 
     async with worker:
         schedule = cron1.schedule()
         assert schedule.day == 1 and schedule.month == 1
-        await cron2.run()
-        task = cron2.enqueue()
+        await cron1.run()
+        task = cron2.enqueue()  # by not awaiting we just get the task obj
         worker.loop.create_task(worker.run_async())
-        with pytest.raises(StreaqError):
-            await task.result(3)
+        res = await task.result(3)
+        assert res.result and res.success
 
 
 async def test_task_info(redis_url: str):
@@ -251,3 +252,17 @@ async def test_task_dependency_failed(worker: Worker):
         res = await dep.result(3)
         assert not res.success
         assert isinstance(res.result, StreaqError)
+
+
+async def test_sync_task(worker: Worker):
+    @worker.task()
+    def foobar(ctx: WrappedContext[None]) -> None:
+        time.sleep(2)
+
+    async with worker:
+        task = await foobar.enqueue()
+        task2 = await foobar.enqueue()
+        worker.loop.create_task(worker.run_async())
+        # this would time out if these were running sequentially
+        results = await asyncio.gather(task.result(3), task2.result(3))
+        assert all(res.success for res in results)
