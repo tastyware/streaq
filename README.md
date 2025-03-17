@@ -16,8 +16,8 @@ Fast, async, type-safe job queuing with Redis streams
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
 - Cron jobs
-- Task sequencing via dependencies
-- Second-class support for synchronous tasks (run in separate threads)
+- Task sequencing via dependency graph
+- Support for synchronous tasks (ran in separate threads)
 - Dead simple--under 2k lines of code
 - Web UI included (work in progress!)
 

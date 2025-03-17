@@ -21,8 +21,7 @@ from redis.typing import EncodableT
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
-    REDIS_DEPENDENTS,
-    REDIS_DEPENDENCIES,
+    REDIS_GRAPH,
     REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
@@ -88,6 +87,10 @@ class TaskResult(Generic[R]):
     queue_name: str
 
 
+async def _do_nothing(self, *args):
+    pass
+
+
 @dataclass
 class Task(Generic[R]):
     """
@@ -139,28 +142,18 @@ class Task(Generic[R]):
             score = None
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
-        dependencies_finished = False
         if after:
             if isinstance(after, str):
                 after = [after]
-            async with self.redis.pipeline(transaction=True) as pipe:
-                for task_id in after:
-                    await self.parent.worker.scripts["update_dependencies"](
-                        keys=[
-                            REDIS_PREFIX + self.queue + REDIS_DEPENDENTS + task_id,
-                            self._task_key(REDIS_DEPENDENCIES),
-                            REDIS_PREFIX + self.queue + REDIS_TASK + task_id,
-                            self._task_key(REDIS_TASK),
-                            task_id,
-                            self.id,
-                        ],
-                        args=[data, ttl],
-                        client=pipe,
-                    )
-                res = await pipe.execute()
-                # if none of the deps were valid, enqueue now
-                dependencies_finished = not any(res)
-        if not after or dependencies_finished:
+            res = await self.parent.worker.scripts["add_dependencies"](
+                keys=[
+                    self._task_key(REDIS_TASK),
+                    self.id,
+                    REDIS_PREFIX + self.queue + REDIS_GRAPH,
+                ],
+                args=[data, ttl] + after,
+            )
+        else:
             keys = [
                 self.parent.worker._stream_key,
                 self._task_key(REDIS_MESSAGE),
@@ -312,6 +305,44 @@ class Task(Generic[R]):
     def queue(self) -> str:
         return self.parent.worker.queue_name
 
+    @classmethod
+    def enqueue_unsafe(
+        cls,
+        fn_name: str,
+        worker: "Worker",
+        unique: bool = False,
+        *args,
+        **kwargs,
+    ) -> "Task":
+        # TODO: move to worker
+        """
+        Allows for enqueuing a task that is registered elsewhere without having access
+        to the worker that registered it. This is unsafe because it doesn't check if the
+        task is registered with the worker and doesn't enforce types, so it should only
+        be used if you need to separate the task queuing and task execution code for
+        performance reasons.
+
+        :param fn_name:
+            name of the function to run, much match its __qualname__. If you're unsure,
+            check the worker's "registry" dict.
+        :param worker: worker with same args as remote (Redis, serializer, queue, etc.)
+        :param unique: whether the task should be unique
+        :param args: positional arguments for the task
+        :param kwargs: keyword arguments for the task
+
+        :return: task object
+        """
+        registered = RegisteredTask(
+            fn=_do_nothing,
+            max_tries=None,
+            timeout=None,
+            ttl=None,
+            unique=unique,
+            worker=worker,
+            _fn_name=fn_name,
+        )
+        return Task(args, kwargs, registered)
+
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
@@ -321,6 +352,7 @@ class RegisteredTask(Generic[WD, P, R]):
     ttl: timedelta | int | None
     unique: bool
     worker: "Worker"
+    _fn_name: str | None = None
 
     def enqueue(
         self,
@@ -358,7 +390,7 @@ class RegisteredTask(Generic[WD, P, R]):
 
     @property
     def fn_name(self) -> str:
-        return self.fn.__qualname__
+        return self._fn_name or self.fn.__qualname__
 
     def __repr__(self):
         return f"<Task fn={self.fn_name} timeout={self.timeout} ttl={self.ttl}>"

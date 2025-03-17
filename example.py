@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
+
 from httpx import AsyncClient
 from streaq import Worker, WrappedContext
 

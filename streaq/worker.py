@@ -30,8 +30,7 @@ from streaq.constants import (
     DEFAULT_TTL,
     REDIS_ABORT,
     REDIS_CHANNEL,
-    REDIS_DEPENDENTS,
-    REDIS_DEPENDENCIES,
+    REDIS_GRAPH,
     REDIS_GROUP,
     REDIS_HEALTH,
     REDIS_LOCK,
@@ -124,6 +123,8 @@ class Worker(Generic[WD]):
         "_channel_key",
         "main_task",
         "_start_time",
+        "_prefix",
+        "_graph_key",
     )
 
     def __init__(
@@ -186,12 +187,14 @@ class Worker(Generic[WD]):
         self._aentered = False
         self._aexited = False
         self.worker_lifespan = worker_lifespan(self)
-        self._queue_key = REDIS_PREFIX + self.queue_name + REDIS_QUEUE
-        self._stream_key = REDIS_PREFIX + self.queue_name + REDIS_STREAM
-        self._timeout_key = REDIS_PREFIX + self.queue_name + REDIS_TIMEOUT
-        self._abort_key = REDIS_PREFIX + self.queue_name + REDIS_ABORT
-        self._health_key = REDIS_PREFIX + self.queue_name + REDIS_HEALTH
-        self._channel_key = REDIS_PREFIX + self.queue_name + REDIS_CHANNEL
+        self._prefix = REDIS_PREFIX + self.queue_name
+        self._queue_key = self._prefix + REDIS_QUEUE
+        self._stream_key = self._prefix + REDIS_STREAM
+        self._timeout_key = self._prefix + REDIS_TIMEOUT
+        self._abort_key = self._prefix + REDIS_ABORT
+        self._health_key = self._prefix + REDIS_HEALTH
+        self._channel_key = self._prefix + REDIS_CHANNEL
+        self._graph_key = self._prefix + REDIS_GRAPH
         self._start_time = now_ms()
 
     @property
@@ -433,7 +436,7 @@ class Worker(Generic[WD]):
                         keys=[
                             self._queue_key,
                             self._stream_key,
-                            REDIS_PREFIX + self.queue_name + REDIS_MESSAGE + decoded,
+                            self._prefix + REDIS_MESSAGE + decoded,
                         ],
                         args=[decoded, expire_ms],
                         client=pipe,
@@ -558,7 +561,7 @@ class Worker(Generic[WD]):
         """
         Execute the registered task, then store the result in Redis.
         """
-        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + task_id
+        key = lambda mid: self._prefix + mid + task_id
         # acquire semaphore
         async with self.bs:
             start_time = now_ms()
@@ -725,7 +728,7 @@ class Worker(Generic[WD]):
             result = self.serializer(data)
         except Exception as e:
             raise StreaqError(f"Failed to serialize result for task {task_id}!") from e
-        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + task_id
+        key = lambda mid: self._prefix + mid + task_id
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.xack(
                 self._stream_key,
@@ -749,9 +752,12 @@ class Worker(Generic[WD]):
                 )
                 pipe.zrem(self._timeout_key, message_id)
                 pipe.srem(self._abort_key, task_id)
-                pipe.smembers(key(REDIS_DEPENDENTS))
                 if success:
                     logger.info(f"task {task_id} ← {str(return_value):.32}")
+                    script = self.scripts["update_dependents"]
+                else:
+                    script = self.scripts["fail_dependents"]
+                await script(keys=[self._graph_key, task_id], client=pipe)
             elif delay:
                 self.counters["retried"] += 1
                 pipe.delete(key(REDIS_MESSAGE))
@@ -767,37 +773,49 @@ class Worker(Generic[WD]):
                     client=pipe,
                 )
             res = await pipe.execute()
-            # handle dependencies
-            if finish and res[-1]:
-                async with self.redis.pipeline(transaction=True) as pipe:
-                    pipe.delete(key(REDIS_DEPENDENTS))
-                    if not success:
-                        data = {
-                            "s": False,
-                            "r": StreaqError("Dependency failed, not running task!"),
-                            "st": -1,
-                            "ft": -1,
-                        }
-                        try:
-                            result = self.serializer(data)
-                        except Exception as e:
-                            raise StreaqError(
-                                f"Failed to serialize result for task {task_id}!"
-                            ) from e
-                    for dep in res[-1]:
-                        dep_id = dep.decode()
-                        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + dep_id
-                        deps_key = key(REDIS_DEPENDENCIES)
-                        pipe.srem(deps_key, task_id)
-                        if not success:
-                            pipe.set(key(REDIS_RESULT), result, ex=timedelta(minutes=5))
-                            pipe.publish(self._channel_key, dep_id)
-                        else:
-                            await self.scripts["publish_dependent_task"](
-                                keys=[self._stream_key, key(REDIS_MESSAGE), deps_key],
-                                args=[dep_id, now_ms(), DEFAULT_TTL],
-                                client=pipe,
-                            )
+        if finish and res[-1]:
+            if success:
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    for dep_id in res[-1]:
+                        dep_id = dep_id.decode()
+                        await self.scripts["publish_dependent"](
+                            keys=[
+                                self._stream_key,
+                                self._prefix + REDIS_MESSAGE + dep_id,
+                                dep_id,
+                            ],
+                            args=[now_ms(), DEFAULT_TTL],
+                            client=pipe,
+                        )
+                    await pipe.execute()
+            else:
+                failure = {
+                    "s": False,
+                    "r": StreaqError("Dependency failed, not running task!"),
+                    "st": -1,
+                    "ft": -1,
+                }
+                try:
+                    result = self.serializer(failure)
+                except Exception as e:
+                    raise StreaqError(
+                        f"Failed to serialize result for dependency of task {task_id}!"
+                    ) from e
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    self.counters["failed"] += len(res[-1])
+                    for dep_id in res[-1]:
+                        dep_id = dep_id.decode()
+                        logger.info(f"task {dep_id} dependency failed ×")
+                        await self.scripts["unpublish_dependent"](
+                            keys=[
+                                self._prefix + REDIS_TASK + dep_id,
+                                self._prefix + REDIS_RESULT + dep_id,
+                                self._channel_key,
+                                dep_id,
+                            ],
+                            args=[result],
+                            client=pipe,
+                        )
                     await pipe.execute()
 
     async def finish_failed_task(
@@ -810,7 +828,7 @@ class Worker(Generic[WD]):
         """
         Cleanup for a task that failed during execution.
         """
-        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + task_id
+        key = lambda mid: self._prefix + mid + task_id
         self.counters["failed"] += 1
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete(
@@ -826,32 +844,40 @@ class Worker(Generic[WD]):
             pipe.xdel(self._stream_key, message_id)
             if result_data is not None:
                 pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
-            pipe.smembers(REDIS_PREFIX + REDIS_DEPENDENTS + task_id)
+            await self.scripts["fail_dependents"](
+                keys=[self._graph_key, task_id],
+                client=pipe,
+            )
             res = await pipe.execute()
-            # handle dependencies
-            if res[-1]:
-                async with self.redis.pipeline(transaction=True) as pipe:
-                    pipe.delete(key(REDIS_DEPENDENTS))
-                    data = {
-                        "s": False,
-                        "r": StreaqError("Dependency failed, not running task!"),
-                        "st": -1,
-                        "ft": -1,
-                    }
-                    try:
-                        result = self.serializer(data)
-                    except Exception as e:
-                        raise StreaqError(
-                            f"Failed to serialize result for task {task_id}!"
-                        ) from e
-                    for dep in res[-1]:
-                        dep_id = dep.decode()
-                        key = lambda mid: REDIS_PREFIX + self.queue_name + mid + dep_id
-                        deps_key = key(REDIS_DEPENDENCIES)
-                        pipe.srem(deps_key, task_id)
-                        pipe.set(key(REDIS_RESULT), result, ex=timedelta(minutes=5))
-                        pipe.publish(self._channel_key, dep_id)
-                    await pipe.execute()
+        if res[-1]:
+            failure = {
+                "s": False,
+                "r": StreaqError("Dependency failed, not running task!"),
+                "st": -1,
+                "ft": -1,
+            }
+            try:
+                result = self.serializer(failure)
+            except Exception as e:
+                raise StreaqError(
+                    f"Failed to serialize result for task {task_id}!"
+                ) from e
+            async with self.redis.pipeline(transaction=False) as pipe:
+                self.counters["failed"] += len(res[-1])
+                for dep_id in res[-1]:
+                    dep_id = dep_id.decode()
+                    logger.info(f"task {dep_id} dependency failed ×")
+                    await self.scripts["unpublish_dependent"](
+                        keys=[
+                            self._prefix + REDIS_TASK + dep_id,
+                            self._prefix + REDIS_RESULT + dep_id,
+                            self._channel_key,
+                            dep_id,
+                        ],
+                        args=[result],
+                        client=pipe,
+                    )
+                await pipe.execute()
 
     async def redis_health_check(self):
         """
@@ -859,7 +885,7 @@ class Worker(Generic[WD]):
         Only one worker can run this at a time.
         """
         timeout = to_seconds(self.health_check_interval)
-        lock_name = REDIS_PREFIX + self.queue_name + REDIS_LOCK
+        lock_name = self._prefix + REDIS_LOCK
         while not self._block_new_tasks:
             async with self.redis.lock(lock_name, sleep=timeout, timeout=timeout + 5):
                 async with self.redis.pipeline(transaction=True) as pipe:
