@@ -197,16 +197,6 @@ And the dependency failing will cause dependent tasks to fail as well:
         pass
 
     async with worker:
-        task = await foobar.enqueue().start(delay=1)
+        task = await foobar.enqueue().start()
         dep = await do_nothing.enqueue().start(after=task.id)
         print(await dep.result(3))
-
-.. warning::
-   Since the dependency graph is only updated upon task completion, if a task finishes before its dependents call ``Task.start``, the dependents may get stuck in the queue forever. This will likely be fixed in a future release; for now, this can be avoided by enqueuing the dependent tasks before the task they depend on:
-
-   .. code-block:: python
-
-      async with worker:
-          task1 = foobar.enqueue()
-          task2 = await foobar.enqueue().start(after=task1.id)
-          await task1.start()

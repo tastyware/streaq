@@ -6,6 +6,8 @@ ADD_DEPENDENCIES = """
 local task_key = KEYS[1]
 local task_id = KEYS[2]
 local graph_key = KEYS[3]
+local prefix = KEYS[4]
+-- prefix = 'streaq:queues:default:task:result:'
 
 local task_data = ARGV[1]
 local ttl = ARGV[2]
@@ -28,19 +30,27 @@ end
 
 dag.dependencies[task_id] = {}
 
+local modified = 0
 for i=3, #ARGV do
   local dep_id = ARGV[i]
-  dag.dependencies[task_id][dep_id] = true
-  if not dag.dependents[dep_id] then
-    dag.dependents[dep_id] = {}
+  if redis.call('exists', prefix .. dep_id) ~= 1 then
+    modified = modified + 1
+    dag.dependencies[task_id][dep_id] = true
+    if not dag.dependents[dep_id] then
+      dag.dependents[dep_id] = {}
+    end
+    dag.dependents[dep_id][task_id] = true
   end
-  dag.dependents[dep_id][task_id] = true
+end
+
+if modified == 0 then
+  return 1
 end
 
 graph_str = cjson.encode(dag)
 redis.call('set', graph_key, graph_str)
 
-return 1
+return
 """
 
 PUBLISH_TASK = """

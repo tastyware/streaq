@@ -18,6 +18,7 @@ from typing import (
 )
 from uuid import uuid4
 
+from anyio.abc import CapacityLimiter
 from crontab import CronTab
 from redis.asyncio import Redis
 from redis.commands.core import AsyncScript
@@ -42,12 +43,11 @@ from streaq.constants import (
     REDIS_RUNNING,
     REDIS_STREAM,
     REDIS_TASK,
-    REDIS_TIMEOUT,
 )
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds
-from streaq.task import RegisteredCron, RegisteredTask, StreaqRetry
+from streaq.task import RegisteredCron, RegisteredTask, StreaqRetry, Task
 
 """
 Empty object representing uninitialized dependencies. This is distinct from
@@ -67,12 +67,19 @@ async def _worker_lifespan(worker: "Worker") -> AsyncIterator[None]:
     yield
 
 
+async def _do_nothing(self, *args):
+    pass
+
+
 class Worker(Generic[WD]):
     """
     Worker object that fetches and executes tasks from a queue.
 
     :param redis_url: connection URI for Redis
     :param concurrency: number of tasks the worker can run simultaneously
+    :param sync_concurrency:
+        max number of synchronous tasks the worker can run simultaneously
+        in separate threads; defaults to the same as ``concurrency``
     :param queue_name: name of queue in Redis
     :param queue_fetch_limit: max number of tasks to prefetch from Redis
     :param task_lifespan: async context manager that will wrap tasks
@@ -117,7 +124,6 @@ class Worker(Generic[WD]):
         "worker_lifespan",
         "_queue_key",
         "_stream_key",
-        "_timeout_key",
         "_abort_key",
         "_health_key",
         "_channel_key",
@@ -125,12 +131,15 @@ class Worker(Generic[WD]):
         "_start_time",
         "_prefix",
         "_graph_key",
+        "sync_concurrency",
+        "_limiter",
     )
 
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
         concurrency: int = 16,
+        sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
         queue_fetch_limit: int | None = None,
         task_lifespan: Callable[
@@ -183,6 +192,8 @@ class Worker(Generic[WD]):
         self.aborting_tasks: set[str] = set()
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
+        self.sync_concurrency = sync_concurrency or concurrency
+        self._limiter = CapacityLimiter(self.sync_concurrency)
         self._block_new_tasks = False
         self._aentered = False
         self._aexited = False
@@ -190,7 +201,6 @@ class Worker(Generic[WD]):
         self._prefix = REDIS_PREFIX + self.queue_name
         self._queue_key = self._prefix + REDIS_QUEUE
         self._stream_key = self._prefix + REDIS_STREAM
-        self._timeout_key = self._prefix + REDIS_TIMEOUT
         self._abort_key = self._prefix + REDIS_ABORT
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
@@ -247,7 +257,7 @@ class Worker(Generic[WD]):
         ) -> RegisteredCron[WD, R]:
             if not asyncio.iscoroutinefunction(fn):
                 _fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]] = asyncify(
-                    fn
+                    fn, self._limiter
                 )  # type: ignore
             else:
                 _fn = fn
@@ -292,7 +302,7 @@ class Worker(Generic[WD]):
             if not asyncio.iscoroutinefunction(fn):
                 _fn: Callable[
                     Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]
-                ] = asyncify(fn)  # type: ignore
+                ] = asyncify(fn, self._limiter)  # type: ignore
             else:
                 _fn = fn
             task = RegisteredTask(
@@ -483,10 +493,6 @@ class Worker(Generic[WD]):
             active_tasks = self.concurrency - self.bs._value
             pending_tasks = len(self.task_wrappers)
             count = self.queue_fetch_limit - pending_tasks
-            if active_tasks < self.concurrency:
-                expired = await self._get_idle_tasks(count)
-                count -= len(expired)
-                messages.extend(expired)
             if count > 0:
                 res = await self.redis.xreadgroup(
                     groupname=self.group_name,
@@ -530,32 +536,6 @@ class Worker(Generic[WD]):
                     del self.task_wrappers[task_id]
                     # propagate error
                     task.result()
-
-    async def _get_idle_tasks(self, count: int) -> list[StreamMessage]:
-        ids = await self.redis.zrangebyscore(self._timeout_key, 0, now_ms())
-        if not ids:
-            return []
-        if len(ids) > count:
-            ids = ids[:count]
-        async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.zrem(self._timeout_key, *ids)
-            pipe.xclaim(
-                self._stream_key,
-                groupname=self.group_name,
-                consumername=self.id,
-                min_idle_time=1000,
-                message_ids=ids,
-            )
-            _, msgs = await pipe.execute()
-        logger.debug(f"found {len(msgs)} idle tasks to rerun in worker {self.id}")
-        return [
-            StreamMessage(
-                message_id=msg_id.decode(),
-                task_id=msg[b"task_id"].decode(),
-                score=int(msg[b"score"]),
-            )
-            for msg_id, msg in msgs
-        ]
 
     async def run_task(self, task_id: str, message_id: str):
         """
@@ -619,10 +599,7 @@ class Worker(Generic[WD]):
                 if task.timeout is None
                 else start_time + 1000 + to_ms(task.timeout)
             )
-            async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.zadd(self._timeout_key, {message_id: timeout or "inf"})
-                pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
-                await pipe.execute()
+            await self.redis.set(key(REDIS_RUNNING), 1, pxat=timeout)
 
             if task.max_tries and task_try > task.max_tries:
                 logger.warning(
@@ -750,7 +727,6 @@ class Worker(Generic[WD]):
                     key(REDIS_TASK),
                     key(REDIS_MESSAGE),
                 )
-                pipe.zrem(self._timeout_key, message_id)
                 pipe.srem(self._abort_key, task_id)
                 if success:
                     logger.info(f"task {task_id} ← {str(return_value):.32}")
@@ -839,7 +815,6 @@ class Worker(Generic[WD]):
             )
             pipe.publish(self._channel_key, task_id)
             pipe.srem(self._abort_key, task_id)
-            pipe.zrem(self._timeout_key, message_id)
             pipe.xack(self._stream_key, self.group_name, message_id)
             pipe.xdel(self._stream_key, message_id)
             if result_data is not None:
@@ -878,6 +853,40 @@ class Worker(Generic[WD]):
                         client=pipe,
                     )
                 await pipe.execute()
+
+    def enqueue_unsafe(
+        self,
+        fn_name: str,
+        *args,
+        unique: bool = False,
+        **kwargs,
+    ) -> Task:
+        """
+        Allows for enqueuing a task that is registered elsewhere without having access
+        to the worker it's registered to. This is unsafe because it doesn't check if the
+        task is registered with the worker and doesn't enforce types, so it should only
+        be used if you need to separate the task queuing and task execution code for
+        performance reasons.
+
+        :param fn_name:
+            name of the function to run, much match its __qualname__. If you're unsure,
+            check ``Worker.registry``.
+        :param unique: whether multiple instances of the task can exist simultaneously
+        :param args: positional arguments for the task
+        :param kwargs: keyword arguments for the task
+
+        :return: task object
+        """
+        registered = RegisteredTask(
+            fn=_do_nothing,
+            max_tries=None,
+            timeout=None,
+            ttl=None,
+            unique=unique,
+            worker=self,
+            _fn_name=fn_name,
+        )
+        return Task(args, kwargs, registered)
 
     async def redis_health_check(self):
         """

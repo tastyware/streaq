@@ -87,10 +87,6 @@ class TaskResult(Generic[R]):
     queue_name: str
 
 
-async def _do_nothing(self, *args):
-    pass
-
-
 @dataclass
 class Task(Generic[R]):
     """
@@ -142,18 +138,20 @@ class Task(Generic[R]):
             score = None
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
+        run_now = False
         if after:
             if isinstance(after, str):
                 after = [after]
-            res = await self.parent.worker.scripts["add_dependencies"](
+            run_now = await self.parent.worker.scripts["add_dependencies"](
                 keys=[
                     self._task_key(REDIS_TASK),
                     self.id,
                     REDIS_PREFIX + self.queue + REDIS_GRAPH,
+                    REDIS_PREFIX + self.queue + REDIS_RESULT,
                 ],
                 args=[data, ttl] + after,
             )
-        else:
+        if not after or run_now:
             keys = [
                 self.parent.worker._stream_key,
                 self._task_key(REDIS_MESSAGE),
@@ -304,44 +302,6 @@ class Task(Generic[R]):
     @property
     def queue(self) -> str:
         return self.parent.worker.queue_name
-
-    @classmethod
-    def enqueue_unsafe(
-        cls,
-        fn_name: str,
-        worker: "Worker",
-        unique: bool = False,
-        *args,
-        **kwargs,
-    ) -> "Task":
-        # TODO: move to worker
-        """
-        Allows for enqueuing a task that is registered elsewhere without having access
-        to the worker that registered it. This is unsafe because it doesn't check if the
-        task is registered with the worker and doesn't enforce types, so it should only
-        be used if you need to separate the task queuing and task execution code for
-        performance reasons.
-
-        :param fn_name:
-            name of the function to run, much match its __qualname__. If you're unsure,
-            check the worker's "registry" dict.
-        :param worker: worker with same args as remote (Redis, serializer, queue, etc.)
-        :param unique: whether the task should be unique
-        :param args: positional arguments for the task
-        :param kwargs: keyword arguments for the task
-
-        :return: task object
-        """
-        registered = RegisteredTask(
-            fn=_do_nothing,
-            max_tries=None,
-            timeout=None,
-            ttl=None,
-            unique=unique,
-            worker=worker,
-            _fn_name=fn_name,
-        )
-        return Task(args, kwargs, registered)
 
 
 @dataclass

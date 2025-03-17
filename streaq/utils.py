@@ -4,6 +4,7 @@ from functools import partial, wraps
 from importlib import import_module
 from typing import Any, Callable, Coroutine
 
+from anyio.abc import CapacityLimiter
 from anyio.to_thread import run_sync
 
 from streaq.types import P, R
@@ -80,7 +81,9 @@ def default_log_config(verbose: bool) -> dict[str, Any]:
     }
 
 
-def asyncify(fn: Callable[P, R]) -> Callable[P, Coroutine[Any, Any, R]]:
+def asyncify(
+    fn: Callable[P, R], limiter: CapacityLimiter
+) -> Callable[P, Coroutine[Any, Any, R]]:
     """
     Taken from asyncer v0.0.8
 
@@ -100,6 +103,8 @@ def asyncify(fn: Callable[P, R]) -> Callable[P, Coroutine[Any, Any, R]]:
         print(result)
 
     :param fn: a blocking regular callable (e.g. a function)
+    :param limiter: a CapacityLimiter instance to limit the number of concurrent
+        threads running the blocking function.
 
     :return:
         An async function that takes the same positional and keyword arguments as the
@@ -110,6 +115,6 @@ def asyncify(fn: Callable[P, R]) -> Callable[P, Coroutine[Any, Any, R]]:
     @wraps(fn)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         call = partial(fn, *args, **kwargs)
-        return await run_sync(call, abandon_on_cancel=True)
+        return await run_sync(call, abandon_on_cancel=True, limiter=limiter)
 
     return wrapper
