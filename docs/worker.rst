@@ -91,6 +91,7 @@ Other configuration options
 
 - ``redis_url``: the URI for connecting to your Redis instance
 - ``concurrency``: the maximum number of tasks the worker can run concurrently; by default, this also controls the number of tasks which will be pre-fetched by the worker
+- ``sync_concurrency``: the maximum number of tasks the worker can run simultaneously in separate threads; defaults to the same as ``concurrency``
 - ``queue_fetch_limit``: the number of tasks to pre-fetch from Redis, defaults to ``concurrency * 2``
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once

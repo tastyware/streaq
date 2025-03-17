@@ -16,10 +16,17 @@ Fast, async, type-safe job queuing with Redis streams
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
 - Cron jobs
-- Task sequencing via dependencies
-- Second-class support for synchronous tasks (run in separate threads)
-- Dead simple--under 2k lines of code
-- Web UI included (work in progress!)
+- Task dependency graph
+- Support for synchronous tasks (ran in separate threads)
+- Dead simple--around 2k lines of code
+
+## Roadmap
+
+streaQ is still a work in progress. Here are some features that are planned:
+
+- Web UI
+- Redis Sentinel/Cluster support
+- Task priorities
 
 ## Installation
 

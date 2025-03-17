@@ -21,8 +21,7 @@ from redis.typing import EncodableT
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
-    REDIS_DEPENDENTS,
-    REDIS_DEPENDENCIES,
+    REDIS_GRAPH,
     REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
@@ -139,28 +138,20 @@ class Task(Generic[R]):
             score = None
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
-        dependencies_finished = False
+        run_now = False
         if after:
             if isinstance(after, str):
                 after = [after]
-            async with self.redis.pipeline(transaction=True) as pipe:
-                for task_id in after:
-                    await self.parent.worker.scripts["update_dependencies"](
-                        keys=[
-                            REDIS_PREFIX + self.queue + REDIS_DEPENDENTS + task_id,
-                            self._task_key(REDIS_DEPENDENCIES),
-                            REDIS_PREFIX + self.queue + REDIS_TASK + task_id,
-                            self._task_key(REDIS_TASK),
-                            task_id,
-                            self.id,
-                        ],
-                        args=[data, ttl],
-                        client=pipe,
-                    )
-                res = await pipe.execute()
-                # if none of the deps were valid, enqueue now
-                dependencies_finished = not any(res)
-        if not after or dependencies_finished:
+            run_now = await self.parent.worker.scripts["add_dependencies"](
+                keys=[
+                    self._task_key(REDIS_TASK),
+                    self.id,
+                    REDIS_PREFIX + self.queue + REDIS_GRAPH,
+                    REDIS_PREFIX + self.queue + REDIS_RESULT,
+                ],
+                args=[data, ttl] + after,
+            )
+        if not after or run_now:
             keys = [
                 self.parent.worker._stream_key,
                 self._task_key(REDIS_MESSAGE),
@@ -321,6 +312,7 @@ class RegisteredTask(Generic[WD, P, R]):
     ttl: timedelta | int | None
     unique: bool
     worker: "Worker"
+    _fn_name: str | None = None
 
     def enqueue(
         self,
@@ -358,7 +350,7 @@ class RegisteredTask(Generic[WD, P, R]):
 
     @property
     def fn_name(self) -> str:
-        return self.fn.__qualname__
+        return self._fn_name or self.fn.__qualname__
 
     def __repr__(self):
         return f"<Task fn={self.fn_name} timeout={self.timeout} ttl={self.ttl}>"

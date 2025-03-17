@@ -21,5 +21,6 @@ def redis_url(redis_container: RedisContainer) -> Generator[str, None, None]:
 @fixture(scope="function")
 async def worker(redis_url: str) -> AsyncGenerator[Worker, None]:
     w = Worker(redis_url=redis_url, queue_name="test")
-    yield w
+    async with w:
+        yield w
     await w.close()

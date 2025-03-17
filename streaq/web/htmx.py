@@ -14,7 +14,6 @@ from streaq.constants import (
     REDIS_PREFIX,
     REDIS_QUEUE,
     REDIS_STREAM,
-    REDIS_TIMEOUT,
 )
 
 # Use absolute path based on the location of this file
@@ -50,13 +49,11 @@ async def get_root(
         async with redis.pipeline(transaction=False) as pipe:
             pipe.xlen(stream_key)
             pipe.zcard(REDIS_PREFIX + name + REDIS_QUEUE)
-            pipe.zcard(REDIS_PREFIX + name + REDIS_TIMEOUT)
             pipe.xinfo_consumers(stream_key, REDIS_GROUP)
-            enqueued, scheduled, running, consumers = await pipe.execute()
+            enqueued, scheduled, consumers = await pipe.execute()
         queues.append(
             {
                 "name": name,
-                "active": running,
                 "enqueued": enqueued,
                 "scheduled": scheduled,
                 "workers": len(consumers),

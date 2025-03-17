@@ -169,3 +169,34 @@ Note that if the task waiting for its completion is cancelled, the thread will s
    async with worker:
       task = await sync_sleep.enqueue(1)
       print(await task.result(3))
+
+Task dependency graph
+---------------------
+
+streaQ supports chaining tasks together in a dependency graph. This means that tasks depending on other tasks won't be enqueued until their dependencies have finished successfully. If the dependency fails, the dependent task will fail as well.
+
+Dependencies can be specified using the ``after`` parameter of the ``Task.start`` function:
+
+.. code-block:: python
+
+   async with worker:
+       task1 = await sleeper.enqueue(1)
+       task2 = await sleeper.enqueue(2).start(after=task1.id)
+       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
+
+And the dependency failing will cause dependent tasks to fail as well:
+
+.. code-block:: python
+
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        raise Exception("Oh no!")
+
+    @worker.task()
+    async def do_nothing(ctx: WrappedContext[None]) -> None:
+        pass
+
+    async with worker:
+        task = await foobar.enqueue().start()
+        dep = await do_nothing.enqueue().start(after=task.id)
+        print(await dep.result(3))
