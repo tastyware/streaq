@@ -58,15 +58,8 @@ def main(
         bool,
         Option("--version", callback=version_callback, help="Show installed version"),
     ] = False,
-    web: Annotated[
-        bool, Option("--web", help="Whether to run web UI to monitor tasks")
-    ] = False,
 ):
     processes = []
-    if web:
-        from streaq.web import run_app
-
-        processes.append(Process(target=run_app, args=(host, port)))
     if workers > 1:
         processes.extend(
             [

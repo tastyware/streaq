@@ -156,10 +156,10 @@ class Task(Generic[R]):
                 self.parent.worker._stream_key,
                 self._task_key(REDIS_MESSAGE),
                 self._task_key(REDIS_TASK),
+                self.parent.worker._queue_key,
             ]
             args = [self.id, enqueue_time, ttl, data]
-            if score is not None:
-                keys.append(self.parent.worker._queue_key)
+            if score:
                 args.append(score)
             res = await self.parent.worker.scripts["publish_task"](keys=keys, args=args)
             if res == 0:

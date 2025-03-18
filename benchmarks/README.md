@@ -1,6 +1,6 @@
 # Benchmarks
 
-streaQ's performance significantly improves upon [arq](https://github.com/python-arq/arq), and is on-par or slightly better than [SAQ](https://github.com/tobymao/saq). If you want to run these tests yourself, first install the dependencies:
+streaQ's performance significantly improves upon [arq](https://github.com/python-arq/arq), and is on-par with or slightly better than [SAQ](https://github.com/tobymao/saq). If you want to run these tests yourself, first install the dependencies:
 ```
 $ pip install streaq[benchmark]
 ```
@@ -16,6 +16,8 @@ $ arq --workers ? benchmarks.bench_arq.WorkerSettings
 $ saq --quiet benchmarks.bench_saq.settings --workers ?
 $ streaq --burst --workers ? benchmarks.baseline.worker
 ```
+
+These benchmarks were run with streaQ v0.3.2.
 
 ## Benchmark 1: No-op
 

@@ -30,11 +30,6 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-web = [
-    "fastapi>=0.115.7",
-    "jinja2>=3.1.5",
-    "uvicorn>=0.34.0",
-]
 benchmark = [
     "arq",
     "saq[hiredis]>=0.22.2",

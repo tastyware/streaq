@@ -7,7 +7,6 @@ local task_key = KEYS[1]
 local task_id = KEYS[2]
 local graph_key = KEYS[3]
 local prefix = KEYS[4]
--- prefix = 'streaq:queues:default:task:result:'
 
 local task_data = ARGV[1]
 local ttl = ARGV[2]
@@ -69,7 +68,7 @@ if redis.call('set', task_key, task_data, 'nx', 'px', ttl) == nil then
   return 0
 end
 
-if score == nil then
+if not score then
   local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id, 'score', enqueue_time)
   redis.call('set', message_key, message_id, 'px', ttl)
   return message_id

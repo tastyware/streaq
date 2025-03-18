@@ -24,7 +24,6 @@ You can always run ``streaq --help`` to see the help page:
    │ --reload              -r               Whether to reload the worker upon changes detected              │
    │ --verbose             -v               Whether to use logging.DEBUG instead of logging.INFO            │
    │ --version                              Show installed version                                          │
-   │ --web                                  Whether to run web UI to monitor tasks                          │
    │ --install-completion                   Install completion for the current shell.                       │
    │ --show-completion                      Show completion for the current shell, to copy it or customize  │
    │                                        the installation.                                               │

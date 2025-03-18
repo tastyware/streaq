@@ -96,3 +96,21 @@ Other configuration options
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
 - ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
+
+Deploying with Redis Sentinel
+-----------------------------
+
+In production environments, oftentimes high availability guarantees are needed, which is why Redis Sentinel was created. streaQ allows you to use Redis Sentinel easily:
+
+.. code-block:: python
+
+   worker = Worker(
+       redis_sentinel_master="mymaster",
+       redis_sentinel_nodes=[
+           ("localhost", 26379),
+           ("localhost", 26379),
+           ("localhost", 26379),
+       ],
+   )
+
+If you pass in the ``redis_sentinel_nodes`` parameter, you no longer need to pass ``redis_url``. For a simple Docker Compose script to get a cluster running, see `here <https://gist.github.com/Graeme22/f54800a410757242dbce8e745fca6316>`_.

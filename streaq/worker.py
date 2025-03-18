@@ -21,6 +21,7 @@ from uuid import uuid4
 from anyio.abc import CapacityLimiter
 from crontab import CronTab
 from redis.asyncio import Redis
+from redis.asyncio.sentinel import Sentinel
 from redis.commands.core import AsyncScript
 from redis.exceptions import ResponseError
 from redis.typing import EncodableT
@@ -133,11 +134,14 @@ class Worker(Generic[WD]):
         "_graph_key",
         "sync_concurrency",
         "_limiter",
+        "_sentinel",
     )
 
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
+        redis_sentinel_nodes: list[tuple[str, int]] | None = None,
+        redis_sentinel_master: str = "mymaster",
         concurrency: int = 16,
         sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
@@ -155,7 +159,11 @@ class Worker(Generic[WD]):
         health_check_interval: timedelta | int = 300,
     ):
         #: Redis connection
-        self.redis = Redis.from_url(redis_url)
+        if redis_sentinel_nodes:
+            self._sentinel = Sentinel(redis_sentinel_nodes, socket_timeout=2.0)
+            self.redis = self._sentinel.master_for(redis_sentinel_master)
+        else:
+            self.redis = Redis.from_url(redis_url)
         self.concurrency = concurrency
         self.queue_name = queue_name
         self.group_name = REDIS_GROUP
