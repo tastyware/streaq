@@ -38,4 +38,4 @@ jobs:
         uv run pyright streaq/ tests/
     - name: Test with pytest
       run: |
-        uv run pytest --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=90
+        uv run pytest --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=95

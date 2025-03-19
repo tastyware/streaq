@@ -12,13 +12,14 @@ Fast, async, type-safe job queuing with Redis streams
 
 - Up to [5x-15x faster](/benchmarks) than arq
 - Strongly typed
-- 90%+ unit test coverage
+- 95%+ unit test coverage
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
 - Cron jobs
 - Task dependency graph
-- Support for synchronous tasks (ran in separate threads)
-- Dead simple--around 2k lines of code
+- Task priority queues
+- Support for synchronous tasks (run in separate threads)
+- Dead simple, ~2k lines of code
 - Redis Sentinel support for production
 
 ## Installation

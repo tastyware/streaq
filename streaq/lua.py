@@ -59,17 +59,17 @@ local task_key = KEYS[3]
 local queue_key = KEYS[4]
 
 local task_id = ARGV[1]
-local enqueue_time = ARGV[2]
-local ttl = ARGV[3]
-local task_data = ARGV[4]
+local ttl = ARGV[2]
+local task_data = ARGV[3]
+local priority = ARGV[4]
 local score = ARGV[5]
 
-if redis.call('set', task_key, task_data, 'nx', 'px', ttl) == nil then
+if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
   return 0
 end
 
 if not score then
-  local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id, 'score', enqueue_time)
+  local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
   redis.call('set', message_key, message_id, 'px', ttl)
   return message_id
 else
@@ -85,13 +85,14 @@ local task_message_id_key = KEYS[3]
 
 local task_id = ARGV[1]
 local task_message_id_expire_ms = ARGV[2]
+local priority = ARGV[3]
 
 local score = redis.call('zscore', delayed_queue_key, task_id)
 if score == nil or score == false then
   return 0
 end
 
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id, 'score', score)
+local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
 redis.call('set', task_message_id_key, message_id, 'px', task_message_id_expire_ms)
 redis.call('zrem', delayed_queue_key, task_id)
 return 1
@@ -102,10 +103,9 @@ local stream_key = KEYS[1]
 local task_message_id_key = KEYS[2]
 
 local task_id = ARGV[1]
-local score = ARGV[2]
 local task_message_id_expire_ms = ARGV[3]
 
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id, 'score', score)
+local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id)
 redis.call('set', task_message_id_key, message_id, 'px', task_message_id_expire_ms)
 return message_id
 """
@@ -160,10 +160,9 @@ local stream_key = KEYS[1]
 local message_key = KEYS[2]
 local dep_id = KEYS[3]
 
-local enqueue_time = ARGV[1]
-local ttl = ARGV[2]
+local ttl = ARGV[1]
 
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', dep_id, 'score', enqueue_time)
+local message_id = redis.call('xadd', stream_key, '*', 'task_id', dep_id)
 redis.call('set', message_key, message_id, 'px', ttl)
 """
 

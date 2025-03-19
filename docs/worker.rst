@@ -108,9 +108,11 @@ In production environments, oftentimes high availability guarantees are needed, 
        redis_sentinel_master="mymaster",
        redis_sentinel_nodes=[
            ("localhost", 26379),
-           ("localhost", 26379),
-           ("localhost", 26379),
+           ("localhost", 26380),
+           ("localhost", 26381),
        ],
    )
 
 If you pass in the ``redis_sentinel_nodes`` parameter, you no longer need to pass ``redis_url``. For a simple Docker Compose script to get a cluster running, see `here <https://gist.github.com/Graeme22/f54800a410757242dbce8e745fca6316>`_.
+
+Redis Cluster is not supported, since streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on Redis Cluster. For scaling beyond a single Redis instance, it's recommended to use a separate queue for each instance and assign workers to each queue.
