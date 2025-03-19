@@ -2,12 +2,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from signal import Signals
 from typing import AsyncIterator
 from uuid import uuid4
 
 import pytest
 
 from streaq.constants import REDIS_HEALTH, REDIS_PREFIX
+from streaq.task import TaskStatus
 from streaq.types import WrappedContext
 from streaq.utils import StreaqError
 from streaq.worker import Worker
@@ -103,3 +105,43 @@ async def test_bad_deserializer(redis_url: str):
     await worker.run_async()
     with pytest.raises(StreaqError):
         await task.result(3)
+
+
+async def test_uninitialized_worker(redis_url: str):
+    worker = Worker(redis_url=redis_url)
+
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        pass
+
+    with pytest.raises(StreaqError):
+        await foobar.run()
+    with pytest.raises(StreaqError):
+        await foobar.enqueue()
+
+
+async def test_active_tasks(worker: Worker):
+    @worker.task()
+    async def foo(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(3)
+
+    n_tasks = 5
+    for _ in range(n_tasks):
+        await foo.enqueue()
+    worker.loop.create_task(worker.run_async())
+    await asyncio.sleep(1)
+    assert worker.active == n_tasks
+
+
+async def test_handle_signal(worker: Worker):
+    @worker.task()
+    async def foo(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(3)
+
+    worker._handle_signals = True
+    worker.loop.create_task(worker.run_async())
+    await asyncio.sleep(1)
+    worker.handle_signal(Signals.SIGINT)
+    await asyncio.sleep(1)
+    task = await foo.enqueue()
+    assert await task.status() == TaskStatus.QUEUED

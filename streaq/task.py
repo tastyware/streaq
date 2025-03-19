@@ -52,7 +52,21 @@ class StreaqRetry(StreaqError):
         self.delay = delay
 
 
+class TaskPriority(str, Enum):
+    """
+    Enum of possible task priority levels.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class TaskStatus(str, Enum):
+    """
+    Enum of possible task statuses.
+    """
+
     PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
@@ -99,8 +113,6 @@ class Task(Generic[R]):
     id: str = ""
 
     def __post_init__(self):
-        if self.id:
-            return
         if self.parent.unique:
             deterministic_hash = hashlib.sha256(
                 self.parent.fn_name.encode()
@@ -114,6 +126,7 @@ class Task(Generic[R]):
         after: str | list[str] | None = None,
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
+        priority: TaskPriority = TaskPriority.LOW,
     ) -> "Task[R]":
         """
         Enqueues a task immediately, for running after a delay, or for running
@@ -122,12 +135,19 @@ class Task(Generic[R]):
         :param after: task ID(s) to wait for before running this task
         :param delay: duration to wait before running the task
         :param schedule: datetime at which to run the task
+        :param priority: priority queue to insert the task
 
         :return: self
         """
         if (delay and schedule) or (delay and after) or (schedule and after):
             raise StreaqError(
-                "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not multiple!"
+                "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not "
+                "multiple!"
+            )
+        if not self.parent.worker.scripts:
+            raise StreaqError(
+                "Worker did not initialize correctly, are you using the async context "
+                "manager?"
             )
         enqueue_time = now_ms()
         if schedule:
@@ -158,7 +178,7 @@ class Task(Generic[R]):
                 self._task_key(REDIS_TASK),
                 self.parent.worker._queue_key,
             ]
-            args = [self.id, enqueue_time, ttl, data]
+            args = [self.id, ttl, data, priority]
             if score:
                 args.append(score)
             res = await self.parent.worker.scripts["publish_task"](keys=keys, args=args)
@@ -268,7 +288,7 @@ class Task(Generic[R]):
             return not result.success and isinstance(
                 result.result, asyncio.CancelledError
             )
-        except asyncio.CancelledError:
+        except asyncio.TimeoutError:
             return False
 
     async def info(self) -> TaskData:

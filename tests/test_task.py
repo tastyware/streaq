@@ -1,10 +1,11 @@
 import asyncio
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
 from streaq import StreaqError, WrappedContext, Worker
-from streaq.task import StreaqRetry, TaskStatus
+from streaq.task import StreaqRetry, TaskPriority, TaskStatus
 
 
 async def test_result_timeout(worker: Worker):
@@ -286,3 +287,120 @@ async def test_chained_failed_dependencies(worker: Worker):
     res2 = await dep2.result(3)
     assert not res1.success and isinstance(res1.result, StreaqError)
     assert not res2.success and isinstance(res2.result, StreaqError)
+
+
+async def test_task_priorities(redis_url: str):
+    worker = Worker(redis_url=redis_url, queue_name="test", concurrency=4)
+
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(1)
+
+    async with worker:
+        low = [foobar.enqueue() for _ in range(4)]
+        high = [foobar.enqueue() for _ in range(4)]
+        await asyncio.gather(  # enqueue all tasks
+            *[t.start(priority=TaskPriority.LOW) for t in low],
+            *[t.start(priority=TaskPriority.HIGH) for t in high],
+        )
+        worker.loop.create_task(worker.run_async())
+        results = await asyncio.gather(*[t.result(3) for t in high])
+        statuses = await asyncio.gather(*[t.status() for t in low])
+        assert all(res.success for res in results)
+        assert all(status != TaskStatus.DONE for status in statuses)
+    await worker.close()
+
+
+async def test_scheduled_task(worker: Worker):
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        pass
+
+    dt = datetime.now() + timedelta(seconds=1)
+    task = await foobar.enqueue().start(schedule=dt)
+    worker.loop.create_task(worker.run_async())
+    assert await task.status() == TaskStatus.SCHEDULED
+    res = await task.result(3)
+    assert res.success
+
+
+async def test_bad_start_params(redis_url: str):
+    worker = Worker(redis_url=redis_url)
+
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        pass
+
+    with pytest.raises(StreaqError):
+        await foobar.enqueue().start(delay=1, schedule=datetime.now())
+    with pytest.raises(StreaqError):
+        await foobar.enqueue().start(delay=1, after="foobar")
+    with pytest.raises(StreaqError):
+        await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
+
+
+async def test_enqueue_unique_task(redis_url: str):
+    worker = Worker(redis_url=redis_url)
+
+    @worker.task(unique=True)
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        pass
+
+    async with worker:
+        task = await foobar.enqueue()
+        task2 = await foobar.enqueue()
+        assert task.id == task2.id
+        res = await asyncio.gather(task.info(), task2.info())
+        assert res[0] == res[1]
+
+
+async def test_failed_abort(worker: Worker):
+    @worker.task(ttl=0)
+    async def foobar(ctx: WrappedContext[None]) -> None:
+        pass
+
+    task = await foobar.enqueue().start()
+    worker.loop.create_task(worker.run_async())
+    await asyncio.sleep(1)
+    assert not await task.abort(1)
+
+
+async def test_cron_run(redis_url: str):
+    worker = Worker(redis_url=redis_url)
+
+    @worker.cron("* * * * * * *")
+    async def cron1(ctx: WrappedContext[None]) -> bool:
+        return True
+
+    @worker.cron("* * * * * * *", timeout=1)
+    async def cron2(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(3)
+
+    async with worker:
+        assert await cron1.run()
+        with pytest.raises(asyncio.TimeoutError):
+            await cron2.run()
+
+
+async def test_sync_cron(worker: Worker):
+    @worker.cron("* * * * * * *")
+    def cronjob(ctx: WrappedContext[None]) -> None:
+        time.sleep(1)
+
+    worker.loop.create_task(worker.run_async())
+    res = await cronjob.enqueue().result(3)
+    print(res)
+    assert res.success and res.result is None
+
+
+async def test_cron_multiple_runs(worker: Worker):
+    key = "runs"
+
+    @worker.cron("* * * * * * *")
+    async def cronjob(ctx: WrappedContext[None]) -> None:
+        await ctx.redis.incr(key)
+
+    worker.loop.create_task(worker.run_async())
+    await asyncio.sleep(3)
+    runs = await worker.redis.get(key)
+    assert int(runs) > 1

@@ -17,7 +17,7 @@ class StreamMessage:
 
     message_id: str
     task_id: str
-    score: int
+    priority: str
 
 
 @dataclass
