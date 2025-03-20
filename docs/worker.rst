@@ -70,7 +70,7 @@ If desired, you can use a custom serializing scheme for speed or security reason
 Task lifespan
 -------------
 
-You can define an async context manager to wrap task execution:
+You can define an async context manager to wrap task execution. This acts as a middleware wrapping all task executions and has a host of potential applications, like observability, exception handling, idempotency, and rate limiting!
 
 .. code-block:: python
 

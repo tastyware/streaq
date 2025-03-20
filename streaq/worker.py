@@ -599,73 +599,73 @@ class Worker(Generic[WD]):
                 )
 
             ctx = self.build_context(task, task_id, tries=task_try)
-            async with self.task_lifespan(ctx):
-                success = True
-                delay = None
-                done = True
-                finish_time = None
+            success = True
+            delay = None
+            done = True
+            finish_time = None
+            try:
+                logger.info(f"task {task_id} → worker {self.id}")
+                self.tasks[task_id] = self.loop.create_task(
+                    task.fn(ctx, *data["a"], **data["k"])
+                )
                 try:
-                    logger.info(f"task {task_id} → worker {self.id}")
-                    self.tasks[task_id] = self.loop.create_task(
-                        task.fn(ctx, *data["a"], **data["k"])
-                    )
-                    try:
+                    async with self.task_lifespan(ctx):
                         result = await asyncio.wait_for(
                             self.tasks[task_id],
                             to_seconds(task.timeout)
                             if task.timeout is not None
                             else None,
                         )
-                    except Exception as e:
-                        raise e  # re-raise for outer try/except
-                    finally:
-                        del self.tasks[task_id]
-                        finish_time = now_ms()
-                except StreaqRetry as e:
-                    result = e
-                    success = False
-                    done = False
-                    if e.delay is not None:
-                        delay = to_seconds(e.delay)
-                    else:
-                        delay = task_try**2
-                    logger.info(f"retrying ↻ task {task_id} in {delay}s")
-                except asyncio.TimeoutError as e:
-                    logger.error(f"task {task_id} timed out …")
-                    result = e
-                    success = False
-                    done = True
-                except asyncio.CancelledError as e:
-                    if task_id in self.aborting_tasks:
-                        logger.info(f"task {task_id} aborted ⊘")
-                        self.aborting_tasks.remove(task_id)
-                        done = True
-                        self.counters["aborted"] += 1
-                        self.counters["failed"] -= 1  # this will get incremented later
-                    else:
-                        logger.info(f"task {task_id} cancelled, will be retried ↻")
-                        done = False
-                    result = e
-                    success = False
                 except Exception as e:
-                    result = e
-                    success = False
-                    done = True
-                    logger.info(f"task {task_id} failed ×")
-                    logger.exception(e)
+                    raise e  # re-raise for outer try/except
                 finally:
-                    await asyncio.shield(
-                        self.finish_task(
-                            msg,
-                            finish=done,
-                            delay=delay,
-                            return_value=result,  # type: ignore
-                            start_time=start_time,
-                            finish_time=finish_time or now_ms(),
-                            success=success,
-                            ttl=task.ttl,
-                        )
+                    del self.tasks[task_id]
+                    finish_time = now_ms()
+            except StreaqRetry as e:
+                result = e
+                success = False
+                done = False
+                if e.delay is not None:
+                    delay = to_seconds(e.delay)
+                else:
+                    delay = task_try**2
+                logger.info(f"retrying ↻ task {task_id} in {delay}s")
+            except asyncio.TimeoutError as e:
+                logger.error(f"task {task_id} timed out …")
+                result = e
+                success = False
+                done = True
+            except asyncio.CancelledError as e:
+                if task_id in self.aborting_tasks:
+                    logger.info(f"task {task_id} aborted ⊘")
+                    self.aborting_tasks.remove(task_id)
+                    done = True
+                    self.counters["aborted"] += 1
+                    self.counters["failed"] -= 1  # this will get incremented later
+                else:
+                    logger.info(f"task {task_id} cancelled, will be retried ↻")
+                    done = False
+                result = e
+                success = False
+            except Exception as e:
+                result = e
+                success = False
+                done = True
+                logger.info(f"task {task_id} failed ×")
+                logger.exception(e)
+            finally:
+                await asyncio.shield(
+                    self.finish_task(
+                        msg,
+                        finish=done,
+                        delay=delay,
+                        return_value=result,  # type: ignore
+                        start_time=start_time,
+                        finish_time=finish_time or now_ms(),
+                        success=success,
+                        ttl=task.ttl,
                     )
+                )
 
     async def finish_task(
         self,
