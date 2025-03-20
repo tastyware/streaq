@@ -16,6 +16,7 @@ Fast, async, type-safe job queuing with Redis streams
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
 - Cron jobs
+- Task middleware
 - Task dependency graph
 - Task priority queues
 - Support for synchronous tasks (run in separate threads)
