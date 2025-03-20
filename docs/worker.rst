@@ -67,8 +67,8 @@ If desired, you can use a custom serializing scheme for speed or security reason
 
    worker = Worker(serializer=json.dumps, deserializer=json.loads)
 
-Task lifespan
--------------
+Task lifespan/middleware
+------------------------
 
 You can define an async context manager to wrap task execution. This acts as a middleware wrapping all task executions and has a host of potential applications, like observability, exception handling, idempotency, and rate limiting!
 
@@ -83,6 +83,7 @@ You can define an async context manager to wrap task execution. This acts as a m
        yield
        print(f"finished task {ctx.task_id} in worker {ctx.worker_id}")
 
+   worker = Worker(task_lifespan=task_lifespan)
 
 Other configuration options
 ---------------------------
