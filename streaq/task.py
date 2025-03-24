@@ -117,9 +117,11 @@ class Task(Generic[R]):
             deterministic_hash = hashlib.sha256(
                 self.parent.fn_name.encode()
             ).hexdigest()
-            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
+            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex[
+                :16
+            ]
         else:
-            self.id = uuid4().hex
+            self.id = uuid4().hex[:16]
 
     async def start(
         self,

@@ -6,6 +6,7 @@ from signal import Signals
 from typing import AsyncIterator
 from uuid import uuid4
 
+from crontab import CronTab
 import pytest
 
 from streaq.constants import REDIS_HEALTH, REDIS_PREFIX
@@ -51,22 +52,18 @@ async def test_worker_lifespan(redis_url: str):
 
 
 async def test_health_check(worker: Worker):
-    worker.health_check_interval = timedelta(milliseconds=500)
+    worker._health_tab = CronTab("* * * * * * *")
     worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    health = await worker.redis.hget(
-        REDIS_PREFIX + worker.queue_name + REDIS_HEALTH, worker.id
-    )  # type: ignore
+    await asyncio.sleep(2)
+    health = await worker.redis.hget(worker._health_key, worker.id)  # type: ignore
     assert health is not None
 
 
 async def test_redis_health_check(worker: Worker):
-    worker.health_check_interval = timedelta(milliseconds=500)
+    worker._health_tab = CronTab("* * * * * * *")
     worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    health = await worker.redis.hget(
-        REDIS_PREFIX + worker.queue_name + REDIS_HEALTH, "redis"
-    )  # type: ignore
+    await asyncio.sleep(2)
+    health = await worker.redis.hget(worker._health_key, "redis")  # type: ignore
     assert health is not None
 
 
