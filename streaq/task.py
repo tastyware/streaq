@@ -21,7 +21,8 @@ from redis.typing import EncodableT
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
-    REDIS_GRAPH,
+    REDIS_DEPENDENCIES,
+    REDIS_DEPENDENTS,
     REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
@@ -117,11 +118,9 @@ class Task(Generic[R]):
             deterministic_hash = hashlib.sha256(
                 self.parent.fn_name.encode()
             ).hexdigest()
-            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex[
-                :16
-            ]
+            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
         else:
-            self.id = uuid4().hex[:16]
+            self.id = uuid4().hex
 
     async def start(
         self,
@@ -168,7 +167,8 @@ class Task(Generic[R]):
                 keys=[
                     self._task_key(REDIS_TASK),
                     self.id,
-                    REDIS_PREFIX + self.queue + REDIS_GRAPH,
+                    REDIS_PREFIX + self.queue + REDIS_DEPENDENTS,
+                    REDIS_PREFIX + self.queue + REDIS_DEPENDENCIES,
                     REDIS_PREFIX + self.queue + REDIS_RESULT,
                 ],
                 args=[data, ttl] + after,

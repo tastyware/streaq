@@ -31,7 +31,8 @@ from streaq.constants import (
     DEFAULT_TTL,
     REDIS_ABORT,
     REDIS_CHANNEL,
-    REDIS_GRAPH,
+    REDIS_DEPENDENCIES,
+    REDIS_DEPENDENTS,
     REDIS_GROUP,
     REDIS_HEALTH,
     REDIS_MESSAGE,
@@ -131,7 +132,6 @@ class Worker(Generic[WD]):
         "main_task",
         "_start_time",
         "_prefix",
-        "_graph_key",
         "sync_concurrency",
         "_limiter",
         "_sentinel",
@@ -215,7 +215,6 @@ class Worker(Generic[WD]):
         self._abort_key = self._prefix + REDIS_ABORT
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
-        self._graph_key = self._prefix + REDIS_GRAPH
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
 
@@ -757,7 +756,14 @@ class Worker(Generic[WD]):
                     script = self.scripts["update_dependents"]
                 else:
                     script = self.scripts["fail_dependents"]
-                await script(keys=[self._graph_key, task_id], client=pipe)
+                await script(
+                    keys=[
+                        self._prefix + REDIS_DEPENDENTS,
+                        self._prefix + REDIS_DEPENDENCIES,
+                        task_id,
+                    ],
+                    client=pipe,
+                )
             elif delay:
                 self.counters["retried"] += 1
                 pipe.delete(key(REDIS_MESSAGE))
@@ -844,7 +850,11 @@ class Worker(Generic[WD]):
             if result_data is not None:
                 pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
             await self.scripts["fail_dependents"](
-                keys=[self._graph_key, task_id],
+                keys=[
+                    self._prefix + REDIS_DEPENDENTS,
+                    self._prefix + REDIS_DEPENDENCIES,
+                    task_id,
+                ],
                 client=pipe,
             )
             res = await pipe.execute()
