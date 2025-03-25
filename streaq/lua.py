@@ -5,8 +5,10 @@ from redis.commands.core import AsyncScript
 ADD_DEPENDENCIES = """
 local task_key = KEYS[1]
 local task_id = KEYS[2]
-local graph_key = KEYS[3]
-local prefix = KEYS[4]
+local dependents_key = KEYS[3]
+local dependencies_key = KEYS[4]
+local prefix = KEYS[5]
+
 
 local task_data = ARGV[1]
 local ttl = ARGV[2]
@@ -15,39 +17,19 @@ if redis.call('set', task_key, task_data, 'nx', 'px', ttl) == nil then
   return
 end
 
-local graph_str = redis.call('get', graph_key)
-local dag
-if not graph_str then
-  dag = { dependents = {}, dependencies = {} }
-else
-  dag = cjson.decode(graph_str)
-end
-
-if not dag.dependents[task_id] then
-  dag.dependents[task_id] = {}
-end
-
-dag.dependencies[task_id] = {}
-
 local modified = 0
 for i=3, #ARGV do
   local dep_id = ARGV[i]
   if redis.call('exists', prefix .. dep_id) ~= 1 then
     modified = modified + 1
-    dag.dependencies[task_id][dep_id] = true
-    if not dag.dependents[dep_id] then
-      dag.dependents[dep_id] = {}
-    end
-    dag.dependents[dep_id][task_id] = true
+    redis.call('sadd', dependencies_key .. task_id, dep_id)
+    redis.call('sadd', dependents_key .. dep_id, task_id)
   end
 end
 
 if modified == 0 then
   return 1
 end
-
-graph_str = cjson.encode(dag)
-redis.call('set', graph_key, graph_str)
 
 return
 """
@@ -100,59 +82,14 @@ return 1
 
 RETRY_TASK = """
 local stream_key = KEYS[1]
-local task_message_id_key = KEYS[2]
+local message_key = KEYS[2]
 
 local task_id = ARGV[1]
-local task_message_id_expire_ms = ARGV[3]
+local expire_ms = ARGV[2]
 
 local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id)
-redis.call('set', task_message_id_key, message_id, 'px', task_message_id_expire_ms)
+redis.call('set', message_key, message_id, 'px', expire_ms)
 return message_id
-"""
-
-FAIL_DEPENDENTS = """
-local graph_key = KEYS[1]
-local task_id = KEYS[2]
-
-local graph_str = redis.call('get', graph_key)
-local dag
-if not graph_str then
-  dag = { dependents = {}, dependencies = {} }
-else
-  dag = cjson.decode(graph_str)
-end
-
-if not dag.dependents[task_id] then
-  return {}
-end
-
-local function traverse(task_id, failed)
-  if not failed[task_id] then
-    failed[task_id] = true
-    for dep_id, _ in pairs(dag.dependents[task_id] or {}) do
-      traverse(dep_id, failed)
-      dag.dependencies[dep_id][task_id] = nil
-    end
-  dag.dependents[task_id] = nil
-  end
-end
-
-local visited = {}
-traverse(task_id, visited)
-local failed = {}
-for tid, _ in pairs(visited) do
-  if tid ~= task_id then
-    table.insert(failed, tid)
-  end
-  if next(dag.dependencies[tid] or {}) == nil then
-    dag.dependencies[tid] = nil
-  end
-end
-
-graph_str = cjson.encode(dag)
-redis.call('set', graph_key, graph_str)
-
-return failed
 """
 
 PUBLISH_DEPENDENT = """
@@ -179,34 +116,50 @@ redis.call('set', result_key, result_data, 'ex', 300)
 redis.call('publish', channel_key, dep_id)
 """
 
-UPDATE_DEPENDENTS = """
-local graph_key = KEYS[1]
-local task_id = KEYS[2]
+FAIL_DEPENDENTS = """
+local dependents_key = KEYS[1]
+local dependencies_key = KEYS[2]
+local task_id = KEYS[3]
 
-local graph_str = redis.call('get', graph_key)
-local dag
-if not graph_str then
-  dag = { dependents = {}, dependencies = {} }
-else
-  dag = cjson.decode(graph_str)
+local function traverse(task_id, failed)
+  if not failed[task_id] then
+    failed[task_id] = true
+    for _, dep_id in ipairs(redis.call('smembers', dependents_key .. task_id)) do
+      traverse(dep_id, failed)
+      redis.call('srem', dependencies_key .. dep_id, task_id)
+    end
+  redis.call('del', dependents_key .. task_id)
+  end
 end
+
+local visited = {}
+traverse(task_id, visited)
+local failed = {}
+for tid, _ in pairs(visited) do
+  if tid ~= task_id then
+    table.insert(failed, tid)
+  end
+end
+
+return failed
+"""
+
+UPDATE_DEPENDENTS = """
+local dependents_key = KEYS[1]
+local dependencies_key = KEYS[2]
+local task_id = KEYS[3]
 
 local runnable = {}
 
-if dag.dependents[task_id] then
-  for dependent_id, _ in pairs(dag.dependents[task_id] or {}) do
-    dag.dependencies[dependent_id][task_id] = nil
-    if next(dag.dependencies[dependent_id]) == nil then
-      table.insert(runnable, dependent_id)
-      dag.dependencies[dependent_id] = nil
-    end
+local deps = redis.call('smembers', dependents_key .. task_id)
+for i = 1, #deps do
+  redis.call('srem', dependencies_key .. deps[i], task_id)
+  if #redis.call('smembers', dependencies_key .. deps[i]) == 0 then
+    table.insert(runnable, deps[i])
   end
-  dag.dependents[task_id] = nil
-  dag.dependencies[task_id] = nil
-
-  graph_str = cjson.encode(dag)
-  redis.call('set', graph_key, graph_str)
 end
+
+redis.call('del', dependents_key .. task_id, dependencies_key .. task_id)
 
 return runnable
 """

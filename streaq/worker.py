@@ -4,7 +4,7 @@ import pickle
 import signal
 from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from datetime import timedelta, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from signal import Signals
 from time import time
 from typing import (
@@ -31,10 +31,10 @@ from streaq.constants import (
     DEFAULT_TTL,
     REDIS_ABORT,
     REDIS_CHANNEL,
-    REDIS_GRAPH,
+    REDIS_DEPENDENCIES,
+    REDIS_DEPENDENTS,
     REDIS_GROUP,
     REDIS_HEALTH,
-    REDIS_LOCK,
     REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_QUEUE,
@@ -89,7 +89,11 @@ class Worker(Generic[WD]):
     :param deserializer: function to deserialize task data from Redis
     :param tz: timezone to use for cron jobs
     :param handle_signals: whether to handle signals for graceful shutdown
-    :param health_check_interval: frequency to print health information
+    :param health_crontab: crontab for frequency to log and store health info
+    :param with_scheduler:
+        whether to run a scheduler alongside the worker; if None, the CLI will run
+        a single scheduler instead of each worker running one. Multiple schedulers
+        can be redundant, so running just one may slightly improve performance.
     """
 
     __slots__ = (
@@ -112,7 +116,6 @@ class Worker(Generic[WD]):
         "deserializer",
         "task_wrappers",
         "tasks",
-        "health_check_interval",
         "tz",
         "aborting_tasks",
         "burst",
@@ -129,10 +132,11 @@ class Worker(Generic[WD]):
         "main_task",
         "_start_time",
         "_prefix",
-        "_graph_key",
         "sync_concurrency",
         "_limiter",
         "_sentinel",
+        "_health_tab",
+        "with_scheduler",
     )
 
     def __init__(
@@ -154,7 +158,8 @@ class Worker(Generic[WD]):
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         handle_signals: bool = True,
-        health_check_interval: timedelta | int = 300,
+        health_crontab: str = "*/5 * * * *",
+        with_scheduler: bool | None = None,
     ):
         #: Redis connection
         if redis_sentinel_nodes:
@@ -184,7 +189,7 @@ class Worker(Generic[WD]):
         #: mapping of task name -> next execution time in ms
         self.cron_schedule: dict[str, int] = defaultdict(int)
         #: unique ID of worker
-        self.id = uuid4().hex
+        self.id = uuid4().hex[:8]
         self.serializer = serializer
         self.deserializer = deserializer
         #: mapping of task ID -> asyncio Task wrapper
@@ -192,12 +197,12 @@ class Worker(Generic[WD]):
         #: mapping of task ID -> asyncio Task for task
         self.tasks: dict[str, asyncio.Task] = {}
         self._handle_signals = handle_signals
-        self.health_check_interval = health_check_interval
         self.tz = tz
         #: set of tasks currently scheduled for abortion
         self.aborting_tasks: set[str] = set()
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
+        self.with_scheduler = with_scheduler
         self.sync_concurrency = sync_concurrency or concurrency
         self._limiter = CapacityLimiter(self.sync_concurrency)
         self._block_new_tasks = False
@@ -210,8 +215,46 @@ class Worker(Generic[WD]):
         self._abort_key = self._prefix + REDIS_ABORT
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
-        self._graph_key = self._prefix + REDIS_GRAPH
         self._start_time = now_ms()
+        self._health_tab = CronTab(health_crontab)
+
+        @self.cron(health_crontab, ttl=0)
+        async def redis_health_check(ctx: WrappedContext[WD]) -> None:
+            """
+            Saves Redis health in Redis, then logs worker and Redis health.
+            """
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.info(section="Memory")
+                pipe.info(section="Clients")
+                pipe.dbsize()
+                for priority in TaskPriority:
+                    pipe.xlen(self._stream_key + priority.value)
+                pipe.zcard(self._queue_key)
+                (
+                    info_memory,
+                    info_clients,
+                    key_count,
+                    low_size,
+                    medium_size,
+                    high_size,
+                    queue_size,
+                ) = await pipe.execute()
+
+            mem_usage = info_memory.get("used_memory_human", "?")
+            clients = info_clients.get("connected_clients", "?")
+            queued = low_size + medium_size + high_size
+            health = (
+                f"redis {{memory: {mem_usage}, clients: {clients}, keys: {key_count}, "
+                f"queued: {queued}, scheduled: {queue_size}}}"
+            )
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.hset(self._health_key, "redis", health)
+                pipe.hgetall(self._health_key)
+                _, res = await pipe.execute()
+            formatted = [v.decode() for v in res.values()]
+            logger.info(
+                "health check results:\n" + "\n".join(f for f in sorted(formatted))
+            )
 
     @property
     def deps(self) -> WD:
@@ -365,21 +408,10 @@ class Worker(Generic[WD]):
             await pipe.execute(raise_on_error=False)
             logger.debug(f"consumer group {self.group_name} created for queues")
         async with self:
-            # schedule initial cron jobs
-            futures = set()
-            for name, cron_job in self.cron_jobs.items():
-                self.cron_schedule[name] = cron_job.next()
-                futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
-            if futures:
-                logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
-                await asyncio.gather(*futures)
             # run loops
-            tasks = [
-                self.listen_queue(),
-                self.listen_stream(),
-                self.health_check(),
-                self.redis_health_check(),
-            ]
+            tasks = [self.listen_stream(), self.health_check()]
+            if self.with_scheduler:
+                tasks.append(self.listen_queue())
             futures = [self.loop.create_task(t) for t in tasks]
             try:
                 _, pending = await asyncio.wait(
@@ -400,20 +432,25 @@ class Worker(Generic[WD]):
         them to the live queue (stream) when ready, as well as adding cron
         jobs to the live queue when ready.
         """
+        # schedule initial cron jobs
+        futures = set()
+        for name, cron_job in self.cron_jobs.items():
+            self.cron_schedule[name] = cron_job.next()
+            futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
+        if futures:
+            logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
+            await asyncio.gather(*futures)
         while not self._block_new_tasks:
             start_time = time()
-            async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.zrange(
-                    self._queue_key,
-                    start=0,
-                    end=now_ms(),
-                    num=self.queue_fetch_limit,
-                    offset=0,
-                    withscores=True,
-                    byscore=True,
-                )
-                pipe.smembers(self._abort_key)
-                task_ids, aborted_ids = await pipe.execute()
+            task_ids = await self.redis.zrange(
+                self._queue_key,
+                start=0,
+                end=now_ms(),
+                num=self.queue_fetch_limit,
+                offset=0,
+                withscores=True,
+                byscore=True,
+            )
             async with self.redis.pipeline(transaction=False) as pipe:
                 for task_id, score in task_ids:
                     expire_ms = int(score - now_ms() + DEFAULT_TTL)
@@ -434,17 +471,6 @@ class Worker(Generic[WD]):
                     logger.debug(
                         f"enqueuing {len(task_ids)} delayed tasks in worker {self.id}"
                     )
-                # Go through task_ids in the aborted tasks set and cancel those tasks.
-                aborted: set[str] = set()
-                for task_id_bytes in aborted_ids:
-                    task_id = task_id_bytes.decode()
-                    if task_id in self.tasks:
-                        self.tasks[task_id].cancel()
-                        aborted.add(task_id)
-                if aborted:
-                    logger.debug(f"aborting {len(aborted)} tasks in worker {self.id}")
-                    self.aborting_tasks.update(aborted)
-                    pipe.srem(self._abort_key, *aborted)
                 await pipe.execute()
 
             # cron jobs
@@ -480,15 +506,19 @@ class Worker(Generic[WD]):
             active_tasks = self.concurrency - self.bs._value
             pending_tasks = len(self.task_wrappers)
             count = self.queue_fetch_limit - pending_tasks
+            async with self.redis.pipeline(transaction=False) as pipe:
+                pipe.smembers(self._abort_key)
+                if count > 0:
+                    pipe.xreadgroup(
+                        groupname=self.group_name,
+                        consumername=self.id,
+                        streams={high_stream: ">", medium_stream: ">", low_stream: ">"},
+                        block=500,
+                        count=count,
+                    )
+                res = await pipe.execute()
             if count > 0:
-                res = await self.redis.xreadgroup(
-                    groupname=self.group_name,
-                    consumername=self.id,
-                    streams={high_stream: ">", medium_stream: ">", low_stream: ">"},
-                    block=500,
-                    count=count,
-                )
-                for stream, msgs in res:
+                for stream, msgs in res[-1]:
                     priority = stream.decode().split(":")[-1]
                     messages.extend(
                         [
@@ -500,9 +530,18 @@ class Worker(Generic[WD]):
                             for msg_id, msg in msgs
                         ]
                     )
-            else:
-                # yield control
-                await asyncio.sleep(0)
+            # Go through task_ids in the aborted tasks set and cancel those tasks.
+            if res[0]:
+                aborted: set[str] = set()
+                for task_id_bytes in res[0]:
+                    task_id = task_id_bytes.decode()
+                    if task_id in self.tasks:
+                        self.tasks[task_id].cancel()
+                        aborted.add(task_id)
+                if aborted:
+                    logger.debug(f"aborting {len(aborted)} tasks in worker {self.id}")
+                    self.aborting_tasks.update(aborted)
+                    await self.redis.srem(self._abort_key, *aborted)  # type: ignore
             # start new tasks
             if messages:
                 logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
@@ -717,7 +756,14 @@ class Worker(Generic[WD]):
                     script = self.scripts["update_dependents"]
                 else:
                     script = self.scripts["fail_dependents"]
-                await script(keys=[self._graph_key, task_id], client=pipe)
+                await script(
+                    keys=[
+                        self._prefix + REDIS_DEPENDENTS,
+                        self._prefix + REDIS_DEPENDENCIES,
+                        task_id,
+                    ],
+                    client=pipe,
+                )
             elif delay:
                 self.counters["retried"] += 1
                 pipe.delete(key(REDIS_MESSAGE))
@@ -804,7 +850,11 @@ class Worker(Generic[WD]):
             if result_data is not None:
                 pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
             await self.scripts["fail_dependents"](
-                keys=[self._graph_key, task_id],
+                keys=[
+                    self._prefix + REDIS_DEPENDENTS,
+                    self._prefix + REDIS_DEPENDENCIES,
+                    task_id,
+                ],
                 client=pipe,
             )
             res = await pipe.execute()
@@ -872,59 +922,6 @@ class Worker(Generic[WD]):
         )
         return Task(args, kwargs, registered)
 
-    async def redis_health_check(self):
-        """
-        Checks Redis for current state and logs to the console.
-        Only one worker can run this at a time.
-        """
-        timeout = to_seconds(self.health_check_interval)
-        lock_name = self._prefix + REDIS_LOCK
-        while not self._block_new_tasks:
-            async with self.redis.lock(lock_name, sleep=timeout, timeout=timeout + 5):
-                async with self.redis.pipeline(transaction=True) as pipe:
-                    pipe.info(section="Server")
-                    pipe.info(section="Memory")
-                    pipe.info(section="Clients")
-                    pipe.dbsize()
-                    for priority in TaskPriority:
-                        pipe.xlen(self._stream_key + priority.value)
-                    pipe.zcard(self._queue_key)
-                    (
-                        info_server,
-                        info_memory,
-                        info_clients,
-                        key_count,
-                        low_size,
-                        medium_size,
-                        high_size,
-                        queue_size,
-                    ) = await pipe.execute()
-
-                redis_version = info_server.get("redis_version", "?")
-                mem_usage = info_memory.get("used_memory_human", "?")
-                clients_connected = info_clients.get("connected_clients", "?")
-                queued = low_size + medium_size + high_size
-                health = (
-                    f"redis_version={redis_version} "
-                    f"mem_usage={mem_usage} "
-                    f"clients_connected={clients_connected} "
-                    f"db_keys={key_count} "
-                    f"queued={queued} "
-                    f"scheduled={queue_size}"
-                )
-                logger.info(health)
-                await self.redis.hset(self._health_key, "redis", health)  # type: ignore
-                await asyncio.sleep(timeout)
-
-    async def health_check(self):
-        """
-        Periodically logs info about the worker to the console.
-        """
-        while not self._block_new_tasks:
-            await asyncio.sleep(to_seconds(self.health_check_interval))
-            logger.info(self)
-            await self.redis.hset(self._health_key, self.id, str(self))  # type: ignore
-
     async def queue_size(self) -> int:
         """
         Returns the number of tasks currently queued in Redis.
@@ -943,6 +940,14 @@ class Worker(Generic[WD]):
         The number of currently active tasks for the worker
         """
         return sum(not t.done() for t in self.tasks.values())
+
+    async def health_check(self) -> None:
+        """
+        Periodically stores info about the worker in Redis.
+        """
+        while True:
+            await asyncio.sleep(self._health_tab.next(now=datetime.now(self.tz)))  # type: ignore
+            await self.redis.hset(self._health_key, self.id, str(self))  # type: ignore
 
     def _add_signal_handler(self, signum: Signals) -> None:
         try:
@@ -977,6 +982,7 @@ class Worker(Generic[WD]):
                     groupname=self.group_name,
                     consumername=self.id,
                 )
+            pipe.hdel(self._health_key, self.id)
             await pipe.execute(raise_on_error=False)
         await self.redis.close(close_connection_pool=True)
         run_time = now_ms() - self._start_time

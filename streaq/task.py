@@ -21,7 +21,8 @@ from redis.typing import EncodableT
 from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
-    REDIS_GRAPH,
+    REDIS_DEPENDENCIES,
+    REDIS_DEPENDENTS,
     REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
@@ -166,7 +167,8 @@ class Task(Generic[R]):
                 keys=[
                     self._task_key(REDIS_TASK),
                     self.id,
-                    REDIS_PREFIX + self.queue + REDIS_GRAPH,
+                    REDIS_PREFIX + self.queue + REDIS_DEPENDENTS,
+                    REDIS_PREFIX + self.queue + REDIS_DEPENDENCIES,
                     REDIS_PREFIX + self.queue + REDIS_RESULT,
                 ],
                 args=[data, ttl] + after,

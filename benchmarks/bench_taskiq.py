@@ -3,10 +3,12 @@ from typing import Awaitable
 
 import typer
 
-from streaq import Worker, WrappedContext
+from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
+broker = RedisStreamBroker("redis://localhost:6379").with_result_backend(
+    RedisAsyncResultBackend("redis://localhost:6379", result_ex_time=1)
+)
 
-worker = Worker(concurrency=32, with_scheduler=False)
 N_TASKS = 20_000
 sem = asyncio.Semaphore(32)
 
@@ -17,20 +19,17 @@ async def sem_task(task: Awaitable):
         return await task
 
 
-@worker.task()
-async def sleeper(ctx: WrappedContext[None], time: int) -> None:
+@broker.task
+async def sleeper(time: int) -> None:
     if time:
         await asyncio.sleep(time)
 
 
 async def main(time: int):
-    async with worker:
-        await asyncio.gather(
-            *[
-                asyncio.create_task(sem_task(sleeper.enqueue(time).start()))
-                for _ in range(N_TASKS)
-            ]
-        )
+    await broker.startup()
+    await asyncio.gather(
+        *[asyncio.create_task(sem_task(sleeper.kiq(time))) for _ in range(N_TASKS)]
+    )
 
 
 def run(time: int = 0):

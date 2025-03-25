@@ -31,8 +31,9 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 benchmark = [
-    "arq",
-    "saq[hiredis]>=0.22.2",
+    "arq==0.26.3",
+    "saq[hiredis]==0.22.2",
+    "taskiq-redis==1.0.3",
 ]
 
 [project.scripts]

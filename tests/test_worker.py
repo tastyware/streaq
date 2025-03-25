@@ -1,14 +1,12 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import timedelta
 from signal import Signals
 from typing import AsyncIterator
 from uuid import uuid4
 
 import pytest
 
-from streaq.constants import REDIS_HEALTH, REDIS_PREFIX
 from streaq.task import TaskStatus
 from streaq.types import WrappedContext
 from streaq.utils import StreaqError
@@ -50,24 +48,22 @@ async def test_worker_lifespan(redis_url: str):
             await foobar2.run()
 
 
-async def test_health_check(worker: Worker):
-    worker.health_check_interval = timedelta(milliseconds=500)
+async def test_health_check(redis_url: str):
+    worker = Worker(
+        redis_url=redis_url,
+        health_crontab="* * * * * * *",
+        queue_name="test",
+        handle_signals=False,
+        with_scheduler=True,
+    )
+    await worker.redis.flushdb()
     worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    health = await worker.redis.hget(
-        REDIS_PREFIX + worker.queue_name + REDIS_HEALTH, worker.id
-    )  # type: ignore
-    assert health is not None
-
-
-async def test_redis_health_check(worker: Worker):
-    worker.health_check_interval = timedelta(milliseconds=500)
-    worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    health = await worker.redis.hget(
-        REDIS_PREFIX + worker.queue_name + REDIS_HEALTH, "redis"
-    )  # type: ignore
-    assert health is not None
+    await asyncio.sleep(2)
+    worker_health = await worker.redis.hget(worker._health_key, worker.id)  # type: ignore
+    redis_health = await worker.redis.hget(worker._health_key, "redis")  # type: ignore
+    assert worker_health is not None
+    assert redis_health is not None
+    await worker.close()
 
 
 async def test_queue_size(redis_url: str):
