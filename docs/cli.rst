@@ -19,8 +19,6 @@ You can always run ``streaq --help`` to see the help page:
    ╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────────╮
    │ --workers             -w      INTEGER  Number of worker processes to spin up [default: 1]              │
    │ --burst               -b               Whether to shut down worker when the queue is empty             │
-   │ --host                -h      TEXT     Host for web UI process [default: 127.0.0.1]                    │
-   │ --port                -p      INTEGER  Port for web UI process [default: 8001]                         │
    │ --reload              -r               Whether to reload the worker upon changes detected              │
    │ --verbose             -v               Whether to use logging.DEBUG instead of logging.INFO            │
    │ --version                              Show installed version                                          │
