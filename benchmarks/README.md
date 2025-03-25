@@ -14,7 +14,7 @@ And run a worker with one of these commands, adjusting the number of workers as 
 ```
 $ arq --workers ? bench_arq.WorkerSettings
 $ saq --quiet bench_saq.settings --workers ?
-$ streaq --burst --workers ? baseline.worker
+$ streaq --burst --workers ? bench_streaq.worker
 $ taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
 ```
 

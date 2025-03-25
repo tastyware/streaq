@@ -64,7 +64,7 @@ def main(
         )
     for p in processes:
         p.start()
-    # only one runs a scheduler if with_scheduler is False
+    # only one runs a scheduler if with_scheduler is None
     run_worker(worker_path, burst, reload, verbose, True)
     for p in processes:
         p.join()
