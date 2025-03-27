@@ -1,5 +1,5 @@
 import asyncio
-from functools import partial, wraps
+from functools import partial
 import pickle
 import signal
 from collections import defaultdict
@@ -58,12 +58,7 @@ uninitialized = object()
 
 
 @asynccontextmanager
-async def _task_lifespan(ctx: WrappedContext[WD]) -> AsyncIterator[None]:
-    yield
-
-
-@asynccontextmanager
-async def _worker_lifespan(worker: "Worker") -> AsyncIterator[None]:
+async def _lifespan(worker: "Worker") -> AsyncIterator[None]:
     yield
 
 
@@ -81,8 +76,7 @@ class Worker(Generic[WD]):
         in separate threads; defaults to the same as ``concurrency``
     :param queue_name: name of queue in Redis
     :param queue_fetch_limit: max number of tasks to prefetch from Redis
-    :param task_lifespan: async context manager that will wrap tasks
-    :param worker_lifespan:
+    :param lifespan:
         async context manager that wraps worker execution and provides task
         dependencies
     :param serializer: function to serialize task data for Redis
@@ -105,7 +99,6 @@ class Worker(Generic[WD]):
         "bs",
         "counters",
         "loop",
-        "task_lifespan",
         "_deps",
         "scripts",
         "registry",
@@ -123,7 +116,7 @@ class Worker(Generic[WD]):
         "_block_new_tasks",
         "_aentered",
         "_aexited",
-        "worker_lifespan",
+        "lifespan",
         "_queue_key",
         "_stream_key",
         "_abort_key",
@@ -149,12 +142,7 @@ class Worker(Generic[WD]):
         sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
         queue_fetch_limit: int | None = None,
-        task_lifespan: Callable[
-            [WrappedContext[WD]], AbstractAsyncContextManager[None]
-        ] = _task_lifespan,
-        worker_lifespan: Callable[
-            ["Worker"], AbstractAsyncContextManager[WD]
-        ] = _worker_lifespan,
+        lifespan: Callable[["Worker"], AbstractAsyncContextManager[WD]] = _lifespan,
         serializer: Callable[[Any], EncodableT] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
@@ -179,7 +167,6 @@ class Worker(Generic[WD]):
         self.counters = defaultdict(int)
         #: event loop for running tasks
         self.loop = asyncio.get_event_loop()
-        self.task_lifespan = task_lifespan
         self._deps = uninitialized
         #: Redis scripts for common operations
         self.scripts: dict[str, AsyncScript] = {}
@@ -215,7 +202,7 @@ class Worker(Generic[WD]):
         self._block_new_tasks = False
         self._aentered = False
         self._aexited = False
-        self.worker_lifespan = worker_lifespan(self)
+        self.lifespan = lifespan(self)
         self._prefix = REDIS_PREFIX + self.queue_name
         self._queue_key = self._prefix + REDIS_QUEUE
         self._stream_key = self._prefix + REDIS_STREAM
@@ -661,21 +648,22 @@ class Worker(Generic[WD]):
             delay = None
             done = True
             finish_time = None
+
+            async def _fn(ctx, *args, **kwargs):
+                return await asyncio.wait_for(
+                    task.fn(ctx, *args, **kwargs),
+                    to_seconds(task.timeout) if task.timeout is not None else None,
+                )
+
             try:
                 logger.info(f"task {task_id} → worker {self.id}")
+                wrapped = _fn
+                for middleware in reversed(self.middlewares):
+                    wrapped = middleware(ctx, wrapped)
+                coro = wrapped(ctx, *data["a"], **data["k"])
                 try:
-                    wrapped = task.fn
-                    for middleware in reversed(self.middlewares):
-                        wrapped = middleware(ctx, wrapped)
-                    coro = wrapped(ctx, *data["a"], **data["k"])
                     self.tasks[task_id] = self.loop.create_task(coro)
-                    result = await asyncio.wait_for(
-                        self.tasks[task_id],
-                        to_seconds(task.timeout) if task.timeout is not None else None,
-                    )
-                    triggers = data.get("T")
-                    if triggers:
-                        pass
+                    result = await self.tasks[task_id]
                 except Exception as e:
                     raise e  # re-raise for outer try/except
                 finally:
@@ -1016,14 +1004,14 @@ class Worker(Generic[WD]):
             # register lua scripts
             self.scripts.update(register_scripts(self.redis))
             # user-defined deps
-            self._deps = await self.worker_lifespan.__aenter__()
+            self._deps = await self.lifespan.__aenter__()
         return self
 
     async def __aexit__(self, *exc):
         # reentrant
         if not self._aexited:
             self._aexited = True
-            await self.worker_lifespan.__aexit__(*exc)
+            await self.lifespan.__aexit__(*exc)
 
     def __len__(self):
         return len(self.registry)

@@ -4,7 +4,7 @@ Workers
 Worker lifespan
 ---------------
 
-Workers accept a ``worker_lifespan`` parameter, which allows you to define task dependencies in a type-safe way, as well as run code at startup/shutdown if desired.
+Workers accept a ``lifespan`` parameter, which allows you to define task dependencies in a type-safe way, as well as run code at startup/shutdown if desired.
 
 First, define the dependencies in a custom class:
 
@@ -32,7 +32,7 @@ Next, create an async context manager to run at worker creation/teardown. Use th
    from streaq import Worker
 
    @asynccontextmanager
-   async def worker_lifespan(worker: Worker) -> AsyncIterator[Context]:
+   async def lifespan(worker: Worker) -> AsyncIterator[Context]:
        # here we run code if desired before the worker start up
        await worker.redis.sadd("workers", worker.id)
        # here we yield our dependencies as an instance of the class
@@ -48,7 +48,7 @@ Now, tasks created for the worker will have access to the dependencies like so:
 
    from streaq import WrappedContext
 
-   worker = Worker(worker_lifespan=worker_lifespan)
+   worker = Worker(lifespan=lifespan)
    @worker.task()
    async def fetch(ctx: WrappedContext[Context], url: str) -> int:
       res = await ctx.deps.http_client.get(url)
@@ -66,24 +66,6 @@ If desired, you can use a custom serializing scheme for speed or security reason
    import json
 
    worker = Worker(serializer=json.dumps, deserializer=json.loads)
-
-Task middleware
----------------
-
-You can define middlewares to wrap task execution. This has a host of potential applications, like observability, exception handling, idempotency, and rate limiting!
-
-.. code-block:: python
-
-   from contextlib import asynccontextmanager
-   from functools import wraps
-   from streaq import WrappedContext
-
-   async def task_lifespan(ctx: WrappedContext[Context]) -> AsyncIterator[None]:
-       print(f"attempt number {ctx.tries} for task {ctx.task_id}")
-       yield
-       print(f"finished task {ctx.task_id} in worker {ctx.worker_id}")
-
-   worker = Worker(task_lifespan=task_lifespan)
 
 Other configuration options
 ---------------------------

@@ -49,11 +49,11 @@ class Context:
     http_client: AsyncClient
 
 @asynccontextmanager
-async def worker_lifespan(worker: Worker) -> AsyncIterator[Context]:
+async def lifespan(worker: Worker) -> AsyncIterator[Context]:
     async with AsyncClient() as http_client:
         yield Context(http_client)
 
-worker = Worker(redis_url="redis://localhost:6379", worker_lifespan=worker_lifespan)
+worker = Worker(redis_url="redis://localhost:6379", lifespan=lifespan)
 ```
 
 You can then register async tasks with the worker like this:

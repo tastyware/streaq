@@ -30,7 +30,7 @@ from streaq.constants import (
     REDIS_RUNNING,
     REDIS_TASK,
 )
-from streaq.types import P, POther, R, ROther, WD, WrappedContext
+from streaq.types import P, R, WD, WrappedContext
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
 
 if TYPE_CHECKING:
@@ -111,10 +111,6 @@ class Task(Generic[R]):
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     parent: "RegisteredCron | RegisteredTask"
-    _after: "Task | None" = None
-    _triggers: "Task | None" = None
-    _maps_to: "Task | None" = None
-    _filters: "Task | None" = None
     id: str = ""
 
     def __post_init__(self):
@@ -144,7 +140,6 @@ class Task(Generic[R]):
 
         :return: self
         """
-        after = self._after.id if self._after else after
         if (delay and schedule) or (delay and after) or (schedule and after):
             raise StreaqError(
                 "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not "
@@ -195,29 +190,8 @@ class Task(Generic[R]):
 
         return self
 
-    def then(self, task: "RegisteredTask[WD, POther, ROther]") -> "Task[ROther]":
-        self._triggers = Task((), {}, task)
-        self._triggers._after = self
-        return self._triggers
-
-    def map(self, task: "RegisteredTask[WD, POther, ROther]") -> "Task[ROther]":
-        self._maps_to = Task((), {}, task)
-        self._maps_to._after = self
-        return self._maps_to
-
-    def filter(self, task: "RegisteredTask[WD, POther, ROther]") -> "Task[ROther]":
-        self._filters = Task((), {}, task)
-        self._filters._after = self
-        return self._filters
-
-    async def _chain(self) -> "Task[R]":
-        # traverse backwards
-        if self._after:
-            await self._after
-        return await self.start()
-
     def __await__(self):
-        return self._chain().__await__()
+        return self.start().__await__()
 
     async def status(self) -> TaskStatus:
         """
@@ -252,19 +226,14 @@ class Task(Generic[R]):
         :return: serialized task data
         """
         try:
-            mapping = {
-                "f": self.parent.fn_name,
-                "a": self.args,
-                "k": self.kwargs,
-                "t": enqueue_time,
-            }
-            if self._triggers:
-                mapping["T"] = self._triggers.id
-            if self._maps_to:
-                mapping["M"] = self._maps_to.id
-            if self._filters:
-                mapping["F"] = self._filters.id
-            return self.parent.worker.serializer(mapping)
+            return self.parent.worker.serializer(
+                {
+                    "f": self.parent.fn_name,
+                    "a": self.args,
+                    "k": self.kwargs,
+                    "t": enqueue_time,
+                }
+            )
         except Exception as e:
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
 
@@ -392,14 +361,13 @@ class RegisteredTask(Generic[WD, P, R]):
             ttl=self.ttl,
             worker_id=self.worker.id,
         )
-        async with self.worker.task_lifespan(deps):
-            try:
-                return await asyncio.wait_for(
-                    self.fn(deps, *args, **kwargs),
-                    to_seconds(self.timeout) if self.timeout else None,
-                )
-            except asyncio.TimeoutError as e:
-                raise e
+        try:
+            return await asyncio.wait_for(
+                self.fn(deps, *args, **kwargs),
+                to_seconds(self.timeout) if self.timeout else None,
+            )
+        except asyncio.TimeoutError as e:
+            raise e
 
     @property
     def fn_name(self) -> str:
@@ -440,14 +408,13 @@ class RegisteredCron(Generic[WD, R]):
             ttl=self.ttl,
             worker_id=self.worker.id,
         )
-        async with self.worker.task_lifespan(deps):
-            try:
-                return await asyncio.wait_for(
-                    self.fn(deps),
-                    to_seconds(self.timeout) if self.timeout else None,
-                )
-            except asyncio.TimeoutError as e:
-                raise e
+        try:
+            return await asyncio.wait_for(
+                self.fn(deps),
+                to_seconds(self.timeout) if self.timeout else None,
+            )
+        except asyncio.TimeoutError as e:
+            raise e
 
     @property
     def fn_name(self) -> str:

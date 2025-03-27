@@ -1,6 +1,8 @@
 import asyncio
 import time
 from datetime import datetime, timedelta
+from types import WrapperDescriptorType
+from typing import Callable, Coroutine
 
 import pytest
 
@@ -388,7 +390,6 @@ async def test_sync_cron(worker: Worker):
 
     worker.loop.create_task(worker.run_async())
     res = await cronjob.enqueue().result(3)
-    print(res)
     assert res.success and res.result is None
 
 
@@ -403,3 +404,23 @@ async def test_cron_multiple_runs(worker: Worker):
     await asyncio.sleep(3)
     runs = await worker.redis.get(key)
     assert int(runs) > 1
+
+
+async def test_middleware(worker: Worker):
+    @worker.task()
+    async def foobar(ctx: WrappedContext[None]) -> int:
+        return 2
+
+    @worker.middleware
+    def double(ctx: WrappedContext[None], task: Callable[..., Coroutine]):
+        async def wrapper(*args, **kwargs):
+            result = await task(*args, **kwargs)
+            return result * 2
+
+        return wrapper
+
+    worker.loop.create_task(worker.run_async())
+    task = await foobar.enqueue()
+    res = await task.result(3)
+    assert res.success
+    assert res.result == 4
