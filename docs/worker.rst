@@ -67,17 +67,17 @@ If desired, you can use a custom serializing scheme for speed or security reason
 
    worker = Worker(serializer=json.dumps, deserializer=json.loads)
 
-Task lifespan/middleware
-------------------------
+Task middleware
+---------------
 
-You can define an async context manager to wrap task execution. This acts as a middleware wrapping all task executions and has a host of potential applications, like observability, exception handling, idempotency, and rate limiting!
+You can define middlewares to wrap task execution. This has a host of potential applications, like observability, exception handling, idempotency, and rate limiting!
 
 .. code-block:: python
 
    from contextlib import asynccontextmanager
+   from functools import wraps
    from streaq import WrappedContext
 
-   @asynccontextmanager
    async def task_lifespan(ctx: WrappedContext[Context]) -> AsyncIterator[None]:
        print(f"attempt number {ctx.tries} for task {ctx.task_id}")
        yield

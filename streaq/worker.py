@@ -1,5 +1,5 @@
 import asyncio
-from functools import partial
+from functools import partial, wraps
 import pickle
 import signal
 from collections import defaultdict
@@ -137,6 +137,7 @@ class Worker(Generic[WD]):
         "_sentinel",
         "_health_tab",
         "with_scheduler",
+        "middlewares",
     )
 
     def __init__(
@@ -202,6 +203,12 @@ class Worker(Generic[WD]):
         self.aborting_tasks: set[str] = set()
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
+        #: list of middlewares added to the worker
+        self.middlewares: list[
+            Callable[
+                [WrappedContext[WD], Callable[..., Coroutine]], Callable[..., Coroutine]
+            ]
+        ] = []
         self.with_scheduler = with_scheduler
         self.sync_concurrency = sync_concurrency or concurrency
         self._limiter = CapacityLimiter(self.sync_concurrency)
@@ -367,6 +374,18 @@ class Worker(Generic[WD]):
             return task
 
         return wrapped
+
+    def middleware(
+        self,
+        fn: Callable[
+            [WrappedContext[WD], Callable[..., Coroutine]], Callable[..., Coroutine]
+        ],
+    ):
+        """
+        Registers the given middleware with the worker.
+        """
+        self.middlewares.append(fn)
+        return fn
 
     def run_sync(self) -> None:
         """
@@ -644,17 +663,19 @@ class Worker(Generic[WD]):
             finish_time = None
             try:
                 logger.info(f"task {task_id} → worker {self.id}")
-                self.tasks[task_id] = self.loop.create_task(
-                    task.fn(ctx, *data["a"], **data["k"])
-                )
                 try:
-                    async with self.task_lifespan(ctx):
-                        result = await asyncio.wait_for(
-                            self.tasks[task_id],
-                            to_seconds(task.timeout)
-                            if task.timeout is not None
-                            else None,
-                        )
+                    wrapped = task.fn
+                    for middleware in reversed(self.middlewares):
+                        wrapped = middleware(ctx, wrapped)
+                    coro = wrapped(ctx, *data["a"], **data["k"])
+                    self.tasks[task_id] = self.loop.create_task(coro)
+                    result = await asyncio.wait_for(
+                        self.tasks[task_id],
+                        to_seconds(task.timeout) if task.timeout is not None else None,
+                    )
+                    triggers = data.get("T")
+                    if triggers:
+                        pass
                 except Exception as e:
                     raise e  # re-raise for outer try/except
                 finally:

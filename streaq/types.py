@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Generic, ParamSpec, TypeVar
+from typing import Coroutine, Generic, ParamSpec, Protocol, TypeVar
 
 from redis.asyncio import Redis
 
 P = ParamSpec("P")
+POther = ParamSpec("POther")
 R = TypeVar("R")
+ROther = TypeVar("ROther")
 WD = TypeVar("WD")
 
 
@@ -35,3 +37,11 @@ class WrappedContext(Generic[WD]):
     tries: int
     ttl: timedelta | int | None
     worker_id: str
+
+
+class WrappedCoroutine(Protocol):
+    """
+    TODO: laksdfjakdsjf
+    """
+
+    def __call__(self, *args, **kwargs) -> Coroutine: ...
