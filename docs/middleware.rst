@@ -8,7 +8,7 @@ You can define middleware to wrap task execution. This has a host of potential a
 
 .. code-block:: python
 
-   from time import time
+   import time
    from typing import Callable, Coroutine
 
    @worker.middleware
@@ -30,7 +30,7 @@ You can register as many middleware as you like to a worker, which will run them
 
 .. code-block:: python
 
-   from time import time
+   import time
    from typing import Callable, Coroutine
    from streaq import StreaqRetry
 
