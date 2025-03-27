@@ -361,14 +361,13 @@ class RegisteredTask(Generic[WD, P, R]):
             ttl=self.ttl,
             worker_id=self.worker.id,
         )
-        async with self.worker.task_lifespan(deps):
-            try:
-                return await asyncio.wait_for(
-                    self.fn(deps, *args, **kwargs),
-                    to_seconds(self.timeout) if self.timeout else None,
-                )
-            except asyncio.TimeoutError as e:
-                raise e
+        try:
+            return await asyncio.wait_for(
+                self.fn(deps, *args, **kwargs),
+                to_seconds(self.timeout) if self.timeout else None,
+            )
+        except asyncio.TimeoutError as e:
+            raise e
 
     @property
     def fn_name(self) -> str:
@@ -409,14 +408,13 @@ class RegisteredCron(Generic[WD, R]):
             ttl=self.ttl,
             worker_id=self.worker.id,
         )
-        async with self.worker.task_lifespan(deps):
-            try:
-                return await asyncio.wait_for(
-                    self.fn(deps),
-                    to_seconds(self.timeout) if self.timeout else None,
-                )
-            except asyncio.TimeoutError as e:
-                raise e
+        try:
+            return await asyncio.wait_for(
+                self.fn(deps),
+                to_seconds(self.timeout) if self.timeout else None,
+            )
+        except asyncio.TimeoutError as e:
+            raise e
 
     @property
     def fn_name(self) -> str:

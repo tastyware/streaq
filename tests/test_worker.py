@@ -30,8 +30,8 @@ async def deps(worker: Worker) -> AsyncIterator[Context]:
     yield Context(NAME_STR)
 
 
-async def test_worker_lifespan(redis_url: str):
-    worker = Worker(redis_url=redis_url, worker_lifespan=deps)
+async def test_lifespan(redis_url: str):
+    worker = Worker(redis_url=redis_url, lifespan=deps)
 
     @worker.task()
     async def foobar(ctx: WrappedContext[Context]) -> str:

@@ -26,7 +26,7 @@ Fast, async, type-safe job queuing with Redis streams
 +----------------------------+--------+-----+-----+--------+
 | Task scheduling/cron jobs  | ✅     | ✅  | ✅  | ✅     |
 +----------------------------+--------+-----+-----+--------+
-| Task lifespan/middleware   | ✅     | ✅  | ✅  | ✅     |
+| Task middleware            | ✅     | ✅  | ✅  | ✅     |
 +----------------------------+--------+-----+-----+--------+
 | Actively maintained        | ✅     | ❌  | ✅  | ✅     |
 +----------------------------+--------+-----+-----+--------+
@@ -59,8 +59,9 @@ Fast, async, type-safe job queuing with Redis streams
 
    installation
    getting-started
-   task
    worker
+   task
+   middleware
    cli
    integrations
 
