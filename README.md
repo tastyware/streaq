@@ -96,19 +96,19 @@ $ python example.py
 Let's see what the output looks like:
 
 ```
-13:25:08: starting worker 0cb8bb10870442e4ba0543c8c5effd29 for 2 functions
+13:25:08: starting worker 0cb8bb10 for 2 functions
 13:25:08: redis_version=7.2.5 mem_usage=1.98M clients_connected=6 db_keys=8 queued=0 scheduled=0
-13:25:11: task dba141e367f949589fc67d1a12e0f1a5 → worker 0cb8bb10870442e4ba0543c8c5effd29
+13:25:11: task dba141e367f949589fc67d1a12e0f1a5 → worker 0cb8bb10
 13:25:12: task dba141e367f949589fc67d1a12e0f1a5 ← 15
-13:25:16: task 62f5671e7cde44d1bb26cd1fc16d126e → worker 0cb8bb10870442e4ba0543c8c5effd29
+13:25:16: task 62f5671e7cde44d1bb26cd1fc16d126e → worker 0cb8bb10
 13:25:17: task 62f5671e7cde44d1bb26cd1fc16d126e ← 294815
-13:26:00: task cde2413d9593470babfd6d4e36cf4570 → worker 0cb8bb10870442e4ba0543c8c5effd29
+13:26:00: task cde2413d9593470babfd6d4e36cf4570 → worker 0cb8bb10
 It's a bird... It's a plane... It's CRON!
 13:26:00: task cde2413d9593470babfd6d4e36cf4570 ← None
 ```
 ```
 TaskData(fn_name='fetch', enqueue_time=1740162312862, task_try=None, scheduled=datetime.datetime(2025, 2, 21, 18, 25, 15, 862000, tzinfo=datetime.timezone.utc))
-TaskResult(success=True, result=294815, start_time=1740162316157, finish_time=1740162317140, queue_name='streaq')
+TaskResult(success=True, result=294815, start_time=1740162316157, finish_time=1740162317140, queue_name='default')
 ```
 
 For more examples, check out the [documentation](https://streaq.readthedocs.io/en/latest/).
