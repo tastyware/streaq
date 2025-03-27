@@ -1,7 +1,6 @@
 import asyncio
 import time
 from datetime import datetime, timedelta
-from types import WrapperDescriptorType
 from typing import Callable, Coroutine
 
 import pytest
