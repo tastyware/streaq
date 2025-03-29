@@ -78,6 +78,15 @@ Tasks can depend on other tasks, meaning they won't be enqueued until their depe
        task2 = await sleeper.enqueue(2).start(after=task1.id)
        task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
+Running tasks locally
+---------------------
+
+Sometimes, you may wish to run a task's underlying function directly and skip enqueuing entirely. This can be done easily:
+
+.. code-block:: python
+
+   await sleeper.run(3)
+
 Task status & results
 ---------------------
 
