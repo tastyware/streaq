@@ -217,6 +217,8 @@ class Task(Generic[R]):
     async def status(self) -> TaskStatus:
         """
         Fetch the current status of the task.
+
+        :return: current task status
         """
         return await self.parent.worker.status_by_id(self.id)
 
