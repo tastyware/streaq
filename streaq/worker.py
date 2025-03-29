@@ -47,7 +47,16 @@ from streaq.constants import (
 from streaq.lua import register_scripts
 from streaq.types import P, R, WD, StreamMessage, WrappedContext
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds
-from streaq.task import RegisteredCron, RegisteredTask, StreaqRetry, Task, TaskPriority
+from streaq.task import (
+    RegisteredCron,
+    RegisteredTask,
+    StreaqRetry,
+    Task,
+    TaskData,
+    TaskPriority,
+    TaskResult,
+    TaskStatus,
+)
 
 """
 Empty object representing uninitialized dependencies. This is distinct from
@@ -996,6 +1005,117 @@ class Worker(Generic[WD]):
         await self.redis.close(close_connection_pool=True)
         run_time = now_ms() - self._start_time
         logger.info(f"shutdown {str(self)} after {run_time}ms")
+
+    async def _listen_for_result(self, task_id: str) -> None:
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe(self._channel_key)
+        encoded_id = task_id.encode()
+        async for msg in pubsub.listen():
+            if msg.get("data") == encoded_id:
+                break
+
+    async def status_by_id(self, task_id: str) -> TaskStatus:
+        """
+        Fetch the current status of the given task. Note that nonexistent
+        tasks will return pending.
+
+        :param task_id: ID of the task to check
+
+        :return: status of the task
+        """
+        key = lambda mid: self._prefix + mid + task_id
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.exists(key(REDIS_RESULT))
+            pipe.exists(key(REDIS_RUNNING))
+            pipe.zscore(self._queue_key, task_id)
+            pipe.exists(key(REDIS_MESSAGE))
+            finished, running, score, queued = await pipe.execute()
+
+        if finished:
+            return TaskStatus.DONE
+        elif running:
+            return TaskStatus.RUNNING
+        elif score:
+            return TaskStatus.SCHEDULED
+        elif queued:
+            return TaskStatus.QUEUED
+        return TaskStatus.PENDING
+
+    async def result_by_id(
+        self, task_id: str, timeout: timedelta | int | None = None
+    ) -> TaskResult[Any]:
+        """
+        Wait for and return the given task's result, optionally with a timeout.
+
+        :param task_id: ID of the task to get results for
+        :param timeout: amount of time to wait before raising a `TimeoutError`
+
+        :return: wrapped result object
+        """
+        key = lambda mid: self._prefix + mid + task_id
+        raw = await self.redis.get(key(REDIS_RESULT))
+        if raw is None:
+            timeout_seconds = to_seconds(timeout) if timeout is not None else None
+            await asyncio.wait_for(self._listen_for_result(task_id), timeout_seconds)
+            raw = await self.redis.get(key(REDIS_RESULT))
+        if raw is None:
+            raise StreaqError(
+                "Task finished but result was not stored, did you set ttl=0?"
+            )
+        try:
+            data = self.deserializer(raw)
+            return TaskResult(
+                success=data["s"],
+                result=data["r"],
+                start_time=data["st"],
+                finish_time=data["ft"],
+                queue_name=self.queue_name,
+            )
+        except Exception as e:
+            raise StreaqError(
+                f"Unable to deserialize result for task {task_id}:"
+            ) from e
+
+    async def abort_by_id(self, task_id: str, timeout: timedelta | int = 5) -> bool:
+        """
+        Notify workers that the task should be aborted.
+
+        :param task_id: ID of the task to abort
+        :param timeout: how long to wait to confirm abortion was successful
+
+        :return: whether the task was aborted successfully
+        """
+        await self.redis.sadd(self._abort_key, task_id)  # type: ignore
+        try:
+            result = await self.result_by_id(task_id, timeout=timeout)
+            return not result.success and isinstance(
+                result.result, asyncio.CancelledError
+            )
+        except asyncio.TimeoutError:
+            return False
+
+    async def info_by_id(self, task_id: str) -> TaskData:
+        """
+        Fetch info about a previously enqueued task.
+
+        :param task_id: ID of the task to get info for
+
+        :return: task info object
+        """
+        key = lambda mid: self._prefix + mid + task_id
+        async with self.redis.pipeline(transaction=False) as pipe:
+            pipe.get(key(REDIS_TASK))
+            pipe.get(key(REDIS_RETRY))
+            pipe.zscore(self._queue_key, task_id)
+            raw, task_try, score = await pipe.execute()
+        data = self.deserializer(raw)
+        dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
+        return TaskData(
+            fn_name=data["f"],
+            enqueue_time=data["t"],
+            task_try=task_try,
+            scheduled=dt,
+        )
 
     async def __aenter__(self):
         # reentrant
