@@ -18,6 +18,7 @@ Fast, async, type-safe job queuing with Redis streams
 - Cron jobs
 - Task middleware
 - Task dependency graph
+- Task pipelines
 - Task priority queues
 - Support for synchronous tasks (run in separate threads)
 - Dead simple, ~2k lines of code
