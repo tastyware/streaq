@@ -101,7 +101,7 @@ async def test_task_retry(worker: Worker):
 
     task = await foobar.enqueue()
     worker.loop.create_task(worker.run_async())
-    res = await task.result(6)
+    res = await task.result(7)
     assert res.success
     assert res.result == 3
 
@@ -423,3 +423,19 @@ async def test_middleware(worker: Worker):
     res = await task.result(3)
     assert res.success
     assert res.result == 4
+
+
+async def test_task_pipeline(worker: Worker):
+    @worker.task()
+    async def double(ctx: WrappedContext[None], val: int) -> int:
+        return val * 2
+
+    @worker.task()
+    async def is_even(ctx: WrappedContext[None], val: int) -> bool:
+        return val % 2 == 0
+
+    worker.loop.create_task(worker.run_async())
+    async with worker:
+        task = await double.enqueue(2).then(double).then(is_even)
+        res = await task.result(3)
+        assert res.result and res.success

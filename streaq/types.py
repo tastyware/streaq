@@ -5,7 +5,9 @@ from typing import Generic, ParamSpec, TypeVar
 from redis.asyncio import Redis
 
 P = ParamSpec("P")
+POther = ParamSpec("POther")
 R = TypeVar("R")
+ROther = TypeVar("ROther")
 WD = TypeVar("WD")
 
 

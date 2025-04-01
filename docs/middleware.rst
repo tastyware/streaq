@@ -21,7 +21,7 @@ You can define middleware to wrap task execution. This has a host of potential a
 
        return wrapper
 
-Middleware are structured as wrapped functions for maximum flexibility--not only can you run code before/after execution, you can also acess and even modify the results.
+Middleware are structured as wrapped functions for maximum flexibility--not only can you run code before/after execution, you can also access and even modify the arguments or results.
 
 Stacking middleware
 -------------------
