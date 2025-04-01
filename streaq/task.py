@@ -28,7 +28,7 @@ from streaq.constants import (
     REDIS_RESULT,
     REDIS_TASK,
 )
-from streaq.types import P, R, WD, WrappedContext
+from streaq.types import P, POther, R, ROther, WD, WrappedContext
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
 
 if TYPE_CHECKING:
@@ -109,6 +109,8 @@ class Task(Generic[R]):
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     parent: "RegisteredCron | RegisteredTask"
+    _after: "Task | None" = None
+    _triggers: "Task | None" = None
     id: str = ""
 
     def __post_init__(self):
@@ -138,6 +140,7 @@ class Task(Generic[R]):
 
         :return: self
         """
+        after = self._after.id if self._after else after
         if (delay and schedule) or (delay and after) or (schedule and after):
             raise StreaqError(
                 "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not "
@@ -188,8 +191,24 @@ class Task(Generic[R]):
 
         return self
 
+    def then(
+        self, task: "RegisteredTask[WD, POther, ROther]", **kwargs
+    ) -> "Task[ROther]":
+        """
+        TODO
+        """
+        self._triggers = Task((), kwargs, task)
+        self._triggers._after = self
+        return self._triggers
+
+    async def _chain(self) -> "Task[R]":
+        # traverse backwards
+        if self._after:
+            await self._after
+        return await self.start()
+
     def __await__(self):
-        return self.start().__await__()
+        return self._chain().__await__()
 
     def _task_key(self, mid: str) -> str:
         return REDIS_PREFIX + self.queue + mid + self.id
@@ -203,14 +222,17 @@ class Task(Generic[R]):
         :return: serialized task data
         """
         try:
-            return self.parent.worker.serializer(
-                {
-                    "f": self.parent.fn_name,
-                    "a": self.args,
-                    "k": self.kwargs,
-                    "t": enqueue_time,
-                }
-            )
+            data = {
+                "f": self.parent.fn_name,
+                "a": self.args,
+                "k": self.kwargs,
+                "t": enqueue_time,
+            }
+            if self._after:
+                data["A"] = self._after.id
+            if self._triggers:
+                data["T"] = self._triggers.id
+            return self.parent.worker.serializer(data)
         except Exception as e:
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
 

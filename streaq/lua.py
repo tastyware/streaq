@@ -164,6 +164,31 @@ redis.call('del', dependents_key .. task_id, dependencies_key .. task_id)
 return runnable
 """
 
+UNCLAIM_IDLE_TASKS = """
+local sorted_set_key = KEYS[1]
+local stream_key = KEYS[2]
+local group_name = KEYS[3]
+local consumer_name = KEYS[4]
+local message_key = KEYS[5]
+
+local current_time = ARGV[1]
+local ttl = ARGV[2]
+
+local timed_out = redis.call('zrangebyscore', sorted_set_key, '-inf', current_time)
+if #timed_out > 0 then
+  local claimed = redis.call('xclaim', stream_key, group_name, consumer_name, 0, unpack(timed_out))
+  for _, message in ipairs(claimed) do
+    redis.call('xack', stream_key, group_name, message[1])
+    redis.call('xdel', stream_key, message[1])
+    local message_id = redis.call('xadd', stream_key, '*', unpack(message[2]))
+    redis.call('set', message_key .. message[2][2], message_id, 'px', ttl)
+  end
+  redis.call('zrem', sorted_set_key, unpack(timed_out))
+end
+
+return timed_out
+"""
+
 
 def register_scripts(redis: Redis) -> dict[str, AsyncScript]:
     return {
@@ -175,4 +200,5 @@ def register_scripts(redis: Redis) -> dict[str, AsyncScript]:
         "publish_dependent": redis.register_script(PUBLISH_DEPENDENT),
         "unpublish_dependent": redis.register_script(UNPUBLISH_DEPENDENT),
         "update_dependents": redis.register_script(UPDATE_DEPENDENTS),
+        "unclaim_idle_tasks": redis.register_script(UNCLAIM_IDLE_TASKS),
     }

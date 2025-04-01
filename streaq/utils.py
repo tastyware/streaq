@@ -53,6 +53,10 @@ def datetime_ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
 
 
+def to_tuple(val: Any) -> tuple:
+    return val if isinstance(val, tuple) else (val,)
+
+
 def default_log_config(verbose: bool) -> dict[str, Any]:
     """
     Setup default config. for dictConfig.
@@ -73,7 +77,7 @@ def default_log_config(verbose: bool) -> dict[str, Any]:
         },
         "formatters": {
             "streaq.standard": {
-                "format": "%(asctime)s: %(message)s",
+                "format": "[%(levelname)s] %(asctime)s: %(message)s",
                 "datefmt": "%H:%M:%S",
             }
         },

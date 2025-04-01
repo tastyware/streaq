@@ -141,3 +141,38 @@ async def test_handle_signal(worker: Worker):
     await asyncio.sleep(1)
     task = await foo.enqueue()
     assert await task.status() == TaskStatus.QUEUED
+
+
+async def test_reclaim_idle_task(redis_url: str):
+    async def foo(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(2)
+
+    worker1 = Worker(
+        redis_url=redis_url,
+        queue_name="test",
+        handle_signals=False,
+    )
+    foo1 = worker1.task(timeout=3)(foo)
+    async with worker1:
+        task = await foo1.enqueue()
+        await asyncio.wait_for(worker1.run_async(), 1)
+        for t in worker1.task_wrappers.values():
+            t.cancel()
+        for t in worker1.tasks.values():
+            t.cancel()
+        await asyncio.sleep(2)
+        assert await task.status() == TaskStatus.RUNNING
+
+    worker2 = Worker(
+        redis_url=redis_url,
+        queue_name="test",
+        handle_signals=False,
+        with_scheduler=True,
+    )
+    worker2.task(timeout=3)(foo)
+    done, _ = await asyncio.wait(
+        [worker2.run_async(), task.result(5)], return_when=asyncio.FIRST_COMPLETED
+    )
+    for res in done:
+        result = res.result()
+        assert result is not None and result.success

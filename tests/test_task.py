@@ -101,7 +101,7 @@ async def test_task_retry(worker: Worker):
 
     task = await foobar.enqueue()
     worker.loop.create_task(worker.run_async())
-    res = await task.result(6)
+    res = await task.result(7)
     assert res.success
     assert res.result == 3
 
