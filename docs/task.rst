@@ -236,7 +236,7 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 
 .. code-block:: python
 
-   TaskResult(success=True, result=True, start_time=1743467190121, finish_time=1743467190123, queue_name='default')
+   TaskResult(success=True, result=True, start_time=1743469913901, finish_time=1743469913902, queue_name='default')
 
 This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. With a little work, you can build common pipelining utilities from these building blocks:
 
@@ -249,7 +249,6 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        tasks = await asyncio.gather(*coros)
        results = await asyncio.gather(*[t.result(3) for t in tasks])
        return [r.result for r in results]
-
 
    @worker.task()
    async def filter(ctx: WrappedContext[Context], data: list, fn_name: str) -> list:
@@ -271,11 +270,11 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
 .. code-block:: python
 
-   TaskResult(success=True, result=[True, False, True, False], start_time=1743293049832, finish_time=1743293049866, queue_name='default')
-   TaskResult(success=True, result=[2, 4], start_time=1743293049869, finish_time=1743293049893, queue_name='default')
+   TaskResult(success=True, result=[0, 2, 4, 6], start_time=1743470002680, finish_time=1743470002688, queue_name='default')
+   TaskResult(success=True, result=[0, 4], start_time=1743470002706, finish_time=1743470002710, queue_name='default')
 
 .. note::
-   For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``Task.then()``.
+   For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
 
 Task priorities
 ---------------

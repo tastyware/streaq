@@ -156,6 +156,7 @@ async def test_reclaim_idle_task(redis_url: str):
     async with worker1:
         task = await foo1.enqueue()
         await asyncio.wait_for(worker1.run_async(), 1)
+        # simulate abrupt shutdown
         for t in worker1.task_wrappers.values():
             t.cancel()
         for t in worker1.tasks.values():
@@ -170,9 +171,6 @@ async def test_reclaim_idle_task(redis_url: str):
         with_scheduler=True,
     )
     worker2.task(timeout=3)(foo)
-    done, _ = await asyncio.wait(
-        [worker2.run_async(), task.result(5)], return_when=asyncio.FIRST_COMPLETED
-    )
-    for res in done:
-        result = res.result()
-        assert result is not None and result.success
+    worker2.loop.create_task(worker2.run_async())
+    assert (await task.result(5)).success
+    await worker2.close()

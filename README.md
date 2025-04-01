@@ -10,7 +10,7 @@ Fast, async, type-safe job queuing with Redis streams
 
 ## Features
 
-- Up to [5x-15x faster](/benchmarks) than arq
+- Up to [5x-15x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than arq
 - Strongly typed
 - 95%+ unit test coverage
 - Comprehensive documentation
@@ -84,7 +84,7 @@ async with worker:
     print(await task.result(timeout=5))
 ```
 
-Putting this all together gives us [example.py](/example.py). Let's spin up a worker:
+Putting this all together gives us [example.py](https://github.com/tastyware/streaq/blob/master/example.py). Let's spin up a worker:
 ```
 $ streaq example.worker
 ```
@@ -96,19 +96,23 @@ $ python example.py
 Let's see what the output looks like:
 
 ```
-13:25:08: starting worker 0cb8bb10 for 2 functions
-13:25:08: redis_version=7.2.5 mem_usage=1.98M clients_connected=6 db_keys=8 queued=0 scheduled=0
-13:25:11: task dba141e367f949589fc67d1a12e0f1a5 → worker 0cb8bb10
-13:25:12: task dba141e367f949589fc67d1a12e0f1a5 ← 15
-13:25:16: task 62f5671e7cde44d1bb26cd1fc16d126e → worker 0cb8bb10
-13:25:17: task 62f5671e7cde44d1bb26cd1fc16d126e ← 294815
-13:26:00: task cde2413d9593470babfd6d4e36cf4570 → worker 0cb8bb10
+[INFO] 19:49:44: starting worker db064c92 for 3 functions
+[INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba → worker db064c92
+[INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba ← 15
+[INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 → worker db064c92
+[INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 ← 293784
+[INFO] 19:50:00: task a0a8c0f39dae4c448182c417b047677c → worker db064c92
+[INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 → worker db064c92
 It's a bird... It's a plane... It's CRON!
-13:26:00: task cde2413d9593470babfd6d4e36cf4570 ← None
+[INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 ← None
+[INFO] 19:50:00: health check results:
+redis {memory: 1.72M, clients: 3, keys: 18, queued: 2, scheduled: 0}
+worker db064c92 {completed: 2}
+[INFO] 19:50:00: task a0a8c0f39dae4c448182c417b047677c ← None
 ```
 ```
-TaskData(fn_name='fetch', enqueue_time=1740162312862, task_try=None, scheduled=datetime.datetime(2025, 2, 21, 18, 25, 15, 862000, tzinfo=datetime.timezone.utc))
-TaskResult(success=True, result=294815, start_time=1740162316157, finish_time=1740162317140, queue_name='default')
+TaskData(fn_name='fetch', enqueue_time=1743468587037, task_try=None, scheduled=datetime.datetime(2025, 4, 1, 0, 49, 50, 37000, tzinfo=datetime.timezone.utc))
+TaskResult(success=True, result=293784, start_time=1743468590041, finish_time=1743468590576, queue_name='default')
 ```
 
 For more examples, check out the [documentation](https://streaq.readthedocs.io/en/latest/).

@@ -195,7 +195,13 @@ class Task(Generic[R]):
         self, task: "RegisteredTask[WD, POther, ROther]", **kwargs
     ) -> "Task[ROther]":
         """
-        TODO
+        Enqueues the given task as a dependent of this one. Positional arguments will
+        come from the previous task's output (tuple outputs will be unpacked), and any
+        additional arguments can be passed as kwargs.
+
+        :param task: task to feed output to
+
+        :return: task object for newly created, dependent task
         """
         self._triggers = Task((), kwargs, task)
         self._triggers._after = self
