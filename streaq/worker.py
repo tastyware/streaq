@@ -818,7 +818,7 @@ class Worker(Generic[WD]):
                 )
                 pipe.srem(self._abort_key, task_id)
                 if success:
-                    logger.info(f"task {task_id} ← {str(return_value):.32}")
+                    logger.info(f"task {task_id} ← {str(return_value):.32}…")
                     if triggers:
                         args = self.serializer(to_tuple(return_value))
                         pipe.set(
