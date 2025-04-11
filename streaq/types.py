@@ -31,6 +31,7 @@ class WrappedContext(Generic[WD]):
     """
 
     deps: WD
+    fn_name: str
     redis: Redis
     task_id: str
     timeout: timedelta | int | None

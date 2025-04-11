@@ -131,8 +131,7 @@ class Worker(Generic[WD]):
         "_queue_key",
         "_stream_key",
         "_abort_key",
-        "_health_info_key",
-        "_health_time_key",
+        "_health_key",
         "_channel_key",
         "_timeout_key",
         "main_task",
@@ -220,8 +219,7 @@ class Worker(Generic[WD]):
         self._queue_key = self._prefix + REDIS_QUEUE
         self._stream_key = self._prefix + REDIS_STREAM
         self._abort_key = self._prefix + REDIS_ABORT
-        self._health_info_key = self._prefix + REDIS_HEALTH + ":info"
-        self._health_time_key = self._prefix + REDIS_HEALTH + ":time"
+        self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
         self._timeout_key = self._prefix + REDIS_TIMEOUT
         self._start_time = now_ms()
@@ -256,26 +254,14 @@ class Worker(Generic[WD]):
                 f"redis {{memory: {mem_usage}, clients: {clients}, keys: {key_count}, "
                 f"queued: {queued}, scheduled: {queue_size}}}"
             )
-            interval_ms = round(
-                1000
-                * (
-                    self._health_tab.next(now=datetime.now(self.tz))  # type: ignore
-                    - self._health_tab.previous(now=datetime.now(self.tz))  # type: ignore
-                    + 3  # buffer
-                )
-            )
-            score = now_ms() - interval_ms
             async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.hset(self._health_info_key, "redis", health)
-                pipe.hgetall(self._health_info_key)
-                pipe.zrangebyscore(self._health_time_key, 0, score)
-                _, res, warn = await pipe.execute()
+                pipe.hset(self._health_key, "redis", health)
+                pipe.hgetall(self._health_key)
+                _, res = await pipe.execute()
             formatted = [v.decode() for v in res.values()]
             logger.info(
                 "health check results:\n" + "\n".join(f for f in sorted(formatted))
             )
-            for worker in warn:
-                logger.warning(f"worker {worker.decode()} may be down!")
 
     @property
     def deps(self) -> WD:
@@ -286,13 +272,18 @@ class Worker(Generic[WD]):
         return cast(WD, self._deps)
 
     def build_context(
-        self, registered_task: RegisteredCron | RegisteredTask, id: str, tries: int = 1
+        self,
+        fn_name: str,
+        registered_task: RegisteredCron | RegisteredTask,
+        id: str,
+        tries: int = 1,
     ) -> WrappedContext[WD]:
         """
         Creates the context for a task to be run given task metadata
         """
         return WrappedContext(
             deps=self.deps,
+            fn_name=fn_name,
             redis=self.redis,
             task_id=id,
             timeout=registered_task.timeout,
@@ -696,7 +687,7 @@ class Worker(Generic[WD]):
                 res = await pipe.execute()
             _args = data["a"] if not after else self.deserializer(res[-1])
 
-            ctx = self.build_context(task, task_id, tries=task_try)
+            ctx = self.build_context(fn_name, task, task_id, tries=task_try)
             success = True
             delay = None
             done = True
@@ -1023,8 +1014,7 @@ class Worker(Generic[WD]):
         while True:
             await asyncio.sleep(self._health_tab.next(now=datetime.now(self.tz)))  # type: ignore
             async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.hset(self._health_info_key, self.id, str(self))
-                pipe.zadd(self._health_time_key, {self.id: now_ms()})
+                pipe.hset(self._health_key, self.id, str(self))
                 await pipe.execute()
 
     def _add_signal_handler(self, signum: Signals) -> None:
@@ -1060,8 +1050,7 @@ class Worker(Generic[WD]):
                     groupname=self._group_name,
                     consumername=self.id,
                 )
-            pipe.hdel(self._health_info_key, self.id)
-            pipe.zrem(self._health_time_key, self.id)
+            pipe.hdel(self._health_key, self.id)
             await pipe.execute(raise_on_error=False)
         await self.redis.close(close_connection_pool=True)
         run_time = now_ms() - self._start_time

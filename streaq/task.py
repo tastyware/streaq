@@ -315,6 +315,7 @@ class RegisteredTask(Generic[WD, P, R]):
         """
         deps = WrappedContext(
             deps=self.worker.deps,
+            fn_name=self.fn_name,
             redis=self.worker.redis,
             task_id=uuid4().hex,
             timeout=self.timeout,
@@ -362,6 +363,7 @@ class RegisteredCron(Generic[WD, R]):
         """
         deps = WrappedContext(
             deps=self.worker.deps,
+            fn_name=self.fn_name,
             redis=self.worker.redis,
             task_id=uuid4().hex,
             timeout=self.timeout,
