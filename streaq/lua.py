@@ -46,13 +46,14 @@ local task_data = ARGV[3]
 local priority = ARGV[4]
 local score = ARGV[5]
 
-if redis.call('set', task_key, task_data, 'nx', 'px', ttl) and not score then
+local is_new = redis.call('set', task_key, task_data, 'nx', 'px', ttl)
+if score then
+  redis.call('zadd', queue_key, score, task_id)
+  return 1
+elseif is_new then
   local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
   redis.call('set', message_key, message_id, 'px', ttl)
   return message_id
-elseif score then
-  redis.call('zadd', queue_key, score, task_id)
-  return 1
 end
 
 return 0

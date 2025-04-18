@@ -188,7 +188,7 @@ async def test_change_cron_schedule(redis_url: str):
     )
     foo1 = worker1.cron("0 0 1 1 *")(foo)
     worker1.loop.create_task(worker1.run_async())
-    await asyncio.sleep(1)
+    await asyncio.sleep(2)
     await worker1.close()
     task1 = foo1.enqueue()
     assert foo1.schedule() == (await task1.info()).scheduled
@@ -201,7 +201,7 @@ async def test_change_cron_schedule(redis_url: str):
     )
     foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
     worker2.loop.create_task(worker2.run_async())
-    await asyncio.sleep(3)
+    await asyncio.sleep(2)
     await worker2.close()
     task2 = foo2.enqueue()
     assert foo2.schedule() == (await task2.info()).scheduled

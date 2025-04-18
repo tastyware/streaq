@@ -461,9 +461,7 @@ class Worker(Generic[WD]):
         # schedule initial cron jobs
         for name, cron_job in self.cron_jobs.items():
             self.cron_schedule[name] = cron_job.next()
-            futures.add(
-                cron_job.enqueue().start(schedule=cron_job.schedule(), update=True)
-            )
+            futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
         if futures:
             logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
             await asyncio.gather(*futures)
