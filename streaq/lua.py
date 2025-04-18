@@ -46,18 +46,16 @@ local task_data = ARGV[3]
 local priority = ARGV[4]
 local score = ARGV[5]
 
-if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
-  return 0
-end
-
-if not score then
+if redis.call('set', task_key, task_data, 'nx', 'px', ttl) and not score then
   local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
   redis.call('set', message_key, message_id, 'px', ttl)
   return message_id
-else
+elseif score then
   redis.call('zadd', queue_key, score, task_id)
   return 1
 end
+
+return 0
 """
 
 PUBLISH_DELAYED_TASK = """

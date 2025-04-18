@@ -174,3 +174,35 @@ async def test_reclaim_idle_task(redis_url: str):
     worker2.loop.create_task(worker2.run_async())
     assert (await task.result(5)).success
     await worker2.close()
+
+
+async def test_change_cron_schedule(redis_url: str):
+    async def foo(ctx: WrappedContext[None]) -> None:
+        pass
+
+    worker1 = Worker(
+        redis_url=redis_url,
+        queue_name="test",
+        handle_signals=False,
+        with_scheduler=True,
+    )
+    foo1 = worker1.cron("0 0 1 1 *")(foo)
+    worker1.loop.create_task(worker1.run_async())
+    await asyncio.sleep(1)
+    await worker1.close()
+    task1 = foo1.enqueue()
+    assert foo1.schedule() == (await task1.info()).scheduled
+
+    worker2 = Worker(
+        redis_url=redis_url,
+        queue_name="test",
+        handle_signals=False,
+        with_scheduler=True,
+    )
+    foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
+    worker2.loop.create_task(worker2.run_async())
+    await asyncio.sleep(3)
+    await worker2.close()
+    task2 = foo2.enqueue()
+    assert foo2.schedule() == (await task2.info()).scheduled
+    assert foo1.schedule() != foo2.schedule()
