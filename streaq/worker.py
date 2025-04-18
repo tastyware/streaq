@@ -457,8 +457,8 @@ class Worker(Generic[WD]):
         jobs to the live queue when ready.
         """
         message_prefix = self._prefix + REDIS_MESSAGE
-        # schedule initial cron jobs
         futures = set()
+        # schedule initial cron jobs
         for name, cron_job in self.cron_jobs.items():
             self.cron_schedule[name] = cron_job.next()
             futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
