@@ -699,20 +699,14 @@ class Worker(Generic[WD]):
                     to_seconds(task.timeout) if task.timeout is not None else None,
                 )
 
+            logger.info(f"task {task_id} → worker {self.id}")
+            wrapped = _fn
+            for middleware in reversed(self.middlewares):
+                wrapped = middleware(ctx, wrapped)
+            coro = wrapped(ctx, *_args, **data["k"])
+            self.tasks[task_id] = self.loop.create_task(coro)
             try:
-                logger.info(f"task {task_id} → worker {self.id}")
-                wrapped = _fn
-                for middleware in reversed(self.middlewares):
-                    wrapped = middleware(ctx, wrapped)
-                coro = wrapped(ctx, *_args, **data["k"])
-                try:
-                    self.tasks[task_id] = self.loop.create_task(coro)
-                    result = await self.tasks[task_id]
-                except Exception as e:
-                    raise e  # re-raise for outer try/except
-                finally:
-                    del self.tasks[task_id]
-                    finish_time = now_ms()
+                result = await self.tasks[task_id]
             except StreaqRetry as e:
                 result = e
                 success = False
@@ -747,6 +741,8 @@ class Worker(Generic[WD]):
                 logger.info(f"task {task_id} failed ×")
                 logger.exception(e)
             finally:
+                del self.tasks[task_id]
+                finish_time = now_ms()
                 await asyncio.shield(
                     self.finish_task(
                         msg,
