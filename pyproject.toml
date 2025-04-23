@@ -15,6 +15,36 @@ exclude = ["benchmarks"]
 name = "streaq"
 description = "Fast, async, type-safe job queuing with Redis streams"
 readme = "README.md"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Framework :: AsyncIO",
+    "Framework :: AnyIO",
+    "Framework :: Django",
+    "Framework :: FastAPI",
+    "Framework :: Flask",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: Unix",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Clustering",
+    "Topic :: System :: Distributed Computing",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
@@ -38,6 +68,13 @@ benchmark = [
 
 [project.scripts]
 streaq = "streaq.__main__:cli"
+
+[project.urls]
+Homepage = "https://github.com/tastyware/streaq"
+Documentation = "https://streaq.rtfd.io"
+Funding = "https://github.com/sponsors/tastyware"
+Source = "https://github.com/tastyware/streaq"
+Changelog = "https://github.com/tastyware/streaq/releases"
 
 [dependency-groups]
 dev = [
