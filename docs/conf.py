@@ -50,7 +50,7 @@ html_theme_options = {
         "repo": "fontawesome/brands/github",
         "edit": "material/file-edit-outline",
     },
-    "site_url": "https://jbms.github.io/sphinx-immaterial/",
+    "site_url": "https://streaq.rtfd.io",
     "repo_url": "https://github.com/tastyware/streaq",
     "repo_name": "streaq",
     "edit_uri": "blob/main/docs",
@@ -79,13 +79,6 @@ html_theme_options = {
         "announce.dismiss",
     ],
     "palette": [
-        {
-            "media": "(prefers-color-scheme)",
-            "toggle": {
-                "icon": "material/brightness-auto",
-                "name": "Switch to light mode",
-            },
-        },
         {
             "media": "(prefers-color-scheme: light)",
             "scheme": "default",
