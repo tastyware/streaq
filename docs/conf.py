@@ -27,6 +27,7 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
     "enum_tools.autoenum",
+    "sphinx_immaterial",
 ]
 
 intersphinx_mapping = {
@@ -43,5 +44,81 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "sphinx_immaterial"
+html_theme_options = {
+    "icon": {
+        "repo": "fontawesome/brands/github",
+        "edit": "material/file-edit-outline",
+    },
+    "site_url": "https://jbms.github.io/sphinx-immaterial/",
+    "repo_url": "https://github.com/tastyware/streaq",
+    "repo_name": "streaq",
+    "edit_uri": "blob/main/docs",
+    "globaltoc_collapse": True,
+    "features": [
+        "navigation.expand",
+        # "navigation.tabs",
+        # "navigation.tabs.sticky",
+        # "toc.integrate",
+        "navigation.sections",
+        # "navigation.instant",
+        # "header.autohide",
+        "navigation.top",
+        "navigation.footer",
+        # "navigation.tracking",
+        # "search.highlight",
+        "search.share",
+        "search.suggest",
+        "toc.follow",
+        "toc.sticky",
+        "content.tabs.link",
+        "content.code.copy",
+        "content.action.edit",
+        "content.action.view",
+        "content.tooltips",
+        "announce.dismiss",
+    ],
+    "palette": [
+        {
+            "media": "(prefers-color-scheme)",
+            "toggle": {
+                "icon": "material/brightness-auto",
+                "name": "Switch to light mode",
+            },
+        },
+        {
+            "media": "(prefers-color-scheme: light)",
+            "scheme": "default",
+            "primary": "green",
+            "accent": "light-blue",
+            "toggle": {
+                "icon": "material/lightbulb",
+                "name": "Switch to dark mode",
+            },
+        },
+        {
+            "media": "(prefers-color-scheme: dark)",
+            "scheme": "slate",
+            "primary": "deep-orange",
+            "accent": "lime",
+            "toggle": {
+                "icon": "material/lightbulb-outline",
+                "name": "Switch to system preference",
+            },
+        },
+    ],
+    "toc_title_is_page_title": True,
+    # BEGIN: social icons
+    "social": [
+        {
+            "icon": "fontawesome/brands/github",
+            "link": "https://github.com/tastyware/streaq",
+            "name": "Source code",
+        },
+        {
+            "icon": "fontawesome/brands/python",
+            "link": "https://pypi.org/project/streaq",
+        },
+    ],
+}
 html_static_path = ["_static"]

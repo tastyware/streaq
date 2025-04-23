@@ -55,7 +55,8 @@ Fast, async, type-safe job queuing with Redis streams
 
 .. toctree::
    :maxdepth: 2
-   :caption: Documentation:
+   :caption: Documentation
+   :hidden:
 
    installation
    getting-started
@@ -67,9 +68,13 @@ Fast, async, type-safe job queuing with Redis streams
 
 .. toctree::
    :maxdepth: 2
-   :caption: API Reference:
+   :caption: API Reference
+   :hidden:
 
-   streaq
+   api/task
+   api/types
+   api/utils
+   api/worker
 
 Indices and tables
 ==================
