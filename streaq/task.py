@@ -14,8 +14,8 @@ from typing import (
 )
 from uuid import UUID, uuid4
 
+from coredis import Redis
 from crontab import CronTab
-from redis.asyncio import Redis
 
 from streaq import logger
 from streaq.constants import (
@@ -174,16 +174,18 @@ class Task(Generic[R]):
                 args=[data, ttl] + after,
             )
         if not after or run_now:
-            keys = [
-                self.parent.worker._stream_key,
-                self._task_key(REDIS_MESSAGE),
-                self._task_key(REDIS_TASK),
-                self.parent.worker._queue_key,
-            ]
             args = [self.id, ttl, data, priority]
             if score:
                 args.append(score)
-            res = await self.parent.worker.scripts["publish_task"](keys=keys, args=args)
+            res = await self.parent.worker.scripts["publish_task"](
+                keys=[
+                    self.parent.worker._stream_key,
+                    self._task_key(REDIS_MESSAGE),
+                    self._task_key(REDIS_TASK),
+                    self.parent.worker._queue_key,
+                ],
+                args=args,
+            )
             if res == 0:
                 logger.debug("Task is unique and already exists, not enqueuing!")
                 return self
@@ -278,7 +280,7 @@ class Task(Generic[R]):
         return await self.parent.worker.info_by_id(self.id)
 
     @property
-    def redis(self) -> Redis:
+    def redis(self) -> Redis[str]:
         return self.parent.worker.redis
 
     @property

@@ -1,6 +1,5 @@
-from redis.asyncio import Redis
-from redis.commands.core import AsyncScript
-
+from coredis import Redis
+from coredis.commands import Script
 
 ADD_DEPENDENCIES = """
 local task_key = KEYS[1]
@@ -188,10 +187,24 @@ end
 return timed_out
 """
 
+CREATE_GROUPS = """
+local stream_key = KEYS[1]
+local group_name = KEYS[2]
 
-def register_scripts(redis: Redis) -> dict[str, AsyncScript]:
+for i=1, #ARGV do
+  local stream = stream_key .. ARGV[i]
+  local ok, groups = pcall(redis.call, 'xinfo', 'groups', stream)
+  if not ok or #groups == 0 then
+    redis.call('xgroup', 'create', stream, group_name, '0', 'mkstream')
+  end
+end
+"""
+
+
+def register_scripts(redis: Redis) -> dict[str, Script[str]]:
     return {
         "add_dependencies": redis.register_script(ADD_DEPENDENCIES),
+        "create_groups": redis.register_script(CREATE_GROUPS),
         "publish_task": redis.register_script(PUBLISH_TASK),
         "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
         "retry_task": redis.register_script(RETRY_TASK),
