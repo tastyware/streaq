@@ -1092,23 +1092,22 @@ class Worker(Generic[WD]):
 
         :return: wrapped result object
         """
-        pubsub = await self.redis.pubsub(channels=[self._channel_key])
 
         def key(mid: str) -> str:
             return self._prefix + mid + task_id
 
-        raw = await self.redis.get(key(REDIS_RESULT))
-        if raw is None:
-            timeout_seconds = to_seconds(timeout) if timeout is not None else None
-            await asyncio.wait_for(
-                self._listen_for_result(pubsub, task_id), timeout_seconds
-            )
+        async with self.redis.pubsub(channels=[self._channel_key]) as ps:
             raw = await self.redis.get(key(REDIS_RESULT))
-        if raw is None:
-            raise StreaqError(
-                "Task finished but result was not stored, did you set ttl=0?"
-            )
-        await pubsub.aclose()
+            if raw is None:
+                timeout_seconds = to_seconds(timeout) if timeout is not None else None
+                await asyncio.wait_for(
+                    self._listen_for_result(ps, task_id), timeout_seconds
+                )
+                raw = await self.redis.get(key(REDIS_RESULT))
+            if raw is None:
+                raise StreaqError(
+                    "Task finished but result was not stored, did you set ttl=0?"
+                )
         try:
             data = self.deserializer(raw)
             return TaskResult(
