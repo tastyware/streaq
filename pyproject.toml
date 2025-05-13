@@ -96,11 +96,6 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["streaq"]
 
-[tool.ruff.lint]
-ignore = [
-    "E731",  # lambda-assignment
-]
-
 [tool.pytest.ini_options]
 testpaths = "tests"
 asyncio_mode = "auto"

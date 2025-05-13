@@ -16,7 +16,6 @@ from uuid import UUID, uuid4
 
 from crontab import CronTab
 from redis.asyncio import Redis
-from redis.typing import EncodableT
 
 from streaq import logger
 from streaq.constants import (
@@ -219,7 +218,7 @@ class Task(Generic[R]):
     def _task_key(self, mid: str) -> str:
         return REDIS_PREFIX + self.queue + mid + self.id
 
-    def serialize(self, enqueue_time: int) -> EncodableT:
+    def serialize(self, enqueue_time: int) -> Any:
         """
         Serializes the task data for sending to the queue.
 

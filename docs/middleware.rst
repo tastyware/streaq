@@ -37,9 +37,9 @@ You can register as many middleware as you like to a worker, which will run them
    @worker.middleware
    def timer(ctx: WrappedContext[Context], task: Callable[..., Coroutine]):
        async def wrapper(*args, **kwargs):
-           start_time = time.time()
+           start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           print(f"Executed task {ctx.task_id} in {time.time() - start_time:.3f}s")
+           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper

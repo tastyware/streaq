@@ -2,7 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from signal import Signals
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
@@ -71,12 +71,12 @@ async def test_queue_size(redis_url: str):
     assert await worker.queue_size() == 0
 
 
-def raise_error(*arg, **kwargs) -> None:
+def raise_error(*arg, **kwargs) -> Any:
     raise Exception("Couldn't serialize/deserialize!")
 
 
 async def test_bad_serializer(redis_url: str):
-    worker = Worker(redis_url=redis_url, serializer=raise_error)  # type: ignore
+    worker = Worker(redis_url=redis_url, serializer=raise_error)
 
     @worker.task()
     async def foobar(ctx: WrappedContext[None]) -> None:

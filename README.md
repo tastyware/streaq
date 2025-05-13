@@ -3,8 +3,7 @@
 [![Downloads](https://static.pepy.tech/badge/streaq)](https://pepy.tech/project/streaq)
 [![Release)](https://img.shields.io/github/v/release/tastyware/streaq?label=release%20notes)](https://github.com/tastyware/streaq/releases)
 
-streaQ
-======
+# streaQ
 
 Fast, async, type-safe job queuing with Redis streams
 

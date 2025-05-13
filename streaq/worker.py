@@ -24,7 +24,6 @@ from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
 from redis.asyncio.sentinel import Sentinel
 from redis.commands.core import AsyncScript
-from redis.typing import EncodableT
 
 from streaq import logger
 from streaq.constants import (
@@ -155,7 +154,7 @@ class Worker(Generic[WD]):
         queue_name: str = DEFAULT_QUEUE_NAME,
         queue_fetch_limit: int | None = None,
         lifespan: Callable[["Worker"], AbstractAsyncContextManager[WD]] = _lifespan,
-        serializer: Callable[[Any], EncodableT] = pickle.dumps,
+        serializer: Callable[[Any], Any] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         handle_signals: bool = True,
@@ -557,7 +556,7 @@ class Worker(Generic[WD]):
                         count=count,
                     )
                 res = await pipe.execute()
-            if count > 0:
+            if count > 0 and res[-1]:
                 for stream, msgs in res[-1]:
                     priority = stream.decode().split(":")[-1]
                     messages.extend(
@@ -612,7 +611,10 @@ class Worker(Generic[WD]):
         Execute the registered task, then store the result in Redis.
         """
         task_id = msg.task_id
-        key = lambda mid: self._prefix + mid + task_id
+
+        def key(mid: str) -> str:
+            return self._prefix + mid + task_id
+
         # acquire semaphore
         async with self.bs:
             start_time = now_ms()
@@ -783,7 +785,10 @@ class Worker(Generic[WD]):
             result = self.serializer(data)
         except Exception as e:
             raise StreaqError(f"Failed to serialize result for task {task_id}!") from e
-        key = lambda mid: self._prefix + mid + task_id
+
+        def key(mid: str) -> str:
+            return self._prefix + mid + task_id
+
         stream_key = self._stream_key + msg.priority
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.xack(stream_key, self._group_name, msg.message_id)
@@ -887,14 +892,17 @@ class Worker(Generic[WD]):
     async def finish_failed_task(
         self,
         msg: StreamMessage,
-        result_data: EncodableT,
+        result_data: Any,
         ttl: timedelta | int | None,
     ) -> None:
         """
         Cleanup for a task that failed during execution.
         """
         task_id = msg.task_id
-        key = lambda mid: self._prefix + mid + task_id
+
+        def key(mid: str) -> str:
+            return self._prefix + mid + task_id
+
         self.counters["failed"] += 1
         stream_key = self._stream_key + msg.priority
         async with self.redis.pipeline(transaction=True) as pipe:
@@ -1067,7 +1075,10 @@ class Worker(Generic[WD]):
 
         :return: status of the task
         """
-        key = lambda mid: self._prefix + mid + task_id
+
+        def key(mid: str) -> str:
+            return self._prefix + mid + task_id
+
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.exists(key(REDIS_RESULT))
             pipe.exists(key(REDIS_RUNNING))
@@ -1098,7 +1109,10 @@ class Worker(Generic[WD]):
         """
         pubsub = self.redis.pubsub()
         await pubsub.subscribe(self._channel_key)
-        key = lambda mid: self._prefix + mid + task_id
+
+        def key(mid: str) -> str:
+            return self._prefix + mid + task_id
+
         raw = await self.redis.get(key(REDIS_RESULT))
         if raw is None:
             timeout_seconds = to_seconds(timeout) if timeout is not None else None
@@ -1150,7 +1164,10 @@ class Worker(Generic[WD]):
 
         :return: task info object
         """
-        key = lambda mid: self._prefix + mid + task_id
+
+        def key(mid: str) -> str:
+            return self._prefix + mid + task_id
+
         async with self.redis.pipeline(transaction=False) as pipe:
             pipe.get(key(REDIS_TASK))
             pipe.get(key(REDIS_RETRY))
