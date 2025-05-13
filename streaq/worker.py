@@ -45,7 +45,16 @@ from streaq.constants import (
     REDIS_TIMEOUT,
 )
 from streaq.lua import register_scripts
-from streaq.types import P, R, WD, StreamMessage, WrappedContext
+from streaq.types import (
+    P,
+    R,
+    WD,
+    Middleware,
+    StreamMessage,
+    WrappedContext,
+    CronTaskDefinitionWrapper,
+    TaskDefinitionWrapper,
+)
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
 from streaq.task import (
     RegisteredCron,
@@ -203,11 +212,7 @@ class Worker(Generic[WD]):
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
         #: list of middlewares added to the worker
-        self.middlewares: list[
-            Callable[
-                [WrappedContext[WD], Callable[..., Coroutine]], Callable[..., Coroutine]
-            ]
-        ] = []
+        self.middlewares: list[Middleware[WD]] = []
         self.with_scheduler = with_scheduler
         self.sync_concurrency = sync_concurrency or concurrency
         self._limiter = CapacityLimiter(self.sync_concurrency)
@@ -295,7 +300,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
-    ):
+    ) -> CronTaskDefinitionWrapper[WD]:
         """
         Registers a task to be run at regular intervals as specified.
 
@@ -340,7 +345,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
-    ):
+    ) -> TaskDefinitionWrapper[WD]:
         """
         Registers a task with the worker which can later be enqueued by the user.
 
@@ -374,14 +379,12 @@ class Worker(Generic[WD]):
             logger.debug(f"task {task.fn_name} registered in worker {self.id}")
             return task
 
-        return wrapped
+        return wrapped  # type: ignore
 
     def middleware(
         self,
-        fn: Callable[
-            [WrappedContext[WD], Callable[..., Coroutine]], Callable[..., Coroutine]
-        ],
-    ):
+        fn: Middleware[WD],
+    ) -> Middleware[WD]:
         """
         Registers the given middleware with the worker.
         """
