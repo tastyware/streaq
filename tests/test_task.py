@@ -402,7 +402,7 @@ async def test_cron_multiple_runs(worker: Worker):
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(3)
     runs = await worker.redis.get(key)
-    assert int(runs) > 1
+    assert int(runs or 0) > 1
 
 
 async def test_middleware(worker: Worker):

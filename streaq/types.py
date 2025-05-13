@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Generic, ParamSpec, TypeVar
 
-from redis.asyncio import Redis
+from coredis import Redis
 
 P = ParamSpec("P")
 POther = ParamSpec("POther")
@@ -32,7 +32,7 @@ class WrappedContext(Generic[WD]):
 
     deps: WD
     fn_name: str
-    redis: Redis
+    redis: Redis[str]
     task_id: str
     timeout: timedelta | int | None
     tries: int

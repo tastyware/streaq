@@ -52,8 +52,8 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.8.0",
+    "coredis>=4.22.0",
     "crontab>=1.0.1",
-    "redis[hiredis]>=5.2.1",
     "typer>=0.15.2",
     "watchfiles>=1.0.4",
 ]
