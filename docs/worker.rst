@@ -34,13 +34,15 @@ Next, create an async context manager to run at worker creation/teardown. Use th
    @asynccontextmanager
    async def lifespan(worker: Worker) -> AsyncIterator[Context]:
        # here we run code if desired before the worker start up
-       await worker.redis.sadd("workers", worker.id)
+       await worker.redis.sadd("workers", [worker.id])
        # here we yield our dependencies as an instance of the class
        # we created above
        async with AsyncClient() as http_client:
            yield Context(http_client)
        # here we run code if desired after worker shutdown
-       await worker.redis.srem("workers", worker.id)
+       await worker.redis.srem("workers", [worker.id])
+
+Note that `worker.redis` here is NOT a `redis-py` client, but a [coredis](https://github.com/alisaifee/coredis) client.
 
 Now, tasks created for the worker will have access to the dependencies like so:
 
