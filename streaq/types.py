@@ -61,20 +61,17 @@ Middleware: TypeAlias = Callable[
     [WrappedContext[WD], Callable[..., Coroutine]], Callable[..., Coroutine]
 ]
 
-
 CronTaskFn: TypeAlias = Callable[[WrappedContext[WD]], Coroutine[Any, Any, R] | R]
 
-
-class CronTaskDefinitionWrapper(Protocol, Generic[WD]):
-    def __call__(self, fn: CronTaskFn[WD, R]) -> RegisteredCron[WD, R]: ...
-
-
 TaskFn: TypeAlias = Callable[Concatenate[WrappedContext[WD], P], R]
-
 
 AsyncTaskFn: TypeAlias = Callable[
     Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]
 ]
+
+
+class CronTaskDefinitionWrapper(Protocol, Generic[WD]):
+    def __call__(self, fn: CronTaskFn[WD, R]) -> RegisteredCron[WD, R]: ...
 
 
 class NamedTaskFunc(Protocol, Generic[WD, P, R]):
