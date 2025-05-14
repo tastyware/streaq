@@ -23,9 +23,8 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 POther = ParamSpec("POther")
-R = TypeVar("R")
+R = TypeVar("R", covariant=True)
 ROther = TypeVar("ROther")
-RCo = TypeVar("RCo", covariant=True)
 WD = TypeVar("WD")
 
 
@@ -78,16 +77,16 @@ AsyncTaskFn: TypeAlias = Callable[
 ]
 
 
-class NamedTaskFunc(Protocol, Generic[WD, P, RCo]):
+class NamedTaskFunc(Protocol, Generic[WD, P, R]):
     def __call__(
         self, ctx: WrappedContext[WD], *args: P.args, **kwds: P.kwargs
-    ) -> RCo: ...
+    ) -> R: ...
 
 
-class AsyncNamedTaskFunc(Protocol, Generic[WD, P, RCo]):
+class AsyncNamedTaskFunc(Protocol, Generic[WD, P, R]):
     async def __call__(
         self, ctx: WrappedContext[WD], *args: P.args, **kwds: P.kwargs
-    ) -> RCo: ...
+    ) -> R: ...
 
 
 class TaskDefinitionWrapper(Protocol, Generic[WD]):
