@@ -1,24 +1,25 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
     Concatenate,
+    Coroutine,
     Generic,
     ParamSpec,
     Protocol,
-    Callable,
-    Coroutine,
-    Any,
     TypeAlias,
-    TYPE_CHECKING,
-    overload,
     TypeVar,
+    overload,
 )
 
 from coredis import Redis
 
 if TYPE_CHECKING:
-    from streaq.task import RegisteredTask, RegisteredCron
+    from streaq.task import RegisteredCron, RegisteredTask
 
 P = ParamSpec("P")
 POther = ParamSpec("POther")
