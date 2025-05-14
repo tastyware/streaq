@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import (
@@ -71,7 +69,7 @@ AsyncTaskFn: TypeAlias = Callable[
 
 
 class CronTaskDefinitionWrapper(Protocol, Generic[WD]):
-    def __call__(self, fn: CronTaskFn[WD, R]) -> RegisteredCron[WD, R]: ...
+    def __call__(self, fn: CronTaskFn[WD, R]) -> "RegisteredCron[WD, R]": ...
 
 
 class NamedTaskFunc(Protocol, Generic[WD, P, R]):
@@ -88,17 +86,17 @@ class AsyncNamedTaskFunc(Protocol, Generic[WD, P, R]):
 
 class TaskDefinitionWrapper(Protocol, Generic[WD]):
     @overload
-    def __call__(self, fn: TaskFn[WD, P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore
+    def __call__(self, fn: TaskFn[WD, P, R]) -> "RegisteredTask[WD, P, R]": ...  # type: ignore
     @overload
-    def __call__(self, fn: AsyncTaskFn[WD, P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore
+    def __call__(self, fn: AsyncTaskFn[WD, P, R]) -> "RegisteredTask[WD, P, R]": ...  # type: ignore
 
     @overload
-    def __call__(self, fn: NamedTaskFunc[WD, P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore
+    def __call__(self, fn: NamedTaskFunc[WD, P, R]) -> "RegisteredTask[WD, P, R]": ...  # type: ignore
 
     @overload
     def __call__(  # type: ignore
         self, fn: AsyncNamedTaskFunc[WD, P, R]
-    ) -> RegisteredTask[WD, P, R]: ...
+    ) -> "RegisteredTask[WD, P, R]": ...
 
     def __call__(
         self,
@@ -106,4 +104,4 @@ class TaskDefinitionWrapper(Protocol, Generic[WD]):
         | NamedTaskFunc[WD, P, R]
         | AsyncTaskFn[WD, P, R]
         | TaskFn[WD, P, R],
-    ) -> RegisteredTask[WD, P, R]: ...
+    ) -> "RegisteredTask[WD, P, R]": ...
