@@ -2,12 +2,12 @@ import time
 from datetime import datetime, timedelta
 from functools import partial, wraps
 from importlib import import_module
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable
 
 from anyio.abc import CapacityLimiter
 from anyio.to_thread import run_sync
 
-from streaq.types import P, R
+from streaq.types import P, R, TypedCoroutine
 
 
 class StreaqError(Exception):
@@ -53,8 +53,8 @@ def datetime_ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
 
 
-def to_tuple(val: Any) -> tuple:
-    return val if isinstance(val, tuple) else (val,)
+def to_tuple(val: Any) -> tuple[Any, ...]:
+    return val if isinstance(val, tuple) else (val,)  # type: ignore
 
 
 def default_log_config(verbose: bool) -> dict[str, Any]:
@@ -87,7 +87,7 @@ def default_log_config(verbose: bool) -> dict[str, Any]:
 
 def asyncify(
     fn: Callable[P, R], limiter: CapacityLimiter
-) -> Callable[P, Coroutine[Any, Any, R]]:
+) -> Callable[P, TypedCoroutine[R]]:
     """
     Taken from asyncer v0.0.8
 
@@ -103,7 +103,12 @@ def asyncify(
         def do_work(arg1, arg2, kwarg1="", kwarg2="") -> str:
             return "stuff"
 
-        result = await to_thread.asyncify(do_work)("spam", "ham", kwarg1="a", kwarg2="b")
+        result = await to_thread.asyncify(do_work)(
+            "spam",
+            "ham",
+            kwarg1="a",
+            kwarg2="b"
+        )
         print(result)
 
     :param fn: a blocking regular callable (e.g. a function)

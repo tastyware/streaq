@@ -2,10 +2,8 @@ import asyncio
 from typing import Awaitable
 
 import typer
-
 from arq import create_pool
 from arq.connections import RedisSettings
-
 
 N_TASKS = 20_000
 sem = asyncio.Semaphore(32)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 from httpx import AsyncClient
+
 from streaq import Worker, WrappedContext
 
 

@@ -36,6 +36,9 @@ jobs:
     - name: Type check with pyright
       run: |
         uv run pyright streaq/ tests/
+    - name: Type check with mypy
+      run: |
+        uv run mypy streaq/
     - name: Test with pytest
       run: |
         uv run pytest --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=95

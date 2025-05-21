@@ -2,7 +2,7 @@ import logging.config
 import os
 import sys
 from multiprocessing import Process
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from typer import Exit, Option, Typer
 from watchfiles import run_process
@@ -50,8 +50,8 @@ def main(
         bool,
         Option("--version", callback=version_callback, help="Show installed version"),
     ] = False,
-):
-    processes = []
+) -> None:
+    processes: list[Process] = []
     if workers > 1:
         processes.extend(
             [
@@ -70,7 +70,9 @@ def main(
         p.join()
 
 
-def run_worker(path: str, burst: bool, watch: bool, verbose: bool, schedule: bool):
+def run_worker(
+    path: str, burst: bool, watch: bool, verbose: bool, schedule: bool
+) -> None:
     """
     Run a worker with the given options.
     """
@@ -85,10 +87,10 @@ def run_worker(path: str, burst: bool, watch: bool, verbose: bool, schedule: boo
         _run_worker(path, burst, verbose, schedule)
 
 
-def _run_worker(path: str, burst: bool, verbose: bool, schedule: bool):
+def _run_worker(path: str, burst: bool, verbose: bool, schedule: bool) -> None:
     sys.path.append(os.getcwd())
     logging.config.dictConfig(default_log_config(verbose))
-    worker = cast(Worker, import_string(path))
+    worker = cast(Worker[Any], import_string(path))
     worker.burst = burst
     if worker.with_scheduler is None:
         worker.with_scheduler = schedule
