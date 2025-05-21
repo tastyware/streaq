@@ -5,7 +5,6 @@ import typer
 
 from streaq import Worker, WrappedContext
 
-
 worker = Worker(concurrency=32, with_scheduler=False)
 N_TASKS = 20_000
 sem = asyncio.Semaphore(32)

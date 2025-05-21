@@ -1,3 +1,5 @@
+from typing import Any
+
 from coredis import Redis
 from coredis.commands import Script
 
@@ -174,7 +176,14 @@ local ttl = ARGV[2]
 
 local timed_out = redis.call('zrangebyscore', sorted_set_key, '-inf', current_time)
 if #timed_out > 0 then
-  local claimed = redis.call('xclaim', stream_key, group_name, consumer_name, 0, unpack(timed_out))
+  local claimed = redis.call(
+    'xclaim',
+    stream_key,
+    group_name,
+    consumer_name,
+    0,
+    unpack(timed_out)
+  )
   for _, message in ipairs(claimed) do
     redis.call('xack', stream_key, group_name, message[1])
     redis.call('xdel', stream_key, message[1])
@@ -201,7 +210,7 @@ end
 """
 
 
-def register_scripts(redis: Redis) -> dict[str, Script[str]]:
+def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
     return {
         "add_dependencies": redis.register_script(ADD_DEPENDENCIES),
         "create_groups": redis.register_script(CREATE_GROUPS),

@@ -2,7 +2,6 @@ import asyncio
 from typing import Awaitable
 
 import typer
-
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
 broker = RedisStreamBroker("redis://localhost:6379").with_result_backend(

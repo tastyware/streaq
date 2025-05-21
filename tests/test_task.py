@@ -5,7 +5,7 @@ from typing import Callable, Coroutine
 
 import pytest
 
-from streaq import StreaqError, WrappedContext, Worker
+from streaq import StreaqError, Worker, WrappedContext
 from streaq.task import StreaqRetry, TaskPriority, TaskStatus
 
 

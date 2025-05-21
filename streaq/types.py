@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import (
@@ -7,6 +9,7 @@ from typing import (
     Concatenate,
     Coroutine,
     Generic,
+    Optional,
     ParamSpec,
     Protocol,
     TypeAlias,
@@ -21,9 +24,9 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 POther = ParamSpec("POther")
-R = TypeVar("R", covariant=True)
-ROther = TypeVar("ROther")
-WD = TypeVar("WD")
+R = TypeVar("R", bound=Optional[object])
+ROther = TypeVar("ROther", bound=Optional[object])
+WD = TypeVar("WD", bound=Optional[object])
 
 
 @dataclass
@@ -55,53 +58,29 @@ class WrappedContext(Generic[WD]):
     worker_id: str
 
 
-Middleware: TypeAlias = Callable[
-    [WrappedContext[WD], Callable[..., Coroutine]], Callable[..., Coroutine]
-]
+AnyCoroutine: TypeAlias = Coroutine[Any, Any, Any]
+ReturnCoroutine: TypeAlias = Callable[..., AnyCoroutine]
+TypedCoroutine: TypeAlias = Coroutine[Any, Any, R]
 
-CronTaskFn: TypeAlias = Callable[[WrappedContext[WD]], Coroutine[Any, Any, R] | R]
+Middleware: TypeAlias = Callable[[WrappedContext[WD], ReturnCoroutine], ReturnCoroutine]
 
-TaskFn: TypeAlias = Callable[Concatenate[WrappedContext[WD], P], R]
-
-AsyncTaskFn: TypeAlias = Callable[
-    Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]
-]
-
-
-class CronTaskDefinitionWrapper(Protocol, Generic[WD]):
-    def __call__(self, fn: CronTaskFn[WD, R]) -> "RegisteredCron[WD, R]": ...
+AsyncCron: TypeAlias = Callable[[WrappedContext[WD]], TypedCoroutine[R]]
+SyncCron: TypeAlias = Callable[[WrappedContext[WD]], R]
+AsyncTask: TypeAlias = Callable[Concatenate[WrappedContext[WD], P], TypedCoroutine[R]]
+SyncTask: TypeAlias = Callable[Concatenate[WrappedContext[WD], P], R]
 
 
-class NamedTaskFunc(Protocol, Generic[WD, P, R]):
-    def __call__(
-        self, ctx: WrappedContext[WD], *args: P.args, **kwds: P.kwargs
-    ) -> R: ...
-
-
-class AsyncNamedTaskFunc(Protocol, Generic[WD, P, R]):
-    async def __call__(
-        self, ctx: WrappedContext[WD], *args: P.args, **kwds: P.kwargs
-    ) -> R: ...
-
-
-class TaskDefinitionWrapper(Protocol, Generic[WD]):
+class CronDefinition(Protocol, Generic[WD]):
     @overload
-    def __call__(self, fn: TaskFn[WD, P, R]) -> "RegisteredTask[WD, P, R]": ...  # type: ignore
-    @overload
-    def __call__(self, fn: AsyncTaskFn[WD, P, R]) -> "RegisteredTask[WD, P, R]": ...  # type: ignore
+    def __call__(self, fn: AsyncCron[WD, R]) -> RegisteredCron[WD, R]: ...
 
     @overload
-    def __call__(self, fn: NamedTaskFunc[WD, P, R]) -> "RegisteredTask[WD, P, R]": ...  # type: ignore
+    def __call__(self, fn: SyncCron[WD, R]) -> RegisteredCron[WD, R]: ...  # type: ignore
+
+
+class TaskDefinition(Protocol, Generic[WD]):
+    @overload
+    def __call__(self, fn: AsyncTask[WD, P, R]) -> RegisteredTask[WD, P, R]: ...
 
     @overload
-    def __call__(  # type: ignore
-        self, fn: AsyncNamedTaskFunc[WD, P, R]
-    ) -> "RegisteredTask[WD, P, R]": ...
-
-    def __call__(
-        self,
-        fn: AsyncNamedTaskFunc[WD, P, R]
-        | NamedTaskFunc[WD, P, R]
-        | AsyncTaskFn[WD, P, R]
-        | TaskFn[WD, P, R],
-    ) -> "RegisteredTask[WD, P, R]": ...
+    def __call__(self, fn: SyncTask[WD, P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore

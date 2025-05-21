@@ -1,21 +1,16 @@
+from __future__ import annotations
+
 import asyncio
-from functools import partial
 import pickle
 import signal
 from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime, timedelta, timezone, tzinfo
+from functools import partial
 from signal import Signals
 from time import time
-from typing import (
-    Any,
-    AsyncIterator,
-    Callable,
-    Concatenate,
-    Coroutine,
-    Generic,
-    cast,
-)
+from types import TracebackType
+from typing import Any, AsyncIterator, Callable, Generic, Type, cast
 from uuid import uuid4
 
 from anyio.abc import CapacityLimiter
@@ -45,17 +40,6 @@ from streaq.constants import (
     REDIS_TIMEOUT,
 )
 from streaq.lua import register_scripts
-from streaq.types import (
-    P,
-    R,
-    WD,
-    Middleware,
-    StreamMessage,
-    WrappedContext,
-    CronTaskDefinitionWrapper,
-    TaskDefinitionWrapper,
-)
-from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
 from streaq.task import (
     RegisteredCron,
     RegisteredTask,
@@ -66,6 +50,22 @@ from streaq.task import (
     TaskResult,
     TaskStatus,
 )
+from streaq.types import (
+    WD,
+    AnyCoroutine,
+    AsyncCron,
+    AsyncTask,
+    CronDefinition,
+    Middleware,
+    P,
+    R,
+    StreamMessage,
+    SyncCron,
+    SyncTask,
+    TaskDefinition,
+    WrappedContext,
+)
+from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
 
 """
 Empty object representing uninitialized dependencies. This is distinct from
@@ -76,11 +76,11 @@ uninitialized = object()
 
 
 @asynccontextmanager
-async def _lifespan(worker: "Worker") -> AsyncIterator[None]:
-    yield
+async def _lifespan(worker: Worker[None]) -> AsyncIterator[None]:
+    yield None
 
 
-async def _placeholder(self, *args): ...
+async def _placeholder(ctx: WrappedContext[Any]) -> None: ...
 
 
 class Worker(Generic[WD]):
@@ -135,8 +135,8 @@ class Worker(Generic[WD]):
         "_aentered",
         "_aexited",
         "lifespan",
-        "_queue_key",
-        "_stream_key",
+        "queue_key",
+        "stream_key",
         "_abort_key",
         "_health_key",
         "_channel_key",
@@ -161,7 +161,7 @@ class Worker(Generic[WD]):
         sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
         queue_fetch_limit: int | None = None,
-        lifespan: Callable[["Worker"], AbstractAsyncContextManager[WD]] = _lifespan,
+        lifespan: Callable[[Worker[WD]], AbstractAsyncContextManager[WD]] = _lifespan,  # type: ignore
         serializer: Callable[[Any], Any] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
@@ -185,16 +185,18 @@ class Worker(Generic[WD]):
         self.bs = asyncio.BoundedSemaphore(concurrency)
         #: mapping of type of task -> number of tasks of that type
         #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
-        self.counters = defaultdict(int)
+        self.counters: dict[str, int] = defaultdict(int)
         #: event loop for running tasks
         self.loop = asyncio.get_event_loop()
         self._deps = uninitialized
         #: Redis scripts for common operations
         self.scripts: dict[str, Script[str]] = {}
         #: mapping of task name -> task wrapper
-        self.registry: dict[str, RegisteredCron | RegisteredTask] = {}
+        self.registry: dict[
+            str, RegisteredCron[Any, Any] | RegisteredTask[Any, Any, Any]
+        ] = {}
         #: mapping of task name -> cron wrapper
-        self.cron_jobs: dict[str, RegisteredCron] = {}
+        self.cron_jobs: dict[str, RegisteredCron[Any, Any]] = {}
         #: mapping of task name -> next execution time in ms
         self.cron_schedule: dict[str, int] = defaultdict(int)
         #: unique ID of worker
@@ -202,9 +204,9 @@ class Worker(Generic[WD]):
         self.serializer = serializer
         self.deserializer = deserializer
         #: mapping of task ID -> asyncio Task wrapper
-        self.task_wrappers: dict[str, asyncio.Task] = {}
+        self.task_wrappers: dict[str, asyncio.Task[Any]] = {}
         #: mapping of task ID -> asyncio Task for task
-        self.tasks: dict[str, asyncio.Task] = {}
+        self.tasks: dict[str, asyncio.Task[Any]] = {}
         self._handle_signals = handle_signals
         self.tz = tz
         #: set of tasks currently scheduled for abortion
@@ -221,8 +223,10 @@ class Worker(Generic[WD]):
         self._aexited = False
         self.lifespan = lifespan(self)
         self._prefix = REDIS_PREFIX + self.queue_name
-        self._queue_key = self._prefix + REDIS_QUEUE
-        self._stream_key = self._prefix + REDIS_STREAM
+        #: prefix in Redis for delayed task queue
+        self.queue_key = self._prefix + REDIS_QUEUE
+        #: prefix in Redis for currently queued tasks
+        self.stream_key = self._prefix + REDIS_STREAM
         self._abort_key = self._prefix + REDIS_ABORT
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
@@ -231,7 +235,7 @@ class Worker(Generic[WD]):
         self._health_tab = CronTab(health_crontab)
 
         @self.cron(health_crontab, ttl=0)
-        async def redis_health_check(ctx: WrappedContext[WD]) -> None:
+        async def redis_health_check(ctx: WrappedContext[WD]) -> None:  # type: ignore[unused-function]
             """
             Saves Redis health in Redis, then logs worker and Redis health.
             """
@@ -239,8 +243,8 @@ class Worker(Generic[WD]):
             await pipe.info("Memory", "Clients")
             await pipe.dbsize()
             for priority in TaskPriority:
-                await pipe.xlen(self._stream_key + priority.value)
-            await pipe.zcard(self._queue_key)
+                await pipe.xlen(self.stream_key + priority.value)
+            await pipe.zcard(self.queue_key)
             (
                 info,
                 key_count,
@@ -268,14 +272,15 @@ class Worker(Generic[WD]):
     def deps(self) -> WD:
         if self._deps == uninitialized:
             raise StreaqError(
-                "Worker did not initialize correctly, are you using the async context manager?"
+                "Worker did not initialize correctly, are you using the"
+                "async context manager?"
             )
         return cast(WD, self._deps)
 
     def build_context(
         self,
         fn_name: str,
-        registered_task: RegisteredCron | RegisteredTask,
+        registered_task: RegisteredCron[Any, Any] | RegisteredTask[Any, Any, Any],
         id: str,
         tries: int = 1,
     ) -> WrappedContext[WD]:
@@ -300,7 +305,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
-    ) -> CronTaskDefinitionWrapper[WD]:
+    ) -> CronDefinition[WD]:
         """
         Registers a task to be run at regular intervals as specified.
 
@@ -314,17 +319,13 @@ class Worker(Generic[WD]):
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
-        def wrapped(
-            fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R] | R],
-        ) -> RegisteredCron[WD, R]:
-            if not asyncio.iscoroutinefunction(fn):
-                _fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]] = asyncify(
-                    fn, self._limiter
-                )  # type: ignore
-            else:
+        def wrapped(fn: AsyncCron[WD, R] | SyncCron[WD, R]) -> RegisteredCron[WD, R]:
+            if asyncio.iscoroutinefunction(fn):
                 _fn = fn
+            else:
+                _fn = asyncify(fn, self._limiter)
             task = RegisteredCron(
-                _fn,
+                cast(AsyncCron[WD, R], _fn),
                 max_tries,
                 CronTab(tab),
                 timeout,
@@ -337,7 +338,7 @@ class Worker(Generic[WD]):
             logger.debug(f"cron job {task.fn_name} registered in worker {self.id}")
             return task
 
-        return wrapped
+        return wrapped  # type: ignore
 
     def task(
         self,
@@ -345,7 +346,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
-    ) -> TaskDefinitionWrapper[WD]:
+    ) -> TaskDefinition[WD]:
         """
         Registers a task with the worker which can later be enqueued by the user.
 
@@ -357,18 +358,14 @@ class Worker(Generic[WD]):
         """
 
         def wrapped(
-            fn: Callable[
-                Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R] | R
-            ],
+            fn: AsyncTask[WD, P, R] | SyncTask[WD, P, R],
         ) -> RegisteredTask[WD, P, R]:
-            if not asyncio.iscoroutinefunction(fn):
-                _fn: Callable[
-                    Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]
-                ] = asyncify(fn, self._limiter)  # type: ignore
-            else:
+            if asyncio.iscoroutinefunction(fn):
                 _fn = fn
+            else:
+                _fn = asyncify(fn, self._limiter)
             task = RegisteredTask(
-                _fn,
+                cast(AsyncTask[WD, P, R], _fn),
                 max_tries,
                 timeout,
                 ttl,
@@ -381,10 +378,7 @@ class Worker(Generic[WD]):
 
         return wrapped  # type: ignore
 
-    def middleware(
-        self,
-        fn: Middleware[WD],
-    ) -> Middleware[WD]:
+    def middleware(self, fn: Middleware[WD]) -> Middleware[WD]:
         """
         Registers the given middleware with the worker.
         """
@@ -422,7 +416,7 @@ class Worker(Generic[WD]):
         async with self:
             # create consumer group if it doesn't exist
             await self.scripts["create_groups"](
-                keys=[self._stream_key, self._group_name],
+                keys=[self.stream_key, self._group_name],
                 args=[p.value for p in TaskPriority],
             )
             # run loops
@@ -450,7 +444,7 @@ class Worker(Generic[WD]):
         jobs to the live queue when ready.
         """
         message_prefix = self._prefix + REDIS_MESSAGE
-        futures = set()
+        futures: set[AnyCoroutine] = set()
         # schedule initial cron jobs
         for name, cron_job in self.cron_jobs.items():
             self.cron_schedule[name] = cron_job.next()
@@ -461,7 +455,7 @@ class Worker(Generic[WD]):
         while not self._block_new_tasks:
             start_time = time()
             task_ids = await self.redis.zrange(
-                self._queue_key,
+                self.queue_key,
                 0,
                 now_ms(),
                 count=self.queue_fetch_limit,
@@ -474,7 +468,7 @@ class Worker(Generic[WD]):
                 await self.scripts["unclaim_idle_tasks"](
                     keys=[
                         self._timeout_key + priority.value,
-                        self._stream_key + priority.value,
+                        self.stream_key + priority.value,
                         self._group_name,
                         self.id,
                         message_prefix,
@@ -488,8 +482,8 @@ class Worker(Generic[WD]):
                     expire_ms = DEFAULT_TTL
                 await self.scripts["publish_delayed_task"](
                     keys=[
-                        self._queue_key,
-                        self._stream_key,
+                        self.queue_key,
+                        self.stream_key,
                         self._prefix + REDIS_MESSAGE + task_id,  # type: ignore
                     ],
                     args=[task_id, expire_ms, TaskPriority.MEDIUM.value],
@@ -524,9 +518,9 @@ class Worker(Generic[WD]):
         Listen for new tasks from the stream, and periodically check for tasks
         that were never XACK'd but have timed out to reclaim.
         """
-        high_stream = self._stream_key + TaskPriority.HIGH.value
-        medium_stream = self._stream_key + TaskPriority.MEDIUM.value
-        low_stream = self._stream_key + TaskPriority.LOW.value
+        high_stream = self.stream_key + TaskPriority.HIGH.value
+        medium_stream = self.stream_key + TaskPriority.MEDIUM.value
+        low_stream = self.stream_key + TaskPriority.LOW.value
         priority_order = {
             TaskPriority.HIGH.value: 0,
             TaskPriority.MEDIUM.value: 1,
@@ -686,18 +680,24 @@ class Worker(Generic[WD]):
             done = True
             finish_time = None
 
-            async def _fn(ctx, *args, **kwargs):
+            async def _fn(
+                ctx: WrappedContext[WD],
+                *args: tuple[Any, ...],
+                **kwargs: dict[str, Any],
+            ) -> Any:
                 return await asyncio.wait_for(
                     task.fn(ctx, *args, **kwargs),
                     to_seconds(task.timeout) if task.timeout is not None else None,
                 )
 
             logger.info(f"task {task_id} → worker {self.id}")
+
             wrapped = _fn
             for middleware in reversed(self.middlewares):
                 wrapped = middleware(ctx, wrapped)
             coro = wrapped(ctx, *_args, **data["k"])
             self.tasks[task_id] = self.loop.create_task(coro)
+            result = None
             try:
                 result = await self.tasks[task_id]
             except StreaqRetry as e:
@@ -741,7 +741,7 @@ class Worker(Generic[WD]):
                         msg,
                         finish=done,
                         delay=delay,
-                        return_value=result,  # type: ignore
+                        return_value=result,
                         start_time=start_time,
                         finish_time=finish_time or now_ms(),
                         success=success,
@@ -780,7 +780,7 @@ class Worker(Generic[WD]):
         def key(mid: str) -> str:
             return self._prefix + mid + task_id
 
-        stream_key = self._stream_key + msg.priority
+        stream_key = self.stream_key + msg.priority
         pipe = await self.redis.pipeline(transaction=True)
         await pipe.xack(stream_key, self._group_name, [msg.message_id])
         await pipe.xdel(stream_key, [msg.message_id])
@@ -826,7 +826,7 @@ class Worker(Generic[WD]):
         elif delay:
             self.counters["retried"] += 1
             await pipe.delete([key(REDIS_MESSAGE)])
-            await pipe.zadd(self._queue_key, {task_id: now_ms() + delay * 1000})
+            await pipe.zadd(self.queue_key, {task_id: now_ms() + delay * 1000})
         else:
             self.counters["retried"] += 1
             ttl_ms = to_ms(ttl) if ttl is not None else None
@@ -895,7 +895,7 @@ class Worker(Generic[WD]):
             return self._prefix + mid + task_id
 
         self.counters["failed"] += 1
-        stream_key = self._stream_key + msg.priority
+        stream_key = self.stream_key + msg.priority
         pipe = await self.redis.pipeline(transaction=True)
         await pipe.delete(
             [
@@ -953,10 +953,10 @@ class Worker(Generic[WD]):
     def enqueue_unsafe(
         self,
         fn_name: str,
-        *args,
+        *args: Any,
         unique: bool = False,
-        **kwargs,
-    ) -> Task:
+        **kwargs: Any,
+    ) -> Task[Any]:
         """
         Allows for enqueuing a task that is registered elsewhere without having access
         to the worker it's registered to. This is unsafe because it doesn't check if the
@@ -990,8 +990,8 @@ class Worker(Generic[WD]):
         """
         pipe = await self.redis.pipeline(transaction=True)
         for priority in TaskPriority:
-            await pipe.xlen(self._stream_key + priority.value)
-        await pipe.zcard(self._queue_key)
+            await pipe.xlen(self.stream_key + priority.value)
+        await pipe.zcard(self.queue_key)
         res = await pipe.execute()
 
         return sum(res)
@@ -1040,7 +1040,7 @@ class Worker(Generic[WD]):
         pipe = await self.redis.pipeline(transaction=False)
         for priority in TaskPriority:
             await pipe.xgroup_delconsumer(
-                self._stream_key + priority.value,
+                self.stream_key + priority.value,
                 groupname=self._group_name,
                 consumername=self.id,
             )
@@ -1070,7 +1070,7 @@ class Worker(Generic[WD]):
         pipe = await self.redis.pipeline(transaction=True)
         await pipe.exists([key(REDIS_RESULT)])
         await pipe.exists([key(REDIS_RUNNING)])
-        await pipe.zscore(self._queue_key, task_id)
+        await pipe.zscore(self.queue_key, task_id)
         await pipe.exists([key(REDIS_MESSAGE)])
         finished, running, score, queued = await pipe.execute()
 
@@ -1158,7 +1158,7 @@ class Worker(Generic[WD]):
         pipe = await self.redis.pipeline(transaction=False)
         await pipe.get(key(REDIS_TASK))
         await pipe.get(key(REDIS_RETRY))
-        await pipe.zscore(self._queue_key, task_id)
+        await pipe.zscore(self.queue_key, task_id)
         raw, task_try, score = await pipe.execute()
         data = self.deserializer(raw)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
@@ -1169,7 +1169,7 @@ class Worker(Generic[WD]):
             scheduled=dt,
         )
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Worker[WD]:
         # reentrant
         if not self._aentered:
             self._aentered = True
@@ -1179,17 +1179,22 @@ class Worker(Generic[WD]):
             self._deps = await self.lifespan.__aenter__()
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(
+        self,
+        exc_type: Type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         # reentrant
         if not self._aexited:
             self._aexited = True
-            await self.lifespan.__aexit__(*exc)
+            await self.lifespan.__aexit__(exc_type, exc_value, traceback)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.registry)
 
     def __str__(self) -> str:
-        counters_str = dict.__repr__(self.counters).replace("'", "")
+        counters_str = dict.__repr__(self.counters).replace("'", "")  # type: ignore
         return f"worker {self.id} {counters_str}"
 
     def __repr__(self) -> str:

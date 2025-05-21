@@ -2,10 +2,9 @@ import asyncio
 from typing import Awaitable
 
 import typer
-
 from saq import Queue
-from streaq.utils import now_ms
 
+from streaq.utils import now_ms
 
 N_TASKS = 20_000
 sem = asyncio.Semaphore(32)

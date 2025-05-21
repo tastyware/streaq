@@ -1,17 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from time import time
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Concatenate,
-    Coroutine,
-    Generic,
-)
+from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generator, Generic
 from uuid import UUID, uuid4
 
 from coredis import Redis
@@ -27,8 +22,8 @@ from streaq.constants import (
     REDIS_RESULT,
     REDIS_TASK,
 )
-from streaq.types import P, POther, R, ROther, WD, WrappedContext
-from streaq.utils import StreaqError, datetime_ms, now_ms, to_seconds, to_ms
+from streaq.types import WD, P, POther, R, ROther, TypedCoroutine, WrappedContext
+from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:
     from streaq.worker import Worker
@@ -107,12 +102,12 @@ class Task(Generic[R]):
 
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    parent: "RegisteredCron | RegisteredTask"
-    _after: "Task | None" = None
-    _triggers: "Task | None" = None
+    parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
+    _after: Task[Any] | None = None
+    _triggers: Task[Any] | None = None
     id: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.parent.unique:
             deterministic_hash = hashlib.sha256(
                 self.parent.fn_name.encode()
@@ -127,7 +122,7 @@ class Task(Generic[R]):
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
         priority: TaskPriority = TaskPriority.LOW,
-    ) -> "Task[R]":
+    ) -> Task[R]:
         """
         Enqueues a task immediately, for running after a delay, or for running
         at a specified time.
@@ -159,7 +154,7 @@ class Task(Generic[R]):
             score = None
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
-        run_now = False
+        run_now = None
         if after:
             if isinstance(after, str):
                 after = [after]
@@ -179,10 +174,10 @@ class Task(Generic[R]):
                 args.append(score)
             res = await self.parent.worker.scripts["publish_task"](
                 keys=[
-                    self.parent.worker._stream_key,
+                    self.parent.worker.stream_key,
                     self._task_key(REDIS_MESSAGE),
                     self._task_key(REDIS_TASK),
-                    self.parent.worker._queue_key,
+                    self.parent.worker.queue_key,
                 ],
                 args=args,
             )
@@ -193,8 +188,8 @@ class Task(Generic[R]):
         return self
 
     def then(
-        self, task: "RegisteredTask[WD, POther, ROther]", **kwargs
-    ) -> "Task[ROther]":
+        self, task: RegisteredTask[WD, POther, ROther], **kwargs: dict[str, Any]
+    ) -> Task[ROther]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments will
         come from the previous task's output (tuple outputs will be unpacked), and any
@@ -208,13 +203,13 @@ class Task(Generic[R]):
         self._triggers._after = self
         return self._triggers
 
-    async def _chain(self) -> "Task[R]":
+    async def _chain(self) -> Task[R]:
         # traverse backwards
         if self._after:
             await self._after
         return await self.start()
 
-    def __await__(self):
+    def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
 
     def _task_key(self, mid: str) -> str:
@@ -290,12 +285,12 @@ class Task(Generic[R]):
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
-    fn: Callable[Concatenate[WrappedContext[WD], P], Coroutine[Any, Any, R]]
+    fn: Callable[Concatenate[WrappedContext[WD], P], TypedCoroutine[R]]
     max_tries: int | None
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
-    worker: "Worker"
+    worker: Worker[WD]
     _fn_name: str | None = None
 
     def enqueue(
@@ -304,15 +299,16 @@ class RegisteredTask(Generic[WD, P, R]):
         **kwargs: P.kwargs,
     ) -> Task[R]:
         """
-        Serialize the task and send it to the queue for later execution by an active worker.
-        Though this isn't async, it should be awaited as it returns an object that should be.
+        Serialize the task and send it to the queue for later execution by an
+        active worker. Though this isn't async, it should be awaited as it
+        returns an object that should be.
         """
         return Task(args, kwargs, self)
 
     async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """
-        Run the task in the local event loop with the given params and return the result.
-        This skips enqueuing and result storing in Redis.
+        Run the task in the local event loop with the given params and return the
+        result. This skips enqueuing and result storing in Redis.
         """
         deps = WrappedContext(
             deps=self.worker.deps,
@@ -336,24 +332,25 @@ class RegisteredTask(Generic[WD, P, R]):
     def fn_name(self) -> str:
         return self._fn_name or self.fn.__qualname__
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Task fn={self.fn_name} timeout={self.timeout} ttl={self.ttl}>"
 
 
 @dataclass
 class RegisteredCron(Generic[WD, R]):
-    fn: Callable[[WrappedContext[WD]], Coroutine[Any, Any, R]]
+    fn: Callable[[WrappedContext[WD]], TypedCoroutine[R]]
     max_tries: int | None
     crontab: CronTab
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
-    worker: "Worker"
+    worker: Worker[WD]
 
     def enqueue(self) -> Task[R]:
         """
-        Serialize the task and send it to the queue for later execution by an active worker.
-        Though this isn't async, it should be awaited as it returns an object that should be.
+        Serialize the task and send it to the queue for later execution by an
+        active worker. Though this isn't async, it should be awaited as it
+        returns an object that should be.
         """
         return Task((), {}, self)
 
@@ -400,7 +397,7 @@ class RegisteredCron(Generic[WD, R]):
     def delay(self) -> float:
         return self.crontab.next(now=datetime.now(self.worker.tz))  # type: ignore
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"<Cron fn={self.fn_name} timeout={self.timeout} "
             f"schedule={self.schedule()}>"
