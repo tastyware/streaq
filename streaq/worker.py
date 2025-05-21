@@ -76,7 +76,7 @@ uninitialized = object()
 
 
 @asynccontextmanager
-async def _lifespan(worker: Worker[Any]) -> AsyncIterator[None]:
+async def _lifespan(worker: Worker[None]) -> AsyncIterator[None]:
     yield None
 
 
@@ -161,7 +161,7 @@ class Worker(Generic[WD]):
         sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
         queue_fetch_limit: int | None = None,
-        lifespan: Callable[["Worker"], AbstractAsyncContextManager[WD]] = _lifespan,  # type: ignore
+        lifespan: Callable[[Worker[WD]], AbstractAsyncContextManager[WD]] = _lifespan,  # type: ignore
         serializer: Callable[[Any], Any] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
@@ -681,7 +681,9 @@ class Worker(Generic[WD]):
             finish_time = None
 
             async def _fn(
-                ctx: WrappedContext[WD], *args: tuple[Any], **kwargs: dict[str, Any]
+                ctx: WrappedContext[WD],
+                *args: tuple[Any, ...],
+                **kwargs: dict[str, Any],
             ) -> Any:
                 return await asyncio.wait_for(
                     task.fn(ctx, *args, **kwargs),
