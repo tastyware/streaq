@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import hashlib
 from dataclasses import dataclass
@@ -100,9 +102,9 @@ class Task(Generic[R]):
 
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    parent: "RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]"
-    _after: "Task[Any] | None" = None
-    _triggers: "Task[Any] | None" = None
+    parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
+    _after: Task[Any] | None = None
+    _triggers: Task[Any] | None = None
     id: str = ""
 
     def __post_init__(self) -> None:
@@ -120,7 +122,7 @@ class Task(Generic[R]):
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
         priority: TaskPriority = TaskPriority.LOW,
-    ) -> "Task[R]":
+    ) -> Task[R]:
         """
         Enqueues a task immediately, for running after a delay, or for running
         at a specified time.
@@ -186,8 +188,8 @@ class Task(Generic[R]):
         return self
 
     def then(
-        self, task: "RegisteredTask[WD, POther, ROther]", **kwargs: dict[str, Any]
-    ) -> "Task[ROther]":
+        self, task: RegisteredTask[WD, POther, ROther], **kwargs: dict[str, Any]
+    ) -> Task[ROther]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments will
         come from the previous task's output (tuple outputs will be unpacked), and any
@@ -201,13 +203,13 @@ class Task(Generic[R]):
         self._triggers._after = self
         return self._triggers
 
-    async def _chain(self) -> "Task[R]":
+    async def _chain(self) -> Task[R]:
         # traverse backwards
         if self._after:
             await self._after
         return await self.start()
 
-    def __await__(self) -> "Generator[Any, None, Task[R]]":
+    def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
 
     def _task_key(self, mid: str) -> str:
@@ -288,7 +290,7 @@ class RegisteredTask(Generic[WD, P, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
-    worker: "Worker[WD]"
+    worker: Worker[WD]
     _fn_name: str | None = None
 
     def enqueue(
@@ -342,7 +344,7 @@ class RegisteredCron(Generic[WD, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
-    worker: "Worker[WD]"
+    worker: Worker[WD]
 
     def enqueue(self) -> Task[R]:
         """

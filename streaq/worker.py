@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import pickle
 import signal
@@ -53,12 +55,14 @@ from streaq.types import (
     AnyCoroutine,
     AsyncCron,
     AsyncTask,
+    CronDefinition,
     Middleware,
     P,
     R,
     StreamMessage,
     SyncCron,
     SyncTask,
+    TaskDefinition,
     WrappedContext,
 )
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
@@ -72,7 +76,7 @@ uninitialized = object()
 
 
 @asynccontextmanager
-async def _lifespan(worker: "Worker[Any]") -> AsyncIterator[None]:
+async def _lifespan(worker: Worker[Any]) -> AsyncIterator[None]:
     yield None
 
 
@@ -301,10 +305,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
-    ) -> Callable[
-        [AsyncCron[WD, R] | SyncCron[WD, R]],
-        RegisteredCron[WD, R],
-    ]:
+    ) -> CronDefinition[WD]:
         """
         Registers a task to be run at regular intervals as specified.
 
@@ -337,7 +338,7 @@ class Worker(Generic[WD]):
             logger.debug(f"cron job {task.fn_name} registered in worker {self.id}")
             return task
 
-        return wrapped
+        return wrapped  # type: ignore
 
     def task(
         self,
@@ -345,7 +346,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
-    ) -> Callable[[AsyncTask[WD, P, R] | SyncTask[WD, P, R]], RegisteredTask[WD, P, R]]:
+    ) -> TaskDefinition[WD]:
         """
         Registers a task with the worker which can later be enqueued by the user.
 
@@ -364,7 +365,7 @@ class Worker(Generic[WD]):
             else:
                 _fn = asyncify(fn, self._limiter)
             task = RegisteredTask(
-                _fn,
+                cast(AsyncTask[WD, P, R], _fn),
                 max_tries,
                 timeout,
                 ttl,
@@ -373,9 +374,9 @@ class Worker(Generic[WD]):
             )
             self.registry[task.fn_name] = task
             logger.debug(f"task {task.fn_name} registered in worker {self.id}")
-            return task  # type: ignore
+            return task
 
-        return wrapped
+        return wrapped  # type: ignore
 
     def middleware(self, fn: Middleware[WD]) -> Middleware[WD]:
         """
@@ -950,9 +951,9 @@ class Worker(Generic[WD]):
     def enqueue_unsafe(
         self,
         fn_name: str,
-        *args: Any,  # tuple[Any, ...] breaks for some reason!
+        *args: Any,
         unique: bool = False,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ) -> Task[Any]:
         """
         Allows for enqueuing a task that is registered elsewhere without having access
@@ -1166,7 +1167,7 @@ class Worker(Generic[WD]):
             scheduled=dt,
         )
 
-    async def __aenter__(self) -> "Worker[WD]":
+    async def __aenter__(self) -> Worker[WD]:
         # reentrant
         if not self._aentered:
             self._aentered = True

@@ -40,7 +40,7 @@ async def cronjob(ctx: WrappedContext[Context]) -> None:
     print("It's a bird... It's a plane... It's CRON!")
 
 
-async def main():
+async def main() -> None:
     async with worker:
         await fetch.enqueue("https://tastyware.dev/")
         # this will be run directly locally, not enqueued
