@@ -41,7 +41,7 @@ local priority = ARGV[4]
 local score = ARGV[5]
 
 redis.call('set', task_key, task_data, 'px', ttl)
-if score then
+if score ~= '0' then
   redis.call('zadd', queue_key, score, task_id)
   return 1
 else
@@ -61,7 +61,7 @@ local task_message_id_expire_ms = ARGV[2]
 local priority = ARGV[3]
 
 local score = redis.call('zscore', delayed_queue_key, task_id)
-if score == nil or score == false then
+if not score then
   return 0
 end
 
