@@ -10,13 +10,10 @@ local dependents_key = KEYS[3]
 local dependencies_key = KEYS[4]
 local prefix = KEYS[5]
 
-
 local task_data = ARGV[1]
 local ttl = ARGV[2]
 
-if redis.call('set', task_key, task_data, 'nx', 'px', ttl) == nil then
-  return
-end
+redis.call('set', task_key, task_data, 'px', ttl)
 
 local modified = 0
 for i=3, #ARGV do
@@ -28,11 +25,7 @@ for i=3, #ARGV do
   end
 end
 
-if modified == 0 then
-  return 1
-end
-
-return
+return modified == 0
 """
 
 PUBLISH_TASK = """
@@ -47,17 +40,15 @@ local task_data = ARGV[3]
 local priority = ARGV[4]
 local score = ARGV[5]
 
-local is_new = redis.call('set', task_key, task_data, 'nx', 'px', ttl)
+redis.call('set', task_key, task_data, 'px', ttl)
 if score then
   redis.call('zadd', queue_key, score, task_id)
   return 1
-elseif is_new then
+else
   local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
   redis.call('set', message_key, message_id, 'px', ttl)
   return message_id
 end
-
-return 0
 """
 
 PUBLISH_DELAYED_TASK = """

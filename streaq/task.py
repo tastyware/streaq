@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from time import time
 from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generator, Generic
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from coredis import Redis
 from crontab import CronTab
 
-from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
     REDIS_DEPENDENCIES,
@@ -108,13 +106,7 @@ class Task(Generic[R]):
     id: str = ""
 
     def __post_init__(self) -> None:
-        if self.parent.unique:
-            deterministic_hash = hashlib.sha256(
-                self.parent.fn_name.encode()
-            ).hexdigest()
-            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
-        else:
-            self.id = uuid4().hex
+        self.id = uuid4().hex
 
     async def start(
         self,
@@ -151,7 +143,7 @@ class Task(Generic[R]):
         elif delay is not None:
             score = enqueue_time + to_ms(delay)
         else:
-            score = None
+            score = 0
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
         run_now = None
@@ -169,21 +161,15 @@ class Task(Generic[R]):
                 args=[data, ttl] + after,
             )
         if not after or run_now:
-            args = [self.id, ttl, data, priority]
-            if score:
-                args.append(score)
-            res = await self.parent.worker.scripts["publish_task"](
+            await self.parent.worker.scripts["publish_task"](
                 keys=[
                     self.parent.worker.stream_key,
                     self._task_key(REDIS_MESSAGE),
                     self._task_key(REDIS_TASK),
                     self.parent.worker.queue_key,
                 ],
-                args=args,
+                args=[self.id, ttl, data, priority, score],
             )
-            if res == 0:
-                logger.debug("Task is unique and already exists, not enqueuing!")
-                return self
 
         return self
 

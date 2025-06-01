@@ -1,6 +1,6 @@
 import logging
 
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)

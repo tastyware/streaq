@@ -38,6 +38,7 @@ from streaq.constants import (
     REDIS_STREAM,
     REDIS_TASK,
     REDIS_TIMEOUT,
+    REDIS_UNIQUE,
 )
 from streaq.lua import register_scripts
 from streaq.task import (
@@ -52,7 +53,6 @@ from streaq.task import (
 )
 from streaq.types import (
     WD,
-    AnyCoroutine,
     AsyncCron,
     AsyncTask,
     CronDefinition,
@@ -63,6 +63,7 @@ from streaq.types import (
     SyncCron,
     SyncTask,
     TaskDefinition,
+    TypedCoroutine,
     WrappedContext,
 )
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
@@ -137,6 +138,7 @@ class Worker(Generic[WD]):
         "lifespan",
         "queue_key",
         "stream_key",
+        "_unique_key",
         "_abort_key",
         "_health_key",
         "_channel_key",
@@ -227,6 +229,7 @@ class Worker(Generic[WD]):
         self.queue_key = self._prefix + REDIS_QUEUE
         #: prefix in Redis for currently queued tasks
         self.stream_key = self._prefix + REDIS_STREAM
+        self._unique_key = self._prefix + REDIS_UNIQUE
         self._abort_key = self._prefix + REDIS_ABORT
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
@@ -239,7 +242,7 @@ class Worker(Generic[WD]):
             """
             Saves Redis health in Redis, then logs worker and Redis health.
             """
-            pipe = await self.redis.pipeline(transaction=True)
+            pipe = await self.redis.pipeline(transaction=False)
             await pipe.info("Memory", "Clients")
             await pipe.dbsize()
             for priority in TaskPriority:
@@ -260,7 +263,7 @@ class Worker(Generic[WD]):
                 f"redis {{memory: {mem_usage}, clients: {clients}, keys: {key_count}, "
                 f"queued: {queued}, scheduled: {queue_size}}}"
             )
-            pipe = await self.redis.pipeline(transaction=True)
+            pipe = await self.redis.pipeline(transaction=False)
             await pipe.hset(self._health_key, {"redis": health})
             await pipe.hgetall(self._health_key)
             _, res = await pipe.execute()
@@ -444,7 +447,7 @@ class Worker(Generic[WD]):
         jobs to the live queue when ready.
         """
         message_prefix = self._prefix + REDIS_MESSAGE
-        futures: set[AnyCoroutine] = set()
+        futures: set[TypedCoroutine[Task[Any]]] = set()
         # schedule initial cron jobs
         for name, cron_job in self.cron_jobs.items():
             self.cron_schedule[name] = cron_job.next()
@@ -613,7 +616,6 @@ class Worker(Generic[WD]):
             async def handle_failure(
                 exc: BaseException, ttl: timedelta | int | None = 300
             ) -> None:
-                self.counters["failed"] += 1
                 data = {
                     "s": False,
                     "r": exc,
@@ -664,6 +666,13 @@ class Worker(Generic[WD]):
             )
             after = data.get("A")
             pipe = await self.redis.pipeline(transaction=True)
+            if task.unique:
+                await pipe.set(
+                    self._unique_key + task.fn_name,
+                    task_id,
+                    condition=PureToken.NX,
+                    pxat=timeout,
+                )
             await pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
             if timeout:
                 await pipe.zadd(
@@ -672,6 +681,15 @@ class Worker(Generic[WD]):
             if after:
                 await pipe.get(self._prefix + REDIS_RESULT + after + ":raw")
             res = await pipe.execute()
+            if task.unique and not res[0]:
+                logger.warning(f"unique task {task_id} clashed with running task ↯")
+                return await handle_failure(
+                    StreaqError(
+                        "Task is unique and another instance of the same task is "
+                        "already running!"
+                    ),
+                    ttl=task.ttl,
+                )
             _args = data["a"] if not after else self.deserializer(res[-1])
 
             ctx = self.build_context(fn_name, task, task_id, tries=task_try)
@@ -747,6 +765,9 @@ class Worker(Generic[WD]):
                         success=success,
                         ttl=task.ttl,
                         triggers=data.get("T"),
+                        unique_key=self._unique_key + task.fn_name
+                        if task.unique
+                        else None,
                     )
                 )
 
@@ -761,6 +782,7 @@ class Worker(Generic[WD]):
         success: bool,
         ttl: timedelta | int | None,
         triggers: str | None,
+        unique_key: str | None,
     ) -> None:
         """
         Cleanup for a task that executed successfully or will be retried.
@@ -793,14 +815,15 @@ class Worker(Generic[WD]):
                 self.counters["failed"] += 1
             if result and ttl != 0:
                 await pipe.set(key(REDIS_RESULT), result, ex=ttl)
-            await pipe.delete(
-                [
-                    key(REDIS_RETRY),
-                    key(REDIS_RUNNING),
-                    key(REDIS_TASK),
-                    key(REDIS_MESSAGE),
-                ]
-            )
+            keys = [
+                key(REDIS_RETRY),
+                key(REDIS_RUNNING),
+                key(REDIS_TASK),
+                key(REDIS_MESSAGE),
+            ]
+            if unique_key:
+                keys.append(unique_key)
+            await pipe.delete(keys)  # type: ignore
             await pipe.srem(self._abort_key, [task_id])
             if success:
                 ret, trunc = str(return_value), 32
@@ -910,7 +933,7 @@ class Worker(Generic[WD]):
         await pipe.xack(stream_key, self._group_name, [msg.message_id])
         await pipe.xdel(stream_key, [msg.message_id])
         await pipe.zrem(self._timeout_key + msg.priority, [msg.message_id])
-        if result_data is not None:
+        if result_data is not None and ttl:
             await pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
         await self.scripts["fail_dependents"](
             keys=[
