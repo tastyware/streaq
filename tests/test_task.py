@@ -6,6 +6,7 @@ from typing import Callable, Coroutine
 import pytest
 
 from streaq import StreaqError, Worker, WrappedContext
+from streaq.constants import REDIS_RUNNING
 from streaq.task import StreaqRetry, TaskPriority, TaskStatus
 
 
@@ -40,8 +41,8 @@ async def test_task_status(worker: Worker):
     task = foobar.enqueue()
     assert await task.status() == TaskStatus.PENDING
     await task.start()
-    task2 = await foobar.enqueue().start(delay=5)
     assert await task.status() == TaskStatus.QUEUED
+    task2 = await foobar.enqueue().start(delay=5)
     worker.loop.create_task(worker.run_async())
     await task.result(3)
     assert await task.status() == TaskStatus.DONE
@@ -62,20 +63,20 @@ async def test_task_status_running(worker: Worker):
 
 async def test_task_cron(worker: Worker):
     @worker.cron("30 9 1 1 *")
-    async def cron1(ctx: WrappedContext[None]) -> None:
-        pass
+    async def cron1(ctx: WrappedContext[None]) -> bool:
+        return True
 
     @worker.cron("* * * * * * *")  # once/second
-    async def cron2(ctx: WrappedContext[None]) -> bool:
-        return True
+    async def cron2(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(3)
 
     schedule = cron1.schedule()
     assert schedule.day == 1 and schedule.month == 1
-    await cron1.run()
-    task = cron2.enqueue()  # by not awaiting we just get the task obj
+    assert await cron1.run()
     worker.loop.create_task(worker.run_async())
-    res = await task.result(3)
-    assert res.result and res.success
+    await asyncio.sleep(1)
+    # this will be set if task is running
+    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
 
 
 async def test_task_info(redis_url: str):
@@ -339,19 +340,17 @@ async def test_bad_start_params(redis_url: str):
         await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
 
 
-async def test_enqueue_unique_task(redis_url: str):
-    worker = Worker(redis_url=redis_url)
-
+async def test_enqueue_unique_task(worker: Worker):
     @worker.task(unique=True)
     async def foobar(ctx: WrappedContext[None]) -> None:
-        pass
+        await asyncio.sleep(1)
 
-    async with worker:
-        task = await foobar.enqueue()
-        task2 = await foobar.enqueue()
-        assert task.id == task2.id
-        res = await asyncio.gather(task.info(), task2.info())
-        assert res[0] == res[1]
+    task = await foobar.enqueue()
+    task2 = await foobar.enqueue()
+    worker.loop.create_task(worker.run_async())
+    results = await asyncio.gather(task.result(), task2.result())
+    assert any(isinstance(r.result, StreaqError) for r in results)
+    assert any(r.result is None for r in results)
 
 
 async def test_failed_abort(worker: Worker):
@@ -383,13 +382,17 @@ async def test_cron_run(redis_url: str):
 
 
 async def test_sync_cron(worker: Worker):
+    flag = False
+
     @worker.cron("* * * * * * *")
     def cronjob(ctx: WrappedContext[None]) -> None:
+        nonlocal flag
         time.sleep(1)
+        flag = True
 
     worker.loop.create_task(worker.run_async())
-    res = await cronjob.enqueue().result(3)
-    assert res.success and res.result is None
+    await asyncio.sleep(2)
+    assert flag
 
 
 async def test_cron_multiple_runs(worker: Worker):

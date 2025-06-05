@@ -52,7 +52,6 @@ from streaq.task import (
 )
 from streaq.types import (
     WD,
-    AnyCoroutine,
     AsyncCron,
     AsyncTask,
     CronDefinition,
@@ -63,6 +62,7 @@ from streaq.types import (
     SyncCron,
     SyncTask,
     TaskDefinition,
+    TypedCoroutine,
     WrappedContext,
 )
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
@@ -239,7 +239,7 @@ class Worker(Generic[WD]):
             """
             Saves Redis health in Redis, then logs worker and Redis health.
             """
-            pipe = await self.redis.pipeline(transaction=True)
+            pipe = await self.redis.pipeline(transaction=False)
             await pipe.info("Memory", "Clients")
             await pipe.dbsize()
             for priority in TaskPriority:
@@ -260,7 +260,7 @@ class Worker(Generic[WD]):
                 f"redis {{memory: {mem_usage}, clients: {clients}, keys: {key_count}, "
                 f"queued: {queued}, scheduled: {queue_size}}}"
             )
-            pipe = await self.redis.pipeline(transaction=True)
+            pipe = await self.redis.pipeline(transaction=False)
             await pipe.hset(self._health_key, {"redis": health})
             await pipe.hgetall(self._health_key)
             _, res = await pipe.execute()
@@ -444,7 +444,7 @@ class Worker(Generic[WD]):
         jobs to the live queue when ready.
         """
         message_prefix = self._prefix + REDIS_MESSAGE
-        futures: set[AnyCoroutine] = set()
+        futures: set[TypedCoroutine[Task[Any]]] = set()
         # schedule initial cron jobs
         for name, cron_job in self.cron_jobs.items():
             self.cron_schedule[name] = cron_job.next()
@@ -613,7 +613,6 @@ class Worker(Generic[WD]):
             async def handle_failure(
                 exc: BaseException, ttl: timedelta | int | None = 300
             ) -> None:
-                self.counters["failed"] += 1
                 data = {
                     "s": False,
                     "r": exc,
@@ -664,7 +663,15 @@ class Worker(Generic[WD]):
             )
             after = data.get("A")
             pipe = await self.redis.pipeline(transaction=True)
-            await pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
+            lock_key = (
+                self._prefix + REDIS_RUNNING + task.fn_name
+                if task.unique
+                else key(REDIS_RUNNING)
+            )
+            if task.unique:
+                await pipe.set(lock_key, task_id, condition=PureToken.NX, pxat=timeout)
+            else:
+                await pipe.set(lock_key, task.fn_name, pxat=timeout)
             if timeout:
                 await pipe.zadd(
                     self._timeout_key + msg.priority, {msg.message_id: timeout}
@@ -672,6 +679,15 @@ class Worker(Generic[WD]):
             if after:
                 await pipe.get(self._prefix + REDIS_RESULT + after + ":raw")
             res = await pipe.execute()
+            if task.unique and not res[0]:
+                logger.warning(f"unique task {task_id} clashed with running task ↯")
+                return await handle_failure(
+                    StreaqError(
+                        "Task is unique and another instance of the same task is "
+                        "already running!"
+                    ),
+                    ttl=task.ttl,
+                )
             _args = data["a"] if not after else self.deserializer(res[-1])
 
             ctx = self.build_context(fn_name, task, task_id, tries=task_try)
@@ -747,6 +763,7 @@ class Worker(Generic[WD]):
                         success=success,
                         ttl=task.ttl,
                         triggers=data.get("T"),
+                        lock_key=lock_key,
                     )
                 )
 
@@ -761,6 +778,7 @@ class Worker(Generic[WD]):
         success: bool,
         ttl: timedelta | int | None,
         triggers: str | None,
+        lock_key: str,
     ) -> None:
         """
         Cleanup for a task that executed successfully or will be retried.
@@ -796,9 +814,9 @@ class Worker(Generic[WD]):
             await pipe.delete(
                 [
                     key(REDIS_RETRY),
-                    key(REDIS_RUNNING),
                     key(REDIS_TASK),
                     key(REDIS_MESSAGE),
+                    lock_key,
                 ]
             )
             await pipe.srem(self._abort_key, [task_id])
@@ -910,7 +928,7 @@ class Worker(Generic[WD]):
         await pipe.xack(stream_key, self._group_name, [msg.message_id])
         await pipe.xdel(stream_key, [msg.message_id])
         await pipe.zrem(self._timeout_key + msg.priority, [msg.message_id])
-        if result_data is not None:
+        if result_data is not None and ttl:
             await pipe.set(key(REDIS_RESULT), result_data, ex=ttl)
         await self.scripts["fail_dependents"](
             keys=[

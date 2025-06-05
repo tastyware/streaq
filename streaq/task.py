@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from hashlib import sha256
 from time import time
 from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generator, Generic
 from uuid import UUID, uuid4
@@ -103,18 +103,9 @@ class Task(Generic[R]):
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
+    id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any] | None = None
     _triggers: Task[Any] | None = None
-    id: str = ""
-
-    def __post_init__(self) -> None:
-        if self.parent.unique:
-            deterministic_hash = hashlib.sha256(
-                self.parent.fn_name.encode()
-            ).hexdigest()
-            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
-        else:
-            self.id = uuid4().hex
 
     async def start(
         self,
@@ -151,7 +142,7 @@ class Task(Generic[R]):
         elif delay is not None:
             score = enqueue_time + to_ms(delay)
         else:
-            score = None
+            score = 0
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
         run_now = None
@@ -169,9 +160,6 @@ class Task(Generic[R]):
                 args=[data, ttl] + after,
             )
         if not after or run_now:
-            args = [self.id, ttl, data, priority]
-            if score:
-                args.append(score)
             res = await self.parent.worker.scripts["publish_task"](
                 keys=[
                     self.parent.worker.stream_key,
@@ -179,11 +167,10 @@ class Task(Generic[R]):
                     self._task_key(REDIS_TASK),
                     self.parent.worker.queue_key,
                 ],
-                args=args,
+                args=[self.id, ttl, data, priority, score],
             )
             if res == 0:
                 logger.debug("Task is unique and already exists, not enqueuing!")
-                return self
 
         return self
 
@@ -352,7 +339,11 @@ class RegisteredCron(Generic[WD, R]):
         active worker. Though this isn't async, it should be awaited as it
         returns an object that should be.
         """
-        return Task((), {}, self)
+        task = Task((), {}, self)
+        uid_bytes = f"{self.fn_name}@{datetime_ms(self.schedule())}".encode()
+        deterministic_hash = sha256(uid_bytes).hexdigest()
+        task.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
+        return task
 
     async def run(self) -> R:
         """
