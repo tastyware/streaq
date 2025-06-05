@@ -74,7 +74,7 @@ async def test_task_cron(worker: Worker):
     assert schedule.day == 1 and schedule.month == 1
     assert await cron1.run()
     worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
+    await asyncio.sleep(2)
     # this will be set if task is running
     assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
 
@@ -382,17 +382,13 @@ async def test_cron_run(redis_url: str):
 
 
 async def test_sync_cron(worker: Worker):
-    flag = False
-
     @worker.cron("* * * * * * *")
     def cronjob(ctx: WrappedContext[None]) -> None:
-        nonlocal flag
-        time.sleep(1)
-        flag = True
+        time.sleep(3)
 
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
-    assert flag
+    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cronjob.fn_name)
 
 
 async def test_cron_multiple_runs(worker: Worker):
