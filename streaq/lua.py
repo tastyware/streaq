@@ -13,7 +13,9 @@ local prefix = KEYS[5]
 local task_data = ARGV[1]
 local ttl = ARGV[2]
 
-redis.call('set', task_key, task_data, 'px', ttl)
+if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
+  return false
+end
 
 local modified = 0
 for i=3, #ARGV do
@@ -40,7 +42,9 @@ local task_data = ARGV[3]
 local priority = ARGV[4]
 local score = ARGV[5]
 
-redis.call('set', task_key, task_data, 'px', ttl)
+if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
+  return 0
+end
 if score ~= '0' then
   redis.call('zadd', queue_key, score, task_id)
   return 1

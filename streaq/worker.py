@@ -38,7 +38,6 @@ from streaq.constants import (
     REDIS_STREAM,
     REDIS_TASK,
     REDIS_TIMEOUT,
-    REDIS_UNIQUE,
 )
 from streaq.lua import register_scripts
 from streaq.task import (
@@ -138,7 +137,6 @@ class Worker(Generic[WD]):
         "lifespan",
         "queue_key",
         "stream_key",
-        "_unique_key",
         "_abort_key",
         "_health_key",
         "_channel_key",
@@ -229,7 +227,6 @@ class Worker(Generic[WD]):
         self.queue_key = self._prefix + REDIS_QUEUE
         #: prefix in Redis for currently queued tasks
         self.stream_key = self._prefix + REDIS_STREAM
-        self._unique_key = self._prefix + REDIS_UNIQUE
         self._abort_key = self._prefix + REDIS_ABORT
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
@@ -666,14 +663,15 @@ class Worker(Generic[WD]):
             )
             after = data.get("A")
             pipe = await self.redis.pipeline(transaction=True)
+            lock_key = (
+                self._prefix + REDIS_RUNNING + task.fn_name
+                if task.unique
+                else key(REDIS_RUNNING)
+            )
             if task.unique:
-                await pipe.set(
-                    self._unique_key + task.fn_name,
-                    task_id,
-                    condition=PureToken.NX,
-                    pxat=timeout,
-                )
-            await pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
+                await pipe.set(lock_key, task_id, condition=PureToken.NX, pxat=timeout)
+            else:
+                await pipe.set(lock_key, task.fn_name, pxat=timeout)
             if timeout:
                 await pipe.zadd(
                     self._timeout_key + msg.priority, {msg.message_id: timeout}
@@ -765,9 +763,7 @@ class Worker(Generic[WD]):
                         success=success,
                         ttl=task.ttl,
                         triggers=data.get("T"),
-                        unique_key=self._unique_key + task.fn_name
-                        if task.unique
-                        else None,
+                        lock_key=lock_key,
                     )
                 )
 
@@ -782,7 +778,7 @@ class Worker(Generic[WD]):
         success: bool,
         ttl: timedelta | int | None,
         triggers: str | None,
-        unique_key: str | None,
+        lock_key: str,
     ) -> None:
         """
         Cleanup for a task that executed successfully or will be retried.
@@ -815,15 +811,14 @@ class Worker(Generic[WD]):
                 self.counters["failed"] += 1
             if result and ttl != 0:
                 await pipe.set(key(REDIS_RESULT), result, ex=ttl)
-            keys = [
-                key(REDIS_RETRY),
-                key(REDIS_RUNNING),
-                key(REDIS_TASK),
-                key(REDIS_MESSAGE),
-            ]
-            if unique_key:
-                keys.append(unique_key)
-            await pipe.delete(keys)  # type: ignore
+            await pipe.delete(
+                [
+                    key(REDIS_RETRY),
+                    key(REDIS_TASK),
+                    key(REDIS_MESSAGE),
+                    lock_key,
+                ]
+            )
             await pipe.srem(self._abort_key, [task_id])
             if success:
                 ret, trunc = str(return_value), 32

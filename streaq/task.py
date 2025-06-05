@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from hashlib import sha256
 from time import time
 from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generator, Generic
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from coredis import Redis
 from crontab import CronTab
 
+from streaq import logger
 from streaq.constants import (
     DEFAULT_TTL,
     REDIS_DEPENDENCIES,
@@ -101,12 +103,9 @@ class Task(Generic[R]):
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
+    id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any] | None = None
     _triggers: Task[Any] | None = None
-    id: str = ""
-
-    def __post_init__(self) -> None:
-        self.id = uuid4().hex
 
     async def start(
         self,
@@ -161,7 +160,7 @@ class Task(Generic[R]):
                 args=[data, ttl] + after,
             )
         if not after or run_now:
-            await self.parent.worker.scripts["publish_task"](
+            res = await self.parent.worker.scripts["publish_task"](
                 keys=[
                     self.parent.worker.stream_key,
                     self._task_key(REDIS_MESSAGE),
@@ -170,6 +169,8 @@ class Task(Generic[R]):
                 ],
                 args=[self.id, ttl, data, priority, score],
             )
+            if res == 0:
+                logger.debug("Task is unique and already exists, not enqueuing!")
 
         return self
 
@@ -338,7 +339,11 @@ class RegisteredCron(Generic[WD, R]):
         active worker. Though this isn't async, it should be awaited as it
         returns an object that should be.
         """
-        return Task((), {}, self)
+        task = Task((), {}, self)
+        uid_bytes = f"{self.fn_name}@{datetime_ms(self.schedule())}".encode()
+        deterministic_hash = sha256(uid_bytes).hexdigest()
+        task.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
+        return task
 
     async def run(self) -> R:
         """

@@ -6,6 +6,7 @@ from typing import Callable, Coroutine
 import pytest
 
 from streaq import StreaqError, Worker, WrappedContext
+from streaq.constants import REDIS_RUNNING
 from streaq.task import StreaqRetry, TaskPriority, TaskStatus
 
 
@@ -75,7 +76,7 @@ async def test_task_cron(worker: Worker):
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(1)
     # this will be set if task is running
-    assert await worker.redis.get(worker._unique_key + cron2.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
 
 
 async def test_task_info(redis_url: str):
