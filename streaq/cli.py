@@ -50,8 +50,36 @@ def main(
         bool,
         Option("--version", callback=version_callback, help="Show installed version"),
     ] = False,
+    web: Annotated[
+        bool,
+        Option(
+            "--web", help="Run a web UI for monitoring tasks in a separate process."
+        ),
+    ] = False,
+    host: Annotated[
+        str, Option("--host", "-h", help="Host for the web UI server.")
+    ] = "0.0.0.0",
+    port: Annotated[
+        int, Option("--port", "-p", help="Port for the web UI server.")
+    ] = 8000,
 ) -> None:
     processes: list[Process] = []
+    if web:
+        from streaq.ui import run_web
+
+        sys.path.append(os.getcwd())
+        logging.config.dictConfig(default_log_config(verbose))
+        worker = cast(Worker[Any], import_string(worker_path))
+        processes.append(
+            Process(
+                target=run_web,
+                args=(
+                    host,
+                    port,
+                    worker,
+                ),
+            )
+        )
     if workers > 1:
         processes.extend(
             [
