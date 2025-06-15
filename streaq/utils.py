@@ -33,10 +33,10 @@ def import_string(dotted_path: str) -> Any:
         ) from e
 
 
-def to_seconds(timeout: timedelta | int) -> float:
+def to_seconds(timeout: timedelta | int | None) -> float | None:
     if isinstance(timeout, timedelta):
         return timeout.total_seconds()
-    return float(timeout)
+    return float(timeout) if timeout is not None else None
 
 
 def to_ms(timeout: timedelta | int) -> int:

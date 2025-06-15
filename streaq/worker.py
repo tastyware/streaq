@@ -509,8 +509,7 @@ class Worker(Generic[WD]):
                 logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
                 await asyncio.gather(*futures)
 
-            delay = time() - start_time
-            if delay < 0.5:
+            if (delay := time() - start_time) < 0.5:
                 await asyncio.sleep(0.5 - delay)
 
     async def listen_stream(self) -> None:
@@ -637,8 +636,7 @@ class Worker(Generic[WD]):
                 logger.exception(f"Failed to deserialize task {task_id}: {e}")
                 return await handle_failure(e)
 
-            fn_name = data["f"]
-            if fn_name not in self.registry:
+            if (fn_name := data["f"]) not in self.registry:
                 logger.error(
                     f"Missing function {fn_name}, can't execute task {task_id}!"
                 )
@@ -702,8 +700,7 @@ class Worker(Generic[WD]):
                 **kwargs: dict[str, Any],
             ) -> Any:
                 return await asyncio.wait_for(
-                    task.fn(ctx, *args, **kwargs),
-                    to_seconds(task.timeout) if task.timeout is not None else None,
+                    task.fn(ctx, *args, **kwargs), to_seconds(task.timeout)
                 )
 
             logger.info(f"task {task_id} → worker {self.id}")
@@ -720,10 +717,7 @@ class Worker(Generic[WD]):
                 result = e
                 success = False
                 done = False
-                if e.delay is not None:
-                    delay = to_seconds(e.delay)
-                else:
-                    delay = task_try**2
+                delay = to_seconds(e.delay) if e.delay is not None else task_try**2
                 logger.exception(e)
                 logger.info(f"retrying ↻ task {task_id} in {delay}s")
             except asyncio.TimeoutError as e:
@@ -821,10 +815,10 @@ class Worker(Generic[WD]):
             )
             await pipe.srem(self._abort_key, [task_id])
             if success:
-                ret, trunc = str(return_value), 32
-                if len(ret) > trunc:
-                    ret = f"{ret[:trunc]}…"
-                logger.info(f"task {task_id} ← {ret}")
+                output, truncate_length = str(return_value), 32
+                if len(output) > truncate_length:
+                    output = f"{output[:truncate_length]}…"
+                logger.info(f"task {task_id} ← {output}")
                 if triggers:
                     args = self.serializer(to_tuple(return_value))
                     await pipe.set(
@@ -1113,22 +1107,17 @@ class Worker(Generic[WD]):
 
         :return: wrapped result object
         """
-
-        def key(mid: str) -> str:
-            return self._prefix + mid + task_id
-
-        async with self.redis.pubsub(channels=[self._channel_key]) as ps:
-            raw = await self.redis.get(key(REDIS_RESULT))
-            if raw is None:
-                timeout_seconds = to_seconds(timeout) if timeout is not None else None
-                await asyncio.wait_for(
-                    self._listen_for_result(ps, task_id), timeout_seconds
-                )
-                raw = await self.redis.get(key(REDIS_RESULT))
-            if raw is None:
-                raise StreaqError(
-                    "Task finished but result was not stored, did you set ttl=0?"
-                )
+        result_key = self._prefix + REDIS_RESULT + task_id
+        pubsub = await self.redis.pubsub(channels=[self._channel_key])
+        if not (raw := await self.redis.get(result_key)):
+            await asyncio.wait_for(
+                self._listen_for_result(pubsub, task_id), to_seconds(timeout)
+            )
+        await pubsub.aclose()
+        if not (raw := await self.redis.get(result_key)):
+            raise StreaqError(
+                "Task finished but result was not stored, did you set ttl=0?"
+            )
         try:
             data = self.deserializer(raw)
             return TaskResult(

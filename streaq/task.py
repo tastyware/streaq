@@ -309,8 +309,7 @@ class RegisteredTask(Generic[WD, P, R]):
         )
         try:
             return await asyncio.wait_for(
-                self.fn(deps, *args, **kwargs),
-                to_seconds(self.timeout) if self.timeout else None,
+                self.fn(deps, *args, **kwargs), to_seconds(self.timeout)
             )
         except asyncio.TimeoutError as e:
             raise e
@@ -361,10 +360,7 @@ class RegisteredCron(Generic[WD, R]):
             worker_id=self.worker.id,
         )
         try:
-            return await asyncio.wait_for(
-                self.fn(deps),
-                to_seconds(self.timeout) if self.timeout else None,
-            )
+            return await asyncio.wait_for(self.fn(deps), to_seconds(self.timeout))
         except asyncio.TimeoutError as e:
             raise e
 
