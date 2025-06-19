@@ -274,6 +274,7 @@ class Task(Generic[R]):
 class RegisteredTask(Generic[WD, P, R]):
     fn: Callable[Concatenate[WrappedContext[WD], P], TypedCoroutine[R]]
     max_tries: int | None
+    silent: bool
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
@@ -325,8 +326,9 @@ class RegisteredTask(Generic[WD, P, R]):
 @dataclass
 class RegisteredCron(Generic[WD, R]):
     fn: Callable[[WrappedContext[WD]], TypedCoroutine[R]]
-    max_tries: int | None
     crontab: CronTab
+    max_tries: int | None
+    silent: bool
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool

@@ -21,6 +21,10 @@ To start, you'll need to create a ``Worker`` object:
 
    @asynccontextmanager
    async def lifespan(worker: Worker) -> AsyncIterator[Context]:
+       """
+       Here, we initialize the worker's dependencies.
+       You can also do any startup/shutdown work here!
+       """
        async with AsyncClient() as http_client:
            yield Context(http_client)
 
@@ -37,7 +41,7 @@ You can then register async tasks with the worker like this:
        r = await ctx.deps.http_client.get(url)
        return len(r.text)
 
-   @worker.cron("* * * * mon-fri")
+   @worker.cron("* * * * mon-fri")  # every minute on weekdays
    async def cronjob(ctx: WrappedContext[Context]) -> None:
        print("It's a bird... It's a plane... It's CRON!")
 
@@ -75,14 +79,9 @@ Let's see what the output looks like:
    [INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba ← 15
    [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 → worker db064c92
    [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 ← 293784
-   [INFO] 19:50:00: task a0a8c0f39dae4c448182c417b047677c → worker db064c92
    [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 → worker db064c92
    It's a bird... It's a plane... It's CRON!
    [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 ← None
-   [INFO] 19:50:00: health check results:
-   redis {memory: 1.72M, clients: 3, keys: 18, queued: 2, scheduled: 0}
-   worker db064c92 {completed: 2}
-   [INFO] 19:50:00: task a0a8c0f39dae4c448182c417b047677c ← None
 
 .. code-block:: python
 
