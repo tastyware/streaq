@@ -22,6 +22,7 @@ Fast, async, type-safe job queuing with Redis streams
 - Support for synchronous tasks (run in separate threads)
 - Dead simple, ~2k lines of code
 - Redis Sentinel support for production
+- Built-in web UI for monitoring tasks
 
 ## Installation
 
