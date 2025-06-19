@@ -59,8 +59,8 @@ async def test_health_check(redis_url: str):
     await worker.redis.flushdb()
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
-    worker_health = await worker.redis.hget(worker._health_key, worker.id)
-    redis_health = await worker.redis.hget(worker._health_key, "redis")
+    worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
+    redis_health = await worker.redis.get(worker._health_key + ":redis")
     assert worker_health is not None
     assert redis_health is not None
     await worker.close()
