@@ -89,8 +89,8 @@ def run_worker(
 
 def _run_worker(path: str, burst: bool, verbose: bool, schedule: bool) -> None:
     sys.path.append(os.getcwd())
-    logging.config.dictConfig(default_log_config(verbose))
     worker = cast(Worker[Any], import_string(path))
+    logging.config.dictConfig(default_log_config(worker.tz, verbose))
     worker.burst = burst
     if worker.with_scheduler is None:
         worker.with_scheduler = schedule

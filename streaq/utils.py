@@ -1,7 +1,8 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from functools import partial, wraps
 from importlib import import_module
+from logging import Formatter
 from typing import Any, Callable
 
 from anyio.abc import CapacityLimiter
@@ -12,6 +13,24 @@ from streaq.types import P, R, TypedCoroutine
 
 class StreaqError(Exception):
     pass
+
+
+class TimezoneFormatter(Formatter):
+    def __init__(
+        self,
+        fmt: str | None = None,
+        datefmt: str | None = None,
+        tz: tzinfo | None = None,
+        **kwargs: Any,
+    ):
+        """
+        Like a normal formatter, but with a timezone.
+        """
+        super().__init__(fmt, datefmt, **kwargs)
+        self.tz = tz
+
+    def converter(self, *args: Any) -> time.struct_time:
+        return datetime.now(self.tz).timetuple()
 
 
 def import_string(dotted_path: str) -> Any:
@@ -57,11 +76,13 @@ def to_tuple(val: Any) -> tuple[Any, ...]:
     return val if isinstance(val, tuple) else (val,)  # type: ignore
 
 
-def default_log_config(verbose: bool) -> dict[str, Any]:
+def default_log_config(tz: tzinfo, verbose: bool) -> dict[str, Any]:
     """
     Setup default config. for dictConfig.
 
+    :param tz: timezone for logs
     :param verbose: level: DEBUG if True, INFO if False
+
     :return: dict suitable for ``logging.config.dictConfig``
     """
     log_level = "DEBUG" if verbose else "INFO"
@@ -77,8 +98,10 @@ def default_log_config(verbose: bool) -> dict[str, Any]:
         },
         "formatters": {
             "streaq.standard": {
+                "()": TimezoneFormatter,
                 "format": "[%(levelname)s] %(asctime)s: %(message)s",
                 "datefmt": "%H:%M:%S",
+                "tz": tz,
             }
         },
         "loggers": {"streaq": {"handlers": ["streaq.standard"], "level": log_level}},
