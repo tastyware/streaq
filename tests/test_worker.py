@@ -1,4 +1,8 @@
 import asyncio
+import os
+import signal
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from signal import Signals
@@ -144,35 +148,28 @@ async def test_handle_signal(worker: Worker):
 
 
 async def test_reclaim_idle_task(redis_url: str):
-    async def foo(ctx: WrappedContext[None]) -> None:
-        await asyncio.sleep(2)
-
-    worker1 = Worker(
-        redis_url=redis_url,
-        queue_name="test",
-        handle_signals=False,
-    )
-    foo1 = worker1.task(timeout=3)(foo)
-    async with worker1:
-        task = await foo1.enqueue()
-        await asyncio.wait_for(worker1.run_async(), 1)
-        # simulate abrupt shutdown
-        for t in worker1.task_wrappers.values():
-            t.cancel()
-        for t in worker1.tasks.values():
-            t.cancel()
-        await asyncio.sleep(2)
-        assert await task.status() == TaskStatus.RUNNING
-
     worker2 = Worker(
         redis_url=redis_url,
         queue_name="test",
-        handle_signals=False,
         with_scheduler=True,
     )
-    worker2.task(timeout=3)(foo)
+
+    @worker2.task(timeout=3)
+    async def foo(ctx: WrappedContext[None]) -> None:
+        await asyncio.sleep(2)
+
+    # enqueue task
+    async with worker2:
+        task = await foo.enqueue()
+    # run separate worker which will pick up task
+    worker1 = subprocess.Popen([sys.executable, "tests/failure.py", redis_url])
+    await asyncio.sleep(1)
+    # kill worker abruptly to disallow cleanup
+    os.kill(worker1.pid, signal.SIGKILL)
+    worker1.wait()
+
     worker2.loop.create_task(worker2.run_async())
-    assert (await task.result(5)).success
+    assert (await task.result(8)).success
     await worker2.close()
 
 

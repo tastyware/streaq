@@ -493,7 +493,7 @@ class Worker(Generic[WD]):
             res = await pipe.execute()
             idle = res[0] + res[1] + res[2]  # for each priority level
             if idle:
-                logger.info(f"retrying ↻ {len(idle)} idle tasks")
+                logger.info(f"retrying ↻ {idle} idle tasks")
 
             # cron jobs
             futures = set()

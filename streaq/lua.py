@@ -188,7 +188,7 @@ if #timed_out > 0 then
   redis.call('zrem', sorted_set_key, unpack(timed_out))
 end
 
-return timed_out
+return #timed_out
 """
 
 CREATE_GROUPS = """
