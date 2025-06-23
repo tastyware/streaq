@@ -854,13 +854,14 @@ class Worker(Generic[WD]):
         elif delay:
             if not silent:
                 self.counters["retried"] += 1
-            await pipe.delete([key(REDIS_MESSAGE)])
+            await pipe.delete([key(REDIS_MESSAGE), lock_key])
             await pipe.zadd(self.queue_key, {task_id: now_ms() + delay * 1000})
         else:
             if not silent:
                 self.counters["retried"] += 1
             ttl_ms = to_ms(ttl) if ttl is not None else None
             expire = (ttl_ms or 0) + DEFAULT_TTL
+            await pipe.delete([lock_key])
             await self.scripts["retry_task"](
                 keys=[stream_key, key(REDIS_MESSAGE)],
                 args=[task_id, expire],
