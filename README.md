@@ -5,7 +5,7 @@
 
 # streaQ
 
-Fast, async, type-safe job queuing with Redis streams
+Fast, async, type-safe distributed task queue for Redis
 
 ## Features
 
