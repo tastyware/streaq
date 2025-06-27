@@ -17,8 +17,8 @@ Fast, async, type-safe distributed task queue for Redis
 - Cron jobs
 - Task middleware
 - Task dependency graph
-- Task pipelines
-- Task priority queues
+- Pipelining
+- Priority queues
 - Support for synchronous tasks (run in separate threads)
 - Dead simple, ~2k lines of code
 - Redis Sentinel support for production
@@ -38,10 +38,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 from httpx import AsyncClient
-from streaq import Worker, WrappedContext
+from streaq import Worker
 
 @dataclass
-class Context:
+class WorkerContext:
     """
     Type safe way of defining the dependencies of your tasks.
     e.g. HTTP client, database connection, settings.
@@ -49,7 +49,7 @@ class Context:
     http_client: AsyncClient
 
 @asynccontextmanager
-async def lifespan(worker: Worker) -> AsyncIterator[Context]:
+async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
     """
     Here, we initialize the worker's dependencies.
     You can also do any startup/shutdown work here!
@@ -64,14 +64,13 @@ You can then register async tasks with the worker like this:
 
 ```python
 @worker.task(timeout=5)
-async def fetch(ctx: WrappedContext[Context], url: str) -> int:
-    # ctx.deps here is of type Context, enforced by static typing
-    # ctx also provides access to the Redis connection, retry count, etc.
-    r = await ctx.deps.http_client.get(url)
-    return len(r.text)
+async def fetch(url: str) -> int:
+    # worker.context here is of type WorkerContext, enforced by static typing
+    res = await worker.context.http_client.get(url)
+    return len(res.text)
 
 @worker.cron("* * * * mon-fri")  # every minute on weekdays
-async def cronjob(ctx: WrappedContext[Context]) -> None:
+async def cronjob() -> None:
     print("It's a bird... It's a plane... It's CRON!")
 ```
 
