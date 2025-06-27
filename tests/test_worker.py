@@ -12,7 +12,6 @@ from uuid import uuid4
 import pytest
 
 from streaq.task import TaskStatus
-from streaq.types import WrappedContext
 from streaq.utils import StreaqError
 from streaq.worker import Worker
 
@@ -25,24 +24,24 @@ async def test_worker_redis(redis_url: str):
 
 
 @dataclass
-class Context:
+class WorkerContext:
     name: str
 
 
 @asynccontextmanager
-async def deps(worker: Worker) -> AsyncIterator[Context]:
-    yield Context(NAME_STR)
+async def deps(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
+    yield WorkerContext(NAME_STR)
 
 
 async def test_lifespan(redis_url: str):
     worker = Worker(redis_url=redis_url, lifespan=deps)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[Context]) -> str:
-        return ctx.deps.name
+    async def foobar() -> str:
+        return worker.context.name
 
     @worker.task(timeout=1)
-    async def foobar2(ctx: WrappedContext[Context]) -> None:
+    async def foobar2() -> None:
         await asyncio.sleep(3)
 
     async with worker:
@@ -83,7 +82,7 @@ async def test_bad_serializer(redis_url: str):
     worker = Worker(redis_url=redis_url, serializer=raise_error)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         print("This can't print!")
 
     async with worker:
@@ -95,7 +94,7 @@ async def test_bad_deserializer(redis_url: str):
     worker = Worker(redis_url=redis_url, deserializer=raise_error)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         print("This can't print!")
 
     worker.burst = True
@@ -111,8 +110,8 @@ async def test_uninitialized_worker(redis_url: str):
     worker = Worker(redis_url=redis_url)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
-        pass
+    async def foobar() -> None:
+        print(worker.context)
 
     with pytest.raises(StreaqError):
         await foobar.run()
@@ -122,7 +121,7 @@ async def test_uninitialized_worker(redis_url: str):
 
 async def test_active_tasks(worker: Worker):
     @worker.task()
-    async def foo(ctx: WrappedContext[None]) -> None:
+    async def foo() -> None:
         await asyncio.sleep(3)
 
     n_tasks = 5
@@ -135,7 +134,7 @@ async def test_active_tasks(worker: Worker):
 
 async def test_handle_signal(worker: Worker):
     @worker.task()
-    async def foo(ctx: WrappedContext[None]) -> None:
+    async def foo() -> None:
         await asyncio.sleep(3)
 
     worker._handle_signals = True
@@ -155,7 +154,7 @@ async def test_reclaim_idle_task(redis_url: str):
     )
 
     @worker2.task(timeout=3)
-    async def foo(ctx: WrappedContext[None]) -> None:
+    async def foo() -> None:
         await asyncio.sleep(2)
 
     # enqueue task
@@ -174,7 +173,7 @@ async def test_reclaim_idle_task(redis_url: str):
 
 
 async def test_change_cron_schedule(redis_url: str):
-    async def foo(ctx: WrappedContext[None]) -> None:
+    async def foo() -> None:
         pass
 
     worker1 = Worker(

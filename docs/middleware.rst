@@ -9,11 +9,12 @@ You can define middleware to wrap task execution. This has a host of potential a
 .. code-block:: python
 
    import time
-   from typing import Callable, Coroutine
+   from streaq.types import ReturnCoroutine
+   from typing import Any
 
    @worker.middleware
-   def timer(ctx: WrappedContext[Context], task: Callable[..., Coroutine]):
-       async def wrapper(*args, **kwargs):
+   def timer(task: ReturnCoroutine) -> ReturnCoroutine:
+       async def wrapper(*args, **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
            print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
@@ -30,13 +31,11 @@ You can register as many middleware as you like to a worker, which will run them
 
 .. code-block:: python
 
-   import time
-   from typing import Callable, Coroutine
    from streaq import StreaqRetry
 
    @worker.middleware
-   def timer(ctx: WrappedContext[Context], task: Callable[..., Coroutine]):
-       async def wrapper(*args, **kwargs):
+   def timer(task: ReturnCoroutine) -> ReturnCoroutine:
+       async def wrapper(*args, **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
            print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
@@ -45,8 +44,8 @@ You can register as many middleware as you like to a worker, which will run them
        return wrapper
 
    @worker.middleware
-   def retry(ctx: WrappedContext[Context], task: Callable[..., Coroutine]):
-       async def wrapper(*args, **kwargs):
+   def retry(task: ReturnCoroutine) -> ReturnCoroutine:
+       async def wrapper(*args, **kwargs) -> Any:
            try:
                return await task(*args, **kwargs)
            except Exception:

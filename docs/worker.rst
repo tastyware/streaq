@@ -14,7 +14,7 @@ First, define the dependencies in a custom class:
    from httpx import AsyncClient
 
    @dataclass
-   class Context:
+   class WorkerContext:
        """
        Type safe way of defining the dependencies of your tasks.
        e.g. HTTP client, database connection, settings.
@@ -32,7 +32,7 @@ Next, create an async context manager to run at worker creation/teardown. Use th
    from streaq import Worker
 
    @asynccontextmanager
-   async def lifespan(worker: Worker) -> AsyncIterator[Context]:
+   async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
        # here we run code if desired before the worker start up
        await worker.redis.sadd("workers", [worker.id])
        # here we yield our dependencies as an instance of the class
@@ -42,21 +42,17 @@ Next, create an async context manager to run at worker creation/teardown. Use th
        # here we run code if desired after worker shutdown
        await worker.redis.srem("workers", [worker.id])
 
-Note that `worker.redis` here is NOT a `redis-py` client, but a `coredis <https://github.com/alisaifee/coredis>`_ client.
+Note that ``worker.redis`` here is NOT a ``redis-py`` client, but a `coredis <https://github.com/alisaifee/coredis>`_ client.
 
 Now, tasks created for the worker will have access to the dependencies like so:
 
 .. code-block:: python
 
-   from streaq import WrappedContext
-
    worker = Worker(lifespan=lifespan)
    @worker.task()
-   async def fetch(ctx: WrappedContext[Context], url: str) -> int:
-      res = await ctx.deps.http_client.get(url)
+   async def fetch(url: str) -> int:
+      res = await worker.context.http_client.get(url)
       return len(res.text)
-
-Here, ``ctx``, of type ``WrappedContext``, will have the ``deps`` property which will be of type ``Context``--and all of this is enforced by static typing!
 
 Custom serializer/deserializer
 ------------------------------
@@ -78,7 +74,7 @@ Other configuration options
 - ``concurrency``: the maximum number of tasks the worker can run concurrently; by default, this also controls the number of tasks which will be pre-fetched by the worker
 - ``sync_concurrency``: the maximum number of tasks the worker can run simultaneously in separate threads; defaults to the same as ``concurrency``
 - ``queue_fetch_limit``: the number of tasks to pre-fetch from Redis, defaults to ``concurrency * 2``
-- ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler
+- ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler and logs
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
 - ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
 

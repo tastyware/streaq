@@ -5,6 +5,7 @@ import pickle
 import signal
 from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from functools import partial
 from signal import Signals
@@ -61,9 +62,9 @@ from streaq.types import (
     StreamMessage,
     SyncCron,
     SyncTask,
+    TaskContext,
     TaskDefinition,
     TypedCoroutine,
-    WrappedContext,
 )
 from streaq.utils import StreaqError, asyncify, now_ms, to_ms, to_seconds, to_tuple
 
@@ -73,7 +74,7 @@ async def _lifespan(worker: Worker[None]) -> AsyncIterator[None]:
     yield None
 
 
-async def _placeholder(ctx: WrappedContext[Any]) -> None: ...
+async def _placeholder() -> None: ...
 
 
 class Worker(Generic[WD]):
@@ -110,7 +111,7 @@ class Worker(Generic[WD]):
         "bs",
         "counters",
         "loop",
-        "_deps",
+        "_worker_context",
         "scripts",
         "registry",
         "cron_jobs",
@@ -127,7 +128,6 @@ class Worker(Generic[WD]):
         "_block_new_tasks",
         "lifespan",
         "_stack",
-        "_initialized",
         "queue_key",
         "stream_key",
         "_abort_key",
@@ -143,6 +143,7 @@ class Worker(Generic[WD]):
         "_health_tab",
         "with_scheduler",
         "middlewares",
+        "_task_context",
     )
 
     def __init__(
@@ -181,7 +182,6 @@ class Worker(Generic[WD]):
         self.counters: dict[str, int] = defaultdict(int)
         #: event loop for running tasks
         self.loop = asyncio.get_event_loop()
-        self._initialized = False
         #: Redis scripts for common operations
         self.scripts: dict[str, Script[str]] = {}
         #: mapping of task name -> task wrapper
@@ -207,7 +207,7 @@ class Worker(Generic[WD]):
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
         #: list of middlewares added to the worker
-        self.middlewares: list[Middleware[WD]] = []
+        self.middlewares: list[Middleware] = []
         self.with_scheduler = with_scheduler
         self.sync_concurrency = sync_concurrency or concurrency
         self._limiter = CapacityLimiter(self.sync_concurrency)
@@ -225,9 +225,10 @@ class Worker(Generic[WD]):
         self._timeout_key = self._prefix + REDIS_TIMEOUT
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
+        self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
 
         @self.cron(health_crontab, silent=True, ttl=0)
-        async def redis_health_check(ctx: WrappedContext[WD]) -> None:  # type: ignore[unused-function]
+        async def redis_health_check() -> None:  # type: ignore[unused-function]
             """
             Saves Redis health in Redis.
             """
@@ -255,14 +256,24 @@ class Worker(Generic[WD]):
             ttl = int(self._delay_for(self._health_tab)) + 5
             await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
+    def task_context(self) -> TaskContext:
+        """
+        Fetch task information for the currently running task.
+        This can only be called from within a task!
+        """
+        return self._task_context.get()
+
     @property
-    def deps(self) -> WD:
-        if not self._initialized:
+    def context(self) -> WD:
+        """
+        Worker dependencies initialized with the async context manager.
+        """
+        if not self._stack:
             raise StreaqError(
-                "Worker did not initialize correctly, are you using the"
+                "Worker did not initialize correctly, are you using the "
                 "async context manager?"
             )
-        return self._deps
+        return self._worker_context
 
     def build_context(
         self,
@@ -270,19 +281,16 @@ class Worker(Generic[WD]):
         registered_task: RegisteredCron[Any, Any] | RegisteredTask[Any, Any, Any],
         id: str,
         tries: int = 1,
-    ) -> WrappedContext[WD]:
+    ) -> TaskContext:
         """
         Creates the context for a task to be run given task metadata
         """
-        return WrappedContext(
-            deps=self.deps,
+        return TaskContext(
             fn_name=fn_name,
-            redis=self.redis,
             task_id=id,
             timeout=registered_task.timeout,
             tries=tries,
             ttl=registered_task.ttl,
-            worker_id=self.id,
         )
 
     def cron(
@@ -310,13 +318,13 @@ class Worker(Generic[WD]):
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
-        def wrapped(fn: AsyncCron[WD, R] | SyncCron[WD, R]) -> RegisteredCron[WD, R]:
+        def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredCron[WD, R]:
             if asyncio.iscoroutinefunction(fn):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
             task = RegisteredCron(
-                cast(AsyncCron[WD, R], _fn),
+                cast(AsyncCron[R], _fn),
                 CronTab(tab),
                 max_tries,
                 silent,
@@ -354,14 +362,14 @@ class Worker(Generic[WD]):
         """
 
         def wrapped(
-            fn: AsyncTask[WD, P, R] | SyncTask[WD, P, R],
+            fn: AsyncTask[P, R] | SyncTask[P, R],
         ) -> RegisteredTask[WD, P, R]:
             if asyncio.iscoroutinefunction(fn):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
             task = RegisteredTask(
-                cast(AsyncTask[WD, P, R], _fn),
+                cast(AsyncTask[P, R], _fn),
                 max_tries,
                 silent,
                 timeout,
@@ -375,7 +383,7 @@ class Worker(Generic[WD]):
 
         return wrapped  # type: ignore
 
-    def middleware(self, fn: Middleware[WD]) -> Middleware[WD]:
+    def middleware(self, fn: Middleware) -> Middleware:
         """
         Registers the given middleware with the worker.
         """
@@ -700,13 +708,9 @@ class Worker(Generic[WD]):
             done = True
             finish_time = None
 
-            async def _fn(
-                ctx: WrappedContext[WD],
-                *args: tuple[Any, ...],
-                **kwargs: dict[str, Any],
-            ) -> Any:
+            async def _fn(*args: Any, **kwargs: Any) -> Any:
                 return await asyncio.wait_for(
-                    task.fn(ctx, *args, **kwargs), to_seconds(task.timeout)
+                    task.fn(*args, **kwargs), to_seconds(task.timeout)
                 )
 
             if not task.silent:
@@ -714,8 +718,9 @@ class Worker(Generic[WD]):
 
             wrapped = _fn
             for middleware in reversed(self.middlewares):
-                wrapped = middleware(ctx, wrapped)
-            coro = wrapped(ctx, *_args, **data["k"])
+                wrapped = middleware(wrapped)
+            coro = wrapped(*_args, **data["k"])
+            token = self._task_context.set(ctx)
             self.tasks[task_id] = self.loop.create_task(coro)
             result = None
             try:
@@ -773,6 +778,7 @@ class Worker(Generic[WD]):
                         lock_key=lock_key,
                     )
                 )
+                self._task_context.reset(token)
 
     async def finish_task(
         self,
@@ -1205,11 +1211,10 @@ class Worker(Generic[WD]):
     async def __aenter__(self) -> Worker[WD]:
         # register lua scripts
         self.scripts.update(register_scripts(self.redis))
-        lifespan = self.lifespan(self)
-        self._stack.append(lifespan)
         # user-defined deps
-        self._deps = await lifespan.__aenter__()
-        self._initialized = True
+        lifespan = self.lifespan(self)
+        self._worker_context = await lifespan.__aenter__()
+        self._stack.append(lifespan)
         return self
 
     async def __aexit__(

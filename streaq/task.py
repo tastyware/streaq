@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from hashlib import sha256
 from time import time
-from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generator, Generic
+from typing import TYPE_CHECKING, Any, Generator, Generic
 from uuid import UUID, uuid4
 
 from coredis import Redis
@@ -22,7 +22,7 @@ from streaq.constants import (
     REDIS_RESULT,
     REDIS_TASK,
 )
-from streaq.types import WD, P, POther, R, ROther, TypedCoroutine, WrappedContext
+from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:
@@ -272,7 +272,7 @@ class Task(Generic[R]):
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
-    fn: Callable[Concatenate[WrappedContext[WD], P], TypedCoroutine[R]]
+    fn: AsyncTask[P, R]
     max_tries: int | None
     silent: bool
     timeout: timedelta | int | None
@@ -298,22 +298,9 @@ class RegisteredTask(Generic[WD, P, R]):
         Run the task in the local event loop with the given params and return the
         result. This skips enqueuing and result storing in Redis.
         """
-        deps = WrappedContext(
-            deps=self.worker.deps,
-            fn_name=self.fn_name,
-            redis=self.worker.redis,
-            task_id=uuid4().hex,
-            timeout=self.timeout,
-            tries=1,
-            ttl=self.ttl,
-            worker_id=self.worker.id,
+        return await asyncio.wait_for(
+            self.fn(*args, **kwargs), to_seconds(self.timeout)
         )
-        try:
-            return await asyncio.wait_for(
-                self.fn(deps, *args, **kwargs), to_seconds(self.timeout)
-            )
-        except asyncio.TimeoutError as e:
-            raise e
 
     @property
     def fn_name(self) -> str:
@@ -325,7 +312,7 @@ class RegisteredTask(Generic[WD, P, R]):
 
 @dataclass
 class RegisteredCron(Generic[WD, R]):
-    fn: Callable[[WrappedContext[WD]], TypedCoroutine[R]]
+    fn: AsyncCron[R]
     crontab: CronTab
     max_tries: int | None
     silent: bool
@@ -351,20 +338,7 @@ class RegisteredCron(Generic[WD, R]):
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.
         """
-        deps = WrappedContext(
-            deps=self.worker.deps,
-            fn_name=self.fn_name,
-            redis=self.worker.redis,
-            task_id=uuid4().hex,
-            timeout=self.timeout,
-            tries=1,
-            ttl=self.ttl,
-            worker_id=self.worker.id,
-        )
-        try:
-            return await asyncio.wait_for(self.fn(deps), to_seconds(self.timeout))
-        except asyncio.TimeoutError as e:
-            raise e
+        return await asyncio.wait_for(self.fn(), to_seconds(self.timeout))
 
     @property
     def fn_name(self) -> str:

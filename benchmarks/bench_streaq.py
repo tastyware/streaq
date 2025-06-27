@@ -3,7 +3,7 @@ from typing import Awaitable
 
 import typer
 
-from streaq import Worker, WrappedContext
+from streaq import Worker
 
 worker = Worker(concurrency=32, with_scheduler=False)
 N_TASKS = 20_000
@@ -17,7 +17,7 @@ async def sem_task(task: Awaitable):
 
 
 @worker.task()
-async def sleeper(ctx: WrappedContext[None], time: int) -> None:
+async def sleeper(time: int) -> None:
     if time:
         await asyncio.sleep(time)
 
