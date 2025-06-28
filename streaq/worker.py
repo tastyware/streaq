@@ -735,7 +735,7 @@ class Worker(Generic[WD]):
                 result = e
                 success = False
                 done = False
-                delay = to_seconds(e.delay) or task_try**2
+                delay = to_seconds(e.delay) if e.delay is not None else task_try**2
                 if not task.silent:
                     logger.exception(e)
                     logger.info(f"retrying ↻ task {task_id} in {delay}s")
