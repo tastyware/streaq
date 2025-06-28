@@ -261,7 +261,13 @@ class Worker(Generic[WD]):
         Fetch task information for the currently running task.
         This can only be called from within a task!
         """
-        return self._task_context.get()
+        try:
+            return self._task_context.get()
+        except LookupError:
+            raise StreaqError(
+                "Worker.task_context() can only be called within a running task or a "
+                "middleware!"
+            )
 
     @property
     def context(self) -> WD:
@@ -729,7 +735,7 @@ class Worker(Generic[WD]):
                 result = e
                 success = False
                 done = False
-                delay = to_seconds(e.delay) if e.delay is not None else task_try**2
+                delay = to_seconds(e.delay) or task_try**2
                 if not task.silent:
                     logger.exception(e)
                     logger.info(f"retrying ↻ task {task_id} in {delay}s")

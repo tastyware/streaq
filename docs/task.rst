@@ -118,7 +118,7 @@ streaQ provides a special exception that you can raise manually inside of your t
    from streaq.task import StreaqRetry
 
    @worker.task()
-   async def retry_thrice() -> bool:
+   async def try_thrice() -> bool:
        if worker.task_context().tries < 3:
            raise StreaqRetry("Retrying!")
        return True
@@ -241,7 +241,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 .. code-block:: python
 
    @worker.task()
-   async def map(data: list, fn_name: str) -> list:
+   async def map(data: list, to: str) -> list:
        task = worker.registry[fn_name]
        coros = [task.enqueue(d).start() for d in data]
        tasks = await asyncio.gather(*coros)
@@ -249,7 +249,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        return [r.result for r in results]
 
    @worker.task()
-   async def filter(data: list, fn_name: str) -> list:
+   async def filter(data: list, by: str) -> list:
        task = worker.registry[fn_name]
        coros = [task.enqueue(d).start() for d in data]
        tasks = await asyncio.gather(*coros)
@@ -257,13 +257,10 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        return [data[i] for i in range(len(data)) if results[i].result]
 
    async with worker:
-       t1 = await map.enqueue([0, 1, 2, 3], fn_name=double.fn_name).then(
-           filter, fn_name=is_even.fn_name
-       )
+       data = [0, 1, 2, 3]
+       t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
        print(await t1.result())
-       t2 = await filter.enqueue([0, 1, 2, 3], fn_name=is_even.fn_name).then(
-           map, fn_name=double.fn_name
-       )
+       t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
        print(await t2.result())
 
 .. code-block:: python
