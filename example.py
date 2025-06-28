@@ -5,11 +5,11 @@ from typing import AsyncIterator
 
 from httpx import AsyncClient
 
-from streaq import Worker, WrappedContext
+from streaq import Worker
 
 
 @dataclass
-class Context:
+class WorkerContext:
     """
     Type safe way of defining the dependencies of your tasks.
     e.g. HTTP client, database connection, settings.
@@ -19,24 +19,23 @@ class Context:
 
 
 @asynccontextmanager
-async def lifespan(worker: Worker) -> AsyncIterator[Context]:
+async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
     async with AsyncClient() as http_client:
-        yield Context(http_client)
+        yield WorkerContext(http_client)
 
 
 worker = Worker(redis_url="redis://localhost:6379", lifespan=lifespan)
 
 
 @worker.task(timeout=5)
-async def fetch(ctx: WrappedContext[Context], url: str) -> int:
-    # ctx.deps here is of type Context, enforced by static typing
-    # ctx also provides access the Redis connection, retry count, etc.
-    r = await ctx.deps.http_client.get(url)
-    return len(r.text)
+async def fetch(url: str) -> int:
+    # worker.context here is of type WorkerContext, enforced by static typing
+    res = await worker.context.http_client.get(url)
+    return len(res.text)
 
 
 @worker.cron("* * * * mon-fri")
-async def cronjob(ctx: WrappedContext[Context]) -> None:
+async def cronjob() -> None:
     print("It's a bird... It's a plane... It's CRON!")
 
 

@@ -45,7 +45,7 @@ First, you can simply use type stubs to re-define the task signatures in the bac
    worker = Worker(redis_url="redis://localhost:6379")
 
    @worker.task()
-   async def fetch(ctx, url: str) -> int: ...
+   async def fetch(url: str) -> int: ...
 
 Now, tasks can be enqueued in the same way as before:
 

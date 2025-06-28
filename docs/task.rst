@@ -6,7 +6,10 @@ Task execution
 
 streaQ preserves arq's task execution model, called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will be cancelled immediately and will remain in the queue to be run again when the worker starts up again (or gets run by another worker which is still running).
 
-All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid making it twice.
+All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice.
+
+.. note::
+   Idempotency is super easy with Redis, see `here <https://gist.github.com/Graeme22/5cd3bffba46480d3936dad407b14d6a4>`_!
 
 streaQ handles exceptions in the following manner:
 
@@ -30,24 +33,22 @@ We can now register async functions with the worker:
 .. code-block:: python
 
    @worker.task()
-   async def sleeper(ctx: WrappedContext[None], time: int) -> int:
+   async def sleeper(time: int) -> int:
        await asyncio.sleep(time)
        return time
-
-.. note::
-   The first parameter, ``ctx``, is required, even if you don't use it. It will be prepended to the rest of the parameters upon execution. The type of ``ctx`` is covered in the :doc:`worker docs <worker>`.
 
 The ``task`` decorator has several optional arguments that can be used to customize behavior:
 
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to 3
+- ``silent``: whether to silence task startup/shutdown logs and task success/failure tracking; defaults to False
 - ``timeout``: amount of time to run the task before raising ``asyncio.TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
-- ``unique``: whether to allow more than one instance of the task to run simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs
+- ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
 
 Enqueuing tasks
 ---------------
 
-Once registered, tasks can then be queued up for execution by worker processes:
+Once registered, tasks can then be queued up for execution by worker processes, with full type safety:
 
 .. code-block:: python
 
@@ -55,9 +56,6 @@ Once registered, tasks can then be queued up for execution by worker processes:
        # these two are equivalent
        await sleeper.enqueue(5)
        await sleeper.enqueue(5).start()
-
-.. note::
-   Everything is type-safe here--you'll get an error if you pass the wrong number or type of parameters! The ``ctx`` parameter is handled by the worker, so you don't pass it in.
 
 We can also defer task execution to a later time:
 
@@ -120,12 +118,12 @@ streaQ provides a special exception that you can raise manually inside of your t
    from streaq.task import StreaqRetry
 
    @worker.task()
-   async def retry(ctx: WrappedContext[None]) -> bool:
-       if ctx.tries < 3:
+   async def try_thrice() -> bool:
+       if worker.task_context().tries < 3:
            raise StreaqRetry("Retrying!")
        return True
 
-By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` parameter to the ``StreaqRetry`` exception.
+By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` parameter to the ``StreaqRetry`` exception. ``task_context()`` is a special function that can be called within a running task to get extra task information (like how many times it's been tried in this case).
 
 .. note::
    streaQ's default behavior when tasks fail is to save the exception raised as the task's result. The exception to this is when a worker is shutdown unexpectedly; when that happens, running tasks will be re-enqueued.
@@ -152,7 +150,7 @@ streaQ also includes cron jobs, which allow you to run code at regular, schedule
 
    # 9:30 on weekdays
    @worker.cron("30 9 * * mon-fri")
-   async def cron(ctx: WrappedContext[None]) -> None:
+   async def cron() -> None:
        print("Itsa me, Mario!")
 
 The ``cron`` decorator has one required parameter, the crontab to use which follows the format specified `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_, as well as the same optional parameters as the ``task`` decorator.
@@ -198,11 +196,11 @@ And the dependency failing will cause dependent tasks to fail as well:
 .. code-block:: python
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         raise Exception("Oh no!")
 
     @worker.task()
-    async def do_nothing(ctx: WrappedContext[None]) -> None:
+    async def do_nothing() -> None:
         pass
 
     async with worker:
@@ -218,16 +216,16 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 .. code-block:: python
 
    @worker.task(timeout=5)
-   async def fetch(ctx: WrappedContext[Context], url: str) -> int:
-       r = await ctx.deps.http_client.get(url)
-       return len(r.text)
+   async def fetch(url: str) -> int:
+       res = await worker.context.http_client.get(url)
+       return len(res.text)
 
    @worker.task()
-   async def double(ctx: WrappedContext[Context], val: int) -> int:
+   async def double(val: int) -> int:
        return val * 2
 
    @worker.task()
-   async def is_even(ctx: WrappedContext[Context], val: int) -> bool:
+   async def is_even(val: int) -> bool:
        return val % 2 == 0
 
    async with worker:
@@ -243,7 +241,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 .. code-block:: python
 
    @worker.task()
-   async def map(ctx: WrappedContext[Context], data: list, fn_name: str) -> list:
+   async def map(data: list, to: str) -> list:
        task = worker.registry[fn_name]
        coros = [task.enqueue(d).start() for d in data]
        tasks = await asyncio.gather(*coros)
@@ -251,7 +249,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        return [r.result for r in results]
 
    @worker.task()
-   async def filter(ctx: WrappedContext[Context], data: list, fn_name: str) -> list:
+   async def filter(data: list, by: str) -> list:
        task = worker.registry[fn_name]
        coros = [task.enqueue(d).start() for d in data]
        tasks = await asyncio.gather(*coros)
@@ -259,13 +257,10 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        return [data[i] for i in range(len(data)) if results[i].result]
 
    async with worker:
-       t1 = await map.enqueue([0, 1, 2, 3], fn_name=double.fn_name).then(
-           filter, fn_name=is_even.fn_name
-       )
+       data = [0, 1, 2, 3]
+       t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
        print(await t1.result())
-       t2 = await filter.enqueue([0, 1, 2, 3], fn_name=is_even.fn_name).then(
-           map, fn_name=double.fn_name
-       )
+       t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
        print(await t2.result())
 
 .. code-block:: python
@@ -297,11 +292,11 @@ Here's an example that demonstrates how priorities work. Note that the low prior
    worker = Worker(concurrency=1)  # max 1 task running at a time for demo
 
    @worker.task()
-   async def low(ctx: WrappedContext[None]) -> None:
+   async def low() -> None:
        print("Low priority task")
 
    @worker.task()
-   async def high(ctx: WrappedContext[None]) -> None:
+   async def high() -> None:
        print("High priority task")
 
    async with worker:

@@ -6,7 +6,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Concatenate,
     Coroutine,
     Generic,
     Optional,
@@ -16,8 +15,6 @@ from typing import (
     TypeVar,
     overload,
 )
-
-from coredis import Redis
 
 if TYPE_CHECKING:
     from streaq.task import RegisteredCron, RegisteredTask
@@ -41,46 +38,41 @@ class StreamMessage:
 
 
 @dataclass
-class WrappedContext(Generic[WD]):
+class TaskContext:
     """
-    Dataclass wrapping the user-defined context (contained in `deps`)
-    with additional information such as try, the Redis connection, and
-    other task-specific data.
+    Dataclass containing task-specific information like the try count.
     """
 
-    deps: WD
     fn_name: str
-    redis: Redis[str]
     task_id: str
     timeout: timedelta | int | None
     tries: int
     ttl: timedelta | int | None
-    worker_id: str
 
 
 AnyCoroutine: TypeAlias = Coroutine[Any, Any, Any]
 ReturnCoroutine: TypeAlias = Callable[..., AnyCoroutine]
 TypedCoroutine: TypeAlias = Coroutine[Any, Any, R]
 
-Middleware: TypeAlias = Callable[[WrappedContext[WD], ReturnCoroutine], ReturnCoroutine]
+Middleware: TypeAlias = Callable[[ReturnCoroutine], ReturnCoroutine]
 
-AsyncCron: TypeAlias = Callable[[WrappedContext[WD]], TypedCoroutine[R]]
-SyncCron: TypeAlias = Callable[[WrappedContext[WD]], R]
-AsyncTask: TypeAlias = Callable[Concatenate[WrappedContext[WD], P], TypedCoroutine[R]]
-SyncTask: TypeAlias = Callable[Concatenate[WrappedContext[WD], P], R]
+AsyncCron: TypeAlias = Callable[[], TypedCoroutine[R]]
+SyncCron: TypeAlias = Callable[[], R]
+AsyncTask: TypeAlias = Callable[P, TypedCoroutine[R]]
+SyncTask: TypeAlias = Callable[P, R]
 
 
 class CronDefinition(Protocol, Generic[WD]):
     @overload
-    def __call__(self, fn: AsyncCron[WD, R]) -> RegisteredCron[WD, R]: ...
+    def __call__(self, fn: AsyncCron[R]) -> RegisteredCron[WD, R]: ...
 
     @overload
-    def __call__(self, fn: SyncCron[WD, R]) -> RegisteredCron[WD, R]: ...  # type: ignore
+    def __call__(self, fn: SyncCron[R]) -> RegisteredCron[WD, R]: ...  # type: ignore
 
 
 class TaskDefinition(Protocol, Generic[WD]):
     @overload
-    def __call__(self, fn: AsyncTask[WD, P, R]) -> RegisteredTask[WD, P, R]: ...
+    def __call__(self, fn: AsyncTask[P, R]) -> RegisteredTask[WD, P, R]: ...
 
     @overload
-    def __call__(self, fn: SyncTask[WD, P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore
+    def __call__(self, fn: SyncTask[P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore

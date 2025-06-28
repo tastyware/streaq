@@ -1,17 +1,19 @@
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import Callable, Coroutine
+from typing import Any
 
 import pytest
 
-from streaq import StreaqError, Worker, WrappedContext
+from streaq import StreaqError, Worker
+from streaq.constants import REDIS_RUNNING
 from streaq.task import StreaqRetry, TaskPriority, TaskStatus
+from streaq.types import ReturnCoroutine
 
 
 async def test_result_timeout(worker: Worker):
     @worker.task(ttl=0)
-    async def foobar(ctx: WrappedContext[None]) -> bool:
+    async def foobar() -> bool:
         return False
 
     task = await foobar.enqueue()
@@ -22,7 +24,7 @@ async def test_result_timeout(worker: Worker):
 
 async def test_task_timeout(worker: Worker):
     @worker.task(timeout=1)
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         await asyncio.sleep(5)
 
     task = await foobar.enqueue()
@@ -34,14 +36,14 @@ async def test_task_timeout(worker: Worker):
 
 async def test_task_status(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         await asyncio.sleep(1)
 
     task = foobar.enqueue()
     assert await task.status() == TaskStatus.PENDING
     await task.start()
-    task2 = await foobar.enqueue().start(delay=5)
     assert await task.status() == TaskStatus.QUEUED
+    task2 = await foobar.enqueue().start(delay=5)
     worker.loop.create_task(worker.run_async())
     await task.result(3)
     assert await task.status() == TaskStatus.DONE
@@ -50,7 +52,7 @@ async def test_task_status(worker: Worker):
 
 async def test_task_status_running(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         await asyncio.sleep(3)
 
     task = await foobar.enqueue().start()
@@ -62,27 +64,27 @@ async def test_task_status_running(worker: Worker):
 
 async def test_task_cron(worker: Worker):
     @worker.cron("30 9 1 1 *")
-    async def cron1(ctx: WrappedContext[None]) -> None:
-        pass
+    async def cron1() -> bool:
+        return True
 
     @worker.cron("* * * * * * *")  # once/second
-    async def cron2(ctx: WrappedContext[None]) -> bool:
-        return True
+    async def cron2() -> None:
+        await asyncio.sleep(3)
 
     schedule = cron1.schedule()
     assert schedule.day == 1 and schedule.month == 1
-    await cron1.run()
-    task = cron2.enqueue()  # by not awaiting we just get the task obj
+    assert await cron1.run()
     worker.loop.create_task(worker.run_async())
-    res = await task.result(3)
-    assert res.result and res.success
+    await asyncio.sleep(2)
+    # this will be set if task is running
+    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
 
 
 async def test_task_info(redis_url: str):
     worker = Worker(redis_url=redis_url)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         pass
 
     async with worker:
@@ -94,7 +96,8 @@ async def test_task_info(redis_url: str):
 
 async def test_task_retry(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> int:
+    async def foobar() -> int:
+        ctx = worker.task_context()
         if ctx.tries < 3:
             raise StreaqRetry("Retrying!")
         return ctx.tries
@@ -108,7 +111,8 @@ async def test_task_retry(worker: Worker):
 
 async def test_task_retry_with_delay(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> int:
+    async def foobar() -> int:
+        ctx = worker.task_context()
         if ctx.tries == 1:
             raise StreaqRetry("Retrying!", delay=3)
         return ctx.tries
@@ -125,7 +129,7 @@ async def test_task_retry_with_delay(worker: Worker):
 
 async def test_task_failure(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         raise Exception("That wasn't supposed to happen!")
 
     task = await foobar.enqueue()
@@ -137,8 +141,8 @@ async def test_task_failure(worker: Worker):
 
 async def test_task_retry_no_delay(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> bool:
-        if ctx.tries == 1:
+    async def foobar() -> bool:
+        if worker.task_context().tries == 1:
             raise StreaqRetry("Retrying!", delay=0)
         return True
 
@@ -152,7 +156,7 @@ async def test_task_retry_no_delay(worker: Worker):
 
 async def test_task_max_retries(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         raise StreaqRetry("Retrying!", delay=0)
 
     task = await foobar.enqueue()
@@ -165,7 +169,7 @@ async def test_task_max_retries(worker: Worker):
 
 async def test_task_failed_abort(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> bool:
+    async def foobar() -> bool:
         return True
 
     worker.burst = True
@@ -180,7 +184,7 @@ async def test_task_failed_abort(worker: Worker):
 
 async def test_task_nonexistent_or_finished_dependency(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         pass
 
     task = await foobar.enqueue().start(after="nonexistent")
@@ -191,7 +195,7 @@ async def test_task_nonexistent_or_finished_dependency(worker: Worker):
 
 async def test_task_dependency(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         await asyncio.sleep(1)
 
     task = await foobar.enqueue().start(delay=1)
@@ -205,7 +209,7 @@ async def test_task_dependency(worker: Worker):
 
 async def test_task_dependency_multiple(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         await asyncio.sleep(1)
 
     task = await foobar.enqueue().start()
@@ -225,11 +229,11 @@ async def test_task_dependency_multiple(worker: Worker):
 
 async def test_task_dependency_failed(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         raise Exception("Oh no!")
 
     @worker.task()
-    async def do_nothing(ctx: WrappedContext[None]) -> None:
+    async def do_nothing() -> None:
         pass
 
     task = await foobar.enqueue().start()
@@ -242,7 +246,7 @@ async def test_task_dependency_failed(worker: Worker):
 
 async def test_sync_task(worker: Worker):
     @worker.task()
-    def foobar(ctx: WrappedContext[None]) -> None:
+    def foobar() -> None:
         time.sleep(2)
 
     task = await foobar.enqueue()
@@ -255,7 +259,7 @@ async def test_sync_task(worker: Worker):
 
 async def test_unsafe_enqueue(redis_url: str, worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None], ret: int) -> int:
+    async def foobar(ret: int) -> int:
         return ret
 
     worker.loop.create_task(worker.run_async())
@@ -270,11 +274,11 @@ async def test_unsafe_enqueue(redis_url: str, worker: Worker):
 
 async def test_chained_failed_dependencies(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         raise Exception("Oh no!")
 
     @worker.task()
-    async def child(ctx: WrappedContext[None]) -> None:
+    async def child() -> None:
         pass
 
     task = await foobar.enqueue().start(delay=3)
@@ -293,7 +297,7 @@ async def test_task_priorities(redis_url: str):
     worker = Worker(redis_url=redis_url, queue_name="test", concurrency=4)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         await asyncio.sleep(1)
 
     async with worker:
@@ -313,7 +317,7 @@ async def test_task_priorities(redis_url: str):
 
 async def test_scheduled_task(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         pass
 
     dt = datetime.now() + timedelta(seconds=1)
@@ -328,7 +332,7 @@ async def test_bad_start_params(redis_url: str):
     worker = Worker(redis_url=redis_url)
 
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         pass
 
     with pytest.raises(StreaqError):
@@ -339,24 +343,22 @@ async def test_bad_start_params(redis_url: str):
         await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
 
 
-async def test_enqueue_unique_task(redis_url: str):
-    worker = Worker(redis_url=redis_url)
-
+async def test_enqueue_unique_task(worker: Worker):
     @worker.task(unique=True)
-    async def foobar(ctx: WrappedContext[None]) -> None:
-        pass
+    async def foobar() -> None:
+        await asyncio.sleep(1)
 
-    async with worker:
-        task = await foobar.enqueue()
-        task2 = await foobar.enqueue()
-        assert task.id == task2.id
-        res = await asyncio.gather(task.info(), task2.info())
-        assert res[0] == res[1]
+    task = await foobar.enqueue()
+    task2 = await foobar.enqueue()
+    worker.loop.create_task(worker.run_async())
+    results = await asyncio.gather(task.result(), task2.result())
+    assert any(isinstance(r.result, StreaqError) for r in results)
+    assert any(r.result is None for r in results)
 
 
 async def test_failed_abort(worker: Worker):
     @worker.task(ttl=0)
-    async def foobar(ctx: WrappedContext[None]) -> None:
+    async def foobar() -> None:
         pass
 
     task = await foobar.enqueue().start()
@@ -369,11 +371,11 @@ async def test_cron_run(redis_url: str):
     worker = Worker(redis_url=redis_url)
 
     @worker.cron("* * * * * * *")
-    async def cron1(ctx: WrappedContext[None]) -> bool:
+    async def cron1() -> bool:
         return True
 
     @worker.cron("* * * * * * *", timeout=1)
-    async def cron2(ctx: WrappedContext[None]) -> None:
+    async def cron2() -> None:
         await asyncio.sleep(3)
 
     async with worker:
@@ -384,20 +386,20 @@ async def test_cron_run(redis_url: str):
 
 async def test_sync_cron(worker: Worker):
     @worker.cron("* * * * * * *")
-    def cronjob(ctx: WrappedContext[None]) -> None:
-        time.sleep(1)
+    def cronjob() -> None:
+        time.sleep(3)
 
     worker.loop.create_task(worker.run_async())
-    res = await cronjob.enqueue().result(3)
-    assert res.success and res.result is None
+    await asyncio.sleep(2)
+    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cronjob.fn_name)
 
 
 async def test_cron_multiple_runs(worker: Worker):
     key = "runs"
 
     @worker.cron("* * * * * * *")
-    async def cronjob(ctx: WrappedContext[None]) -> None:
-        await ctx.redis.incr(key)
+    async def cronjob() -> None:
+        await worker.redis.incr(key)
 
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(3)
@@ -407,12 +409,12 @@ async def test_cron_multiple_runs(worker: Worker):
 
 async def test_middleware(worker: Worker):
     @worker.task()
-    async def foobar(ctx: WrappedContext[None]) -> int:
+    async def foobar() -> int:
         return 2
 
     @worker.middleware
-    def double(ctx: WrappedContext[None], task: Callable[..., Coroutine]):
-        async def wrapper(*args, **kwargs):
+    def double(task: ReturnCoroutine) -> ReturnCoroutine:
+        async def wrapper(*args, **kwargs) -> Any:
             result = await task(*args, **kwargs)
             return result * 2
 
@@ -427,11 +429,11 @@ async def test_middleware(worker: Worker):
 
 async def test_task_pipeline(worker: Worker):
     @worker.task()
-    async def double(ctx: WrappedContext[None], val: int) -> int:
+    async def double(val: int) -> int:
         return val * 2
 
     @worker.task()
-    async def is_even(ctx: WrappedContext[None], val: int) -> bool:
+    async def is_even(val: int) -> bool:
         return val % 2 == 0
 
     worker.loop.create_task(worker.run_async())

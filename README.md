@@ -5,7 +5,7 @@
 
 # streaQ
 
-Fast, async, type-safe job queuing with Redis streams
+Fast, async, type-safe distributed task queue for Redis
 
 ## Features
 
@@ -17,8 +17,8 @@ Fast, async, type-safe job queuing with Redis streams
 - Cron jobs
 - Task middleware
 - Task dependency graph
-- Task pipelines
-- Task priority queues
+- Pipelining
+- Priority queues
 - Support for synchronous tasks (run in separate threads)
 - Dead simple, ~2k lines of code
 - Redis Sentinel support for production
@@ -39,10 +39,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 from httpx import AsyncClient
-from streaq import Worker, WrappedContext
+from streaq import Worker
 
 @dataclass
-class Context:
+class WorkerContext:
     """
     Type safe way of defining the dependencies of your tasks.
     e.g. HTTP client, database connection, settings.
@@ -50,7 +50,11 @@ class Context:
     http_client: AsyncClient
 
 @asynccontextmanager
-async def lifespan(worker: Worker) -> AsyncIterator[Context]:
+async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
+    """
+    Here, we initialize the worker's dependencies.
+    You can also do any startup/shutdown work here!
+    """
     async with AsyncClient() as http_client:
         yield Context(http_client)
 
@@ -61,14 +65,13 @@ You can then register async tasks with the worker like this:
 
 ```python
 @worker.task(timeout=5)
-async def fetch(ctx: WrappedContext[Context], url: str) -> int:
-    # ctx.deps here is of type Context, enforced by static typing
-    # ctx also provides access to the Redis connection, retry count, etc.
-    r = await ctx.deps.http_client.get(url)
-    return len(r.text)
+async def fetch(url: str) -> int:
+    # worker.context here is of type WorkerContext, enforced by static typing
+    res = await worker.context.http_client.get(url)
+    return len(res.text)
 
-@worker.cron("* * * * mon-fri")
-async def cronjob(ctx: WrappedContext[Context]) -> None:
+@worker.cron("* * * * mon-fri")  # every minute on weekdays
+async def cronjob() -> None:
     print("It's a bird... It's a plane... It's CRON!")
 ```
 
@@ -102,14 +105,9 @@ Let's see what the output looks like:
 [INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba ← 15
 [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 → worker db064c92
 [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 ← 293784
-[INFO] 19:50:00: task a0a8c0f39dae4c448182c417b047677c → worker db064c92
 [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 → worker db064c92
 It's a bird... It's a plane... It's CRON!
 [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 ← None
-[INFO] 19:50:00: health check results:
-redis {memory: 1.72M, clients: 3, keys: 18, queued: 2, scheduled: 0}
-worker db064c92 {completed: 2}
-[INFO] 19:50:00: task a0a8c0f39dae4c448182c417b047677c ← None
 ```
 ```
 TaskData(fn_name='fetch', enqueue_time=1743468587037, task_try=None, scheduled=datetime.datetime(2025, 4, 1, 0, 49, 50, 37000, tzinfo=datetime.timezone.utc))

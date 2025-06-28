@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from hashlib import sha256
 from time import time
-from typing import TYPE_CHECKING, Any, Callable, Concatenate, Generator, Generic
+from typing import TYPE_CHECKING, Any, Generator, Generic
 from uuid import UUID, uuid4
 
 from coredis import Redis
@@ -22,7 +22,7 @@ from streaq.constants import (
     REDIS_RESULT,
     REDIS_TASK,
 )
-from streaq.types import WD, P, POther, R, ROther, TypedCoroutine, WrappedContext
+from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:
@@ -103,18 +103,9 @@ class Task(Generic[R]):
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
+    id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any] | None = None
     _triggers: Task[Any] | None = None
-    id: str = ""
-
-    def __post_init__(self) -> None:
-        if self.parent.unique:
-            deterministic_hash = hashlib.sha256(
-                self.parent.fn_name.encode()
-            ).hexdigest()
-            self.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
-        else:
-            self.id = uuid4().hex
 
     async def start(
         self,
@@ -151,7 +142,7 @@ class Task(Generic[R]):
         elif delay is not None:
             score = enqueue_time + to_ms(delay)
         else:
-            score = None
+            score = 0
         ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
         data = self.serialize(enqueue_time)
         run_now = None
@@ -169,9 +160,6 @@ class Task(Generic[R]):
                 args=[data, ttl] + after,
             )
         if not after or run_now:
-            args = [self.id, ttl, data, priority]
-            if score:
-                args.append(score)
             res = await self.parent.worker.scripts["publish_task"](
                 keys=[
                     self.parent.worker.stream_key,
@@ -179,11 +167,10 @@ class Task(Generic[R]):
                     self._task_key(REDIS_TASK),
                     self.parent.worker.queue_key,
                 ],
-                args=args,
+                args=[self.id, ttl, data, priority, score],
             )
             if res == 0:
                 logger.debug("Task is unique and already exists, not enqueuing!")
-                return self
 
         return self
 
@@ -285,8 +272,9 @@ class Task(Generic[R]):
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
-    fn: Callable[Concatenate[WrappedContext[WD], P], TypedCoroutine[R]]
+    fn: AsyncTask[P, R]
     max_tries: int | None
+    silent: bool
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
@@ -310,23 +298,9 @@ class RegisteredTask(Generic[WD, P, R]):
         Run the task in the local event loop with the given params and return the
         result. This skips enqueuing and result storing in Redis.
         """
-        deps = WrappedContext(
-            deps=self.worker.deps,
-            fn_name=self.fn_name,
-            redis=self.worker.redis,
-            task_id=uuid4().hex,
-            timeout=self.timeout,
-            tries=1,
-            ttl=self.ttl,
-            worker_id=self.worker.id,
+        return await asyncio.wait_for(
+            self.fn(*args, **kwargs), to_seconds(self.timeout)
         )
-        try:
-            return await asyncio.wait_for(
-                self.fn(deps, *args, **kwargs),
-                to_seconds(self.timeout) if self.timeout else None,
-            )
-        except asyncio.TimeoutError as e:
-            raise e
 
     @property
     def fn_name(self) -> str:
@@ -338,9 +312,10 @@ class RegisteredTask(Generic[WD, P, R]):
 
 @dataclass
 class RegisteredCron(Generic[WD, R]):
-    fn: Callable[[WrappedContext[WD]], TypedCoroutine[R]]
-    max_tries: int | None
+    fn: AsyncCron[R]
     crontab: CronTab
+    max_tries: int | None
+    silent: bool
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
@@ -352,30 +327,18 @@ class RegisteredCron(Generic[WD, R]):
         active worker. Though this isn't async, it should be awaited as it
         returns an object that should be.
         """
-        return Task((), {}, self)
+        task = Task((), {}, self)
+        uid_bytes = f"{self.fn_name}@{datetime_ms(self.schedule())}".encode()
+        deterministic_hash = sha256(uid_bytes).hexdigest()
+        task.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
+        return task
 
     async def run(self) -> R:
         """
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.
         """
-        deps = WrappedContext(
-            deps=self.worker.deps,
-            fn_name=self.fn_name,
-            redis=self.worker.redis,
-            task_id=uuid4().hex,
-            timeout=self.timeout,
-            tries=1,
-            ttl=self.ttl,
-            worker_id=self.worker.id,
-        )
-        try:
-            return await asyncio.wait_for(
-                self.fn(deps),
-                to_seconds(self.timeout) if self.timeout else None,
-            )
-        except asyncio.TimeoutError as e:
-            raise e
+        return await asyncio.wait_for(self.fn(), to_seconds(self.timeout))
 
     @property
     def fn_name(self) -> str:
