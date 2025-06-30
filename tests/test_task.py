@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from streaq import StreaqError, Worker
-from streaq.constants import REDIS_RUNNING
+from streaq.constants import REDIS_UNIQUE
 from streaq.task import StreaqRetry, TaskPriority, TaskStatus
 from streaq.types import ReturnCoroutine
 
@@ -77,7 +77,7 @@ async def test_task_cron(worker: Worker):
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
     # this will be set if task is running
-    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_UNIQUE + cron2.fn_name)
 
 
 async def test_task_info(redis_url: str):
@@ -391,7 +391,7 @@ async def test_sync_cron(worker: Worker):
 
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
-    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cronjob.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_UNIQUE + cronjob.fn_name)
 
 
 async def test_cron_multiple_runs(worker: Worker):

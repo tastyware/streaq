@@ -1,5 +1,6 @@
 import asyncio
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -202,3 +203,23 @@ async def test_change_cron_schedule(redis_url: str):
     task2 = foo2.enqueue()
     assert foo2.schedule() == (await task2.info()).scheduled
     assert foo1.schedule() != foo2.schedule()
+
+
+async def test_signed_data(redis_url: str):
+    worker = Worker(
+        redis_url=redis_url,
+        queue_name="test",
+        handle_signals=False,
+        with_scheduler=True,
+        signing_secret=secrets.token_urlsafe(32),
+    )
+
+    @worker.task()
+    async def foo() -> str:
+        return "bar"
+
+    worker.loop.create_task(worker.run_async())
+    async with worker:
+        task = await foo.enqueue()
+        res = await task.result(3)
+        assert res.success and res.result == "bar"

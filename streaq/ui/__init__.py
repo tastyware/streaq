@@ -1,19 +1,16 @@
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, status
+from fastapi import status
 from fastapi.responses import RedirectResponse
 
 from streaq import Worker
 from streaq.ui.deps import get_worker
-from streaq.ui.queues import router as queues_router
-
-router = APIRouter()
-router.include_router(queues_router)
+from streaq.ui.tasks import router
 
 
 @router.get("/")
-async def get_root():
-    return RedirectResponse("/queues", status_code=status.HTTP_303_SEE_OTHER)
+async def get_root() -> RedirectResponse:
+    return RedirectResponse("/queue", status_code=status.HTTP_303_SEE_OTHER)
 
 
 def run_web(host: str, port: int, worker: Worker[Any]) -> None:

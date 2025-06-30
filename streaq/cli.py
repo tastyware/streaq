@@ -65,19 +65,10 @@ def main(
 ) -> None:
     processes: list[Process] = []
     if web:
-        from streaq.ui import run_web
-
-        sys.path.append(os.getcwd())
-        logging.config.dictConfig(default_log_config(verbose))
-        worker = cast(Worker[Any], import_string(worker_path))
         processes.append(
             Process(
                 target=run_web,
-                args=(
-                    host,
-                    port,
-                    worker,
-                ),
+                args=(host, port, worker_path, verbose, reload),
             )
         )
     if workers > 1:
@@ -123,3 +114,26 @@ def _run_worker(path: str, burst: bool, verbose: bool, schedule: bool) -> None:
     if worker.with_scheduler is None:
         worker.with_scheduler = schedule
     worker.run_sync()
+
+
+def run_web(host: str, port: int, path: str, verbose: bool, watch: bool) -> None:
+    """
+    Run a web UI for monitoring with the given configuration.
+    """
+    if watch:
+        run_process(
+            ".",
+            target=_run_web,
+            args=(host, port, path, verbose),
+        )
+    else:
+        _run_web(host, port, path, verbose)
+
+
+def _run_web(host: str, port: int, worker_path: str, verbose: bool) -> None:
+    from streaq.ui import run_web
+
+    sys.path.append(os.getcwd())
+    worker = cast(Worker[Any], import_string(worker_path))
+    logging.config.dictConfig(default_log_config(worker.tz, verbose))
+    run_web(host, port, worker)

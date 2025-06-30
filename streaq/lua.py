@@ -87,6 +87,19 @@ redis.call('set', message_key, message_id, 'px', expire_ms)
 return message_id
 """
 
+RELEASE_PREFETCHED = """
+local stream_key = KEYS[1]
+local message_key = KEYS[2]
+
+local task_id = ARGV[1]
+local expire_ms = ARGV[2]
+
+redis.call('xack', stream_key, group_name, message[1])
+local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id)
+redis.call('set', message_key, message_id, 'px', expire_ms)
+return message_id
+"""
+
 PUBLISH_DEPENDENT = """
 local stream_key = KEYS[1]
 local message_key = KEYS[2]
@@ -212,6 +225,7 @@ def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
         "publish_task": redis.register_script(PUBLISH_TASK),
         "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
         "retry_task": redis.register_script(RETRY_TASK),
+        "release_prefetched": redis.register_script(RELEASE_PREFETCHED),
         "fail_dependents": redis.register_script(FAIL_DEPENDENTS),
         "publish_dependent": redis.register_script(PUBLISH_DEPENDENT),
         "unpublish_dependent": redis.register_script(UNPUBLISH_DEPENDENT),

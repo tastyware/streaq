@@ -87,11 +87,12 @@ class TaskResult(Generic[R]):
     like run time and whether execution terminated successfully.
     """
 
+    fn_name: str
+    enqueue_time: int
     success: bool
     result: R | Exception
     start_time: int
     finish_time: int
-    queue_name: str
 
 
 @dataclass
@@ -221,9 +222,9 @@ class Task(Generic[R]):
                 data["A"] = self._after.id
             if self._triggers:
                 data["T"] = self._triggers.id
-            return self.parent.worker.serializer(data)
+            return self.parent.worker.serialize(data)
         except Exception as e:
-            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
+            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
 
     async def status(self) -> TaskStatus:
         """

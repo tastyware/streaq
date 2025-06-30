@@ -42,7 +42,7 @@ You can then register async tasks with the worker like this:
 
    @worker.cron("* * * * mon-fri")  # every minute on weekdays
    async def cronjob() -> None:
-       print("It's a bird... It's a plane... It's CRON!")
+       print("Nobody respects the spammish repetition!")
 
 Finally, use the worker's async context manager to queue up tasks:
 
@@ -79,7 +79,7 @@ Let's see what the output looks like:
    [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 → worker db064c92
    [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 ← 293784
    [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 → worker db064c92
-   It's a bird... It's a plane... It's CRON!
+   Nobody respects the spammish repetition!
    [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 ← None
 
 .. code-block:: python

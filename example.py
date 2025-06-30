@@ -36,7 +36,7 @@ async def fetch(url: str) -> int:
 
 @worker.cron("* * * * mon-fri")
 async def cronjob() -> None:
-    print("It's a bird... It's a plane... It's CRON!")
+    print("Nobody respects the spammish repetition!")
 
 
 async def main() -> None:
