@@ -32,7 +32,6 @@ from streaq.constants import (
     REDIS_DEPENDENTS,
     REDIS_GROUP,
     REDIS_HEALTH,
-    REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_QUEUE,
     REDIS_RESULT,
@@ -465,7 +464,6 @@ class Worker(Generic[WD]):
         them to the live queue (stream) when ready, as well as adding cron
         jobs to the live queue when ready.
         """
-        message_prefix = self._prefix + REDIS_MESSAGE
         futures: set[TypedCoroutine[Task[Any]]] = set()
         # schedule initial cron jobs
         for name, cron_job in self.cron_jobs.items():
@@ -493,7 +491,6 @@ class Worker(Generic[WD]):
                         self.stream_key + priority.value,
                         self._group_name,
                         self.id,
-                        message_prefix,
                     ],
                     args=[now_ms(), DEFAULT_TTL],
                     client=pipe,
@@ -503,12 +500,8 @@ class Worker(Generic[WD]):
                 if expire_ms <= 0:
                     expire_ms = DEFAULT_TTL
                 await self.scripts["publish_delayed_task"](
-                    keys=[
-                        self.queue_key,
-                        self.stream_key,
-                        self._prefix + REDIS_MESSAGE + task_id,  # type: ignore
-                    ],
-                    args=[task_id, expire_ms, TaskPriority.MEDIUM.value],
+                    keys=[self.queue_key, self.stream_key],
+                    args=[task_id, TaskPriority.MEDIUM.value],
                     client=pipe,
                 )
             if task_ids:
@@ -878,13 +871,7 @@ class Worker(Generic[WD]):
                     self.counters["failed"] += 1
             if result and ttl != 0:
                 await pipe.set(key(REDIS_RESULT), result, ex=ttl)
-            to_delete.extend(
-                [
-                    key(REDIS_RETRY),
-                    key(REDIS_TASK),
-                    key(REDIS_MESSAGE),
-                ]
-            )
+            to_delete.extend([key(REDIS_RETRY), key(REDIS_TASK)])
             await pipe.delete(to_delete)
             await pipe.srem(self._abort_key, [task_id])
             if success:
@@ -912,34 +899,19 @@ class Worker(Generic[WD]):
         elif delay:
             if not silent:
                 self.counters["retried"] += 1
-            to_delete.append(key(REDIS_MESSAGE))
             await pipe.delete(to_delete)
             await pipe.zadd(self.queue_key, {task_id: now_ms() + delay * 1000})
         else:
             if not silent:
                 self.counters["retried"] += 1
-            ttl_ms = to_ms(ttl) if ttl is not None else None
-            expire = (ttl_ms or 0) + DEFAULT_TTL
             await pipe.delete(to_delete)
-            await self.scripts["retry_task"](
-                keys=[stream_key, key(REDIS_MESSAGE)],
-                args=[task_id, expire],
-                client=pipe,
-            )
+            await pipe.xadd(stream_key, {"task_id": task_id})
         res = await pipe.execute()
         if finish and res[-1]:
             if success:
                 pipe = await self.redis.pipeline(transaction=False)
                 for dep_id in res[-1]:
-                    await self.scripts["publish_dependent"](
-                        keys=[
-                            stream_key,
-                            self._prefix + REDIS_MESSAGE + dep_id,
-                            dep_id,
-                        ],
-                        args=[DEFAULT_TTL],
-                        client=pipe,
-                    )
+                    await pipe.xadd(stream_key, {"task_id": dep_id})
                 await pipe.execute()
             else:
                 now = now_ms()
@@ -961,16 +933,9 @@ class Worker(Generic[WD]):
                 self.counters["failed"] += len(res[-1])
                 for dep_id in res[-1]:
                     logger.info(f"task {dep_id} dependency failed ×")
-                    await self.scripts["unpublish_dependent"](
-                        keys=[
-                            self._prefix + REDIS_TASK + dep_id,
-                            self._prefix + REDIS_RESULT + dep_id,
-                            self._channel_key,
-                            dep_id,
-                        ],
-                        args=[result],
-                        client=pipe,
-                    )
+                    await pipe.delete(self._prefix + REDIS_TASK + dep_id)
+                    await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
+                    await pipe.publish(self._channel_key, dep_id)
                 await pipe.execute()
 
     async def finish_failed_task(
@@ -998,7 +963,6 @@ class Worker(Generic[WD]):
                 key(REDIS_RETRY),
                 key(REDIS_RUNNING),
                 key(REDIS_TASK),
-                key(REDIS_MESSAGE),
                 *([lock_key] if lock_key else []),
             ]
         )
@@ -1038,16 +1002,9 @@ class Worker(Generic[WD]):
             self.counters["failed"] += len(res[-1])
             for dep_id in res[-1]:
                 logger.info(f"task {dep_id} dependency failed ×")
-                await self.scripts["unpublish_dependent"](
-                    keys=[
-                        self._prefix + REDIS_TASK + dep_id,
-                        self._prefix + REDIS_RESULT + dep_id,
-                        self._channel_key,
-                        dep_id,
-                    ],
-                    args=[result],
-                    client=pipe,
-                )
+                await pipe.delete(self._prefix + REDIS_TASK + dep_id)
+                await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
+                await pipe.publish(self._channel_key, dep_id)
             await pipe.execute()
 
     def enqueue_unsafe(
@@ -1168,8 +1125,7 @@ class Worker(Generic[WD]):
 
     async def status_by_id(self, task_id: str) -> TaskStatus:
         """
-        Fetch the current status of the given task. Note that nonexistent
-        tasks will return pending.
+        Fetch the current status of the given task.
 
         :param task_id: ID of the task to check
 
@@ -1183,14 +1139,15 @@ class Worker(Generic[WD]):
         await pipe.exists([key(REDIS_RESULT)])
         await pipe.exists([key(REDIS_RUNNING)])
         await pipe.zscore(self.queue_key, task_id)
-        await pipe.exists([key(REDIS_MESSAGE)])
-        finished, running, score, queued = await pipe.execute()
+        await pipe.exists([key(REDIS_TASK)])
+        await pipe.exists([key(REDIS_DEPENDENCIES)])
+        finished, running, score, queued, depends = await pipe.execute()
 
         if finished:
             return TaskStatus.DONE
         elif running:
             return TaskStatus.RUNNING
-        elif score:
+        elif score or depends:
             return TaskStatus.SCHEDULED
         elif queued:
             return TaskStatus.QUEUED

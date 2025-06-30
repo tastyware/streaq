@@ -32,9 +32,8 @@ return modified == 0
 
 PUBLISH_TASK = """
 local stream_key = KEYS[1]
-local message_key = KEYS[2]
-local task_key = KEYS[3]
-local queue_key = KEYS[4]
+local task_key = KEYS[2]
+local queue_key = KEYS[3]
 
 local task_id = ARGV[1]
 local ttl = ARGV[2]
@@ -49,79 +48,24 @@ if score ~= '0' then
   redis.call('zadd', queue_key, score, task_id)
   return 1
 else
-  local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
-  redis.call('set', message_key, message_id, 'px', ttl)
-  return message_id
+  return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
 end
 """
 
 PUBLISH_DELAYED_TASK = """
-local delayed_queue_key = KEYS[1]
+local queue_key = KEYS[1]
 local stream_key = KEYS[2]
-local task_message_id_key = KEYS[3]
 
 local task_id = ARGV[1]
-local task_message_id_expire_ms = ARGV[2]
-local priority = ARGV[3]
+local priority = ARGV[2]
 
-local score = redis.call('zscore', delayed_queue_key, task_id)
-if not score then
+if not redis.call('zscore', queue_key, task_id) then
   return 0
 end
 
-local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
-redis.call('set', task_message_id_key, message_id, 'px', task_message_id_expire_ms)
-redis.call('zrem', delayed_queue_key, task_id)
+redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+redis.call('zrem', queue_key, task_id)
 return 1
-"""
-
-RETRY_TASK = """
-local stream_key = KEYS[1]
-local message_key = KEYS[2]
-
-local task_id = ARGV[1]
-local expire_ms = ARGV[2]
-
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id)
-redis.call('set', message_key, message_id, 'px', expire_ms)
-return message_id
-"""
-
-RELEASE_PREFETCHED = """
-local stream_key = KEYS[1]
-local message_key = KEYS[2]
-
-local task_id = ARGV[1]
-local expire_ms = ARGV[2]
-
-redis.call('xack', stream_key, group_name, message[1])
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id)
-redis.call('set', message_key, message_id, 'px', expire_ms)
-return message_id
-"""
-
-PUBLISH_DEPENDENT = """
-local stream_key = KEYS[1]
-local message_key = KEYS[2]
-local dep_id = KEYS[3]
-
-local ttl = ARGV[1]
-
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', dep_id)
-redis.call('set', message_key, message_id, 'px', ttl)
-"""
-
-UNPUBLISH_DEPENDENT = """
-local task_key = KEYS[1]
-local result_key = KEYS[2]
-local channel_key = KEYS[3]
-local dep_id = KEYS[4]
-
-local result_data = ARGV[1]
-
-redis.call('del', task_key)
-redis.call('set', result_key, result_data, 'ex', 300)
-redis.call('publish', channel_key, dep_id)
 """
 
 FAIL_DEPENDENTS = """
@@ -177,7 +121,6 @@ local sorted_set_key = KEYS[1]
 local stream_key = KEYS[2]
 local group_name = KEYS[3]
 local consumer_name = KEYS[4]
-local message_key = KEYS[5]
 
 local current_time = ARGV[1]
 local ttl = ARGV[2]
@@ -195,8 +138,7 @@ if #timed_out > 0 then
   for _, message in ipairs(claimed) do
     redis.call('xack', stream_key, group_name, message[1])
     redis.call('xdel', stream_key, message[1])
-    local message_id = redis.call('xadd', stream_key, '*', unpack(message[2]))
-    redis.call('set', message_key .. message[2][2], message_id, 'px', ttl)
+    redis.call('xadd', stream_key, '*', unpack(message[2]))
   end
   redis.call('zrem', sorted_set_key, unpack(timed_out))
 end
@@ -224,11 +166,7 @@ def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
         "create_groups": redis.register_script(CREATE_GROUPS),
         "publish_task": redis.register_script(PUBLISH_TASK),
         "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
-        "retry_task": redis.register_script(RETRY_TASK),
-        "release_prefetched": redis.register_script(RELEASE_PREFETCHED),
         "fail_dependents": redis.register_script(FAIL_DEPENDENTS),
-        "publish_dependent": redis.register_script(PUBLISH_DEPENDENT),
-        "unpublish_dependent": redis.register_script(UNPUBLISH_DEPENDENT),
         "update_dependents": redis.register_script(UPDATE_DEPENDENTS),
         "unclaim_idle_tasks": redis.register_script(UNCLAIM_IDLE_TASKS),
     }

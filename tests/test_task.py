@@ -201,7 +201,7 @@ async def test_task_dependency(worker: Worker):
     task = await foobar.enqueue().start(delay=1)
     task2 = await foobar.enqueue().start(after=task.id)
     worker.loop.create_task(worker.run_async())
-    assert await task2.status() == TaskStatus.PENDING
+    assert await task2.status() == TaskStatus.SCHEDULED
     await task.result(3)
     result = await task2.result(3)
     assert result.success
@@ -216,11 +216,11 @@ async def test_task_dependency_multiple(worker: Worker):
     task2 = await foobar.enqueue().start(after=task.id)
     task3 = await foobar.enqueue().start(after=[task.id, task2.id])
     worker.loop.create_task(worker.run_async())
-    assert await task2.status() == TaskStatus.PENDING
-    assert await task3.status() == TaskStatus.PENDING
+    assert await task2.status() == TaskStatus.SCHEDULED
+    assert await task3.status() == TaskStatus.SCHEDULED
     res1 = await task.result(3)
     assert res1.success
-    assert await task3.status() == TaskStatus.PENDING
+    assert await task3.status() == TaskStatus.SCHEDULED
     res2 = await task2.result(3)
     assert res2.success
     res3 = await task3.result(3)

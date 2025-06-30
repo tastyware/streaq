@@ -17,7 +17,6 @@ from streaq.constants import (
     DEFAULT_TTL,
     REDIS_DEPENDENCIES,
     REDIS_DEPENDENTS,
-    REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
     REDIS_TASK,
@@ -164,7 +163,6 @@ class Task(Generic[R]):
             res = await self.parent.worker.scripts["publish_task"](
                 keys=[
                     self.parent.worker.stream_key,
-                    self._task_key(REDIS_MESSAGE),
                     self._task_key(REDIS_TASK),
                     self.parent.worker.queue_key,
                 ],
