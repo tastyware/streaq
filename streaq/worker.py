@@ -235,7 +235,7 @@ class Worker(Generic[WD]):
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
-        self._prefetched: set[StreamMessage] = set()
+        self._prefetched: dict[str, StreamMessage] = {}
 
         @self.cron(health_crontab, silent=True, ttl=0)
         async def redis_health_check() -> None:  # type: ignore[unused-function]
@@ -586,7 +586,7 @@ class Worker(Generic[WD]):
             if messages:
                 logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
                 messages.sort(key=lambda msg: priority_order[msg.priority])
-                self._prefetched.update(messages)
+                self._prefetched.update({m.task_id: m for m in messages})
             for message in messages:
                 coro = self.run_task(message)
                 self.task_wrappers[message.task_id] = self.loop.create_task(coro)
@@ -625,7 +625,7 @@ class Worker(Generic[WD]):
             "st": now,
             "ft": now,
         }
-        self._prefetched.remove(msg)
+        del self._prefetched[msg.task_id]
         try:
             raw = self.serialize(data)
             await asyncio.shield(self.finish_failed_task(msg, raw, silent, ttl, lock))
@@ -759,7 +759,7 @@ class Worker(Generic[WD]):
             self.tasks[task_id] = self.loop.create_task(coro)
             result = None
             try:
-                self._prefetched.remove(msg)
+                del self._prefetched[msg.task_id]
                 result = await self.tasks[task_id]
             except StreaqRetry as e:
                 result = e
@@ -1101,12 +1101,9 @@ class Worker(Generic[WD]):
         )
         # delete consumers and return prefetched tasks to queue
         pipe = await self.redis.pipeline(transaction=False)
-        for msg in self._prefetched:
-            await self.scripts["release_prefetched"](
-                keys=[],
-                args=[DEFAULT_TTL, msg.priority, msg.task_id],
-                client=pipe,
-            )
+        # for msg in self._prefetched:
+        # await pipe.xadd()
+        # TODO: xack, xdel etc
         for priority in TaskPriority:
             await pipe.xgroup_delconsumer(
                 self.stream_key + priority.value,
