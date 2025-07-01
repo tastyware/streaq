@@ -52,22 +52,6 @@ else
 end
 """
 
-PUBLISH_DELAYED_TASK = """
-local queue_key = KEYS[1]
-local stream_key = KEYS[2]
-
-local task_id = ARGV[1]
-local priority = ARGV[2]
-
-if not redis.call('zscore', queue_key, task_id) then
-  return 0
-end
-
-redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
-redis.call('zrem', queue_key, task_id)
-return 1
-"""
-
 FAIL_DEPENDENTS = """
 local dependents_key = KEYS[1]
 local dependencies_key = KEYS[2]
@@ -116,16 +100,31 @@ redis.call('del', dependents_key .. task_id, dependencies_key .. task_id)
 return runnable
 """
 
+PUBLISH_DELAYED_TASK = """
+local queue_key = KEYS[1]
+local stream_key = KEYS[2]
+
+local task_id = ARGV[1]
+local priority = ARGV[2]
+
+if not redis.call('zscore', queue_key, task_id) then
+  return 0
+end
+
+redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+redis.call('zrem', queue_key, task_id)
+return 1
+"""
+
 UNCLAIM_IDLE_TASKS = """
-local sorted_set_key = KEYS[1]
+local timeout_key = KEYS[1]
 local stream_key = KEYS[2]
 local group_name = KEYS[3]
 local consumer_name = KEYS[4]
 
 local current_time = ARGV[1]
-local ttl = ARGV[2]
 
-local timed_out = redis.call('zrangebyscore', sorted_set_key, '-inf', current_time)
+local timed_out = redis.call('zrangebyscore', timeout_key, 0, current_time)
 if #timed_out > 0 then
   local claimed = redis.call(
     'xclaim',
@@ -140,7 +139,7 @@ if #timed_out > 0 then
     redis.call('xdel', stream_key, message[1])
     redis.call('xadd', stream_key, '*', unpack(message[2]))
   end
-  redis.call('zrem', sorted_set_key, unpack(timed_out))
+  redis.call('zrem', timeout_key, unpack(timed_out))
 end
 
 return #timed_out

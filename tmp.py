@@ -13,9 +13,9 @@ async def sleeper(time: int) -> None:
 
 async def main():
     async with worker:
-        # await asyncio.gather(*[sleeper.enqueue(i).start(delay=i) for i in range(10)])
-        for _ in range(8):
-            await sleeper.enqueue(5)
+        # importantly, we're not using `await` here
+        tasks = [sleeper.enqueue(i) for i in range(10)]
+        await worker.enqueue_many(tasks)
 
 
 if __name__ == "__main__":

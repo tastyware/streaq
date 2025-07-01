@@ -19,7 +19,7 @@ from anyio.abc import CapacityLimiter
 from coredis import PureToken, Redis
 from coredis.commands import PubSub, Script
 from coredis.sentinel import Sentinel
-from coredis.typing import KeyT
+from coredis.typing import KeyT, ValueT
 from crontab import CronTab
 
 from streaq import logger
@@ -104,7 +104,8 @@ class Worker(Generic[WD]):
         can be redundant, so running just one may slightly improve performance.
     :param signing_secret:
         if provided, used to sign data stored in Redis, which can improve security
-        especially if using pickle. For binary serializers only.
+        especially if using pickle. For binary serializers only. You can generate
+        a key using secrets, for example: `secrets.token_urlsafe(32)`
     """
 
     __slots__ = (
@@ -150,7 +151,6 @@ class Worker(Generic[WD]):
         "middlewares",
         "signing_secret",
         "_task_context",
-        "_prefetched",
     )
 
     def __init__(
@@ -235,9 +235,8 @@ class Worker(Generic[WD]):
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
-        self._prefetched: dict[str, StreamMessage] = {}
 
-        @self.cron(health_crontab, silent=True, ttl=0)
+        @self.cron(health_crontab, silent=True, timeout=3, ttl=0)
         async def redis_health_check() -> None:  # type: ignore[unused-function]
             """
             Saves Redis health in Redis.
@@ -474,10 +473,11 @@ class Worker(Generic[WD]):
             await asyncio.gather(*futures)
         while not self._block_new_tasks:
             start_time = time()
+            now = now_ms()
             task_ids = await self.redis.zrange(
                 self.queue_key,
                 0,
-                now_ms(),
+                now,
                 count=self.queue_fetch_limit,
                 offset=0,
                 withscores=True,
@@ -492,11 +492,11 @@ class Worker(Generic[WD]):
                         self._group_name,
                         self.id,
                     ],
-                    args=[now_ms(), DEFAULT_TTL],
+                    args=[now],
                     client=pipe,
                 )
             for task_id, score in task_ids:
-                expire_ms = int(score - now_ms() + DEFAULT_TTL)
+                expire_ms = int(score - now + DEFAULT_TTL)
                 if expire_ms <= 0:
                     expire_ms = DEFAULT_TTL
                 await self.scripts["publish_delayed_task"](
@@ -529,7 +529,8 @@ class Worker(Generic[WD]):
 
     async def listen_stream(self) -> None:
         """
-        Listen for new tasks from the stream, and periodically check for tasks
+        Listen for new tasks from the stream and start them up.
+        Periodically check for tasks
         that were never XACK'd but have timed out to reclaim.
         """
         high_stream = self.stream_key + TaskPriority.HIGH.value
@@ -586,7 +587,6 @@ class Worker(Generic[WD]):
             if messages:
                 logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")
                 messages.sort(key=lambda msg: priority_order[msg.priority])
-                self._prefetched.update({m.task_id: m for m in messages})
             for message in messages:
                 coro = self.run_task(message)
                 self.task_wrappers[message.task_id] = self.loop.create_task(coro)
@@ -614,7 +614,6 @@ class Worker(Generic[WD]):
         fn_name: str = "Unknown",
         silent: bool = False,
         ttl: timedelta | int | None = 300,
-        lock: str | None = None,
     ) -> None:
         now = now_ms()
         data = {
@@ -625,10 +624,9 @@ class Worker(Generic[WD]):
             "st": now,
             "ft": now,
         }
-        del self._prefetched[msg.task_id]
         try:
             raw = self.serialize(data)
-            await asyncio.shield(self.finish_failed_task(msg, raw, silent, ttl, lock))
+            await asyncio.shield(self.finish_failed_task(msg, raw, silent, ttl))
         except Exception as e:
             raise StreaqError(
                 f"Failed to serialize result for task {msg.task_id}!"
@@ -722,7 +720,7 @@ class Worker(Generic[WD]):
             res = await pipe.execute()
             if task.unique and not res[0]:
                 if not task.silent:
-                    logger.warning(f"unique task {task_id} clashed with running task ↯")
+                    logger.warning(f"unique task {task_id} clashed ↯ with running task")
                 return await self.handle_failure(
                     msg,
                     StreaqError(
@@ -733,7 +731,6 @@ class Worker(Generic[WD]):
                     fn_name=data["f"],
                     silent=task.silent,
                     ttl=task.ttl,
-                    lock=lock_key,
                 )
             _args = data["a"] if not after else self.deserialize(res[-1])
 
@@ -759,7 +756,6 @@ class Worker(Generic[WD]):
             self.tasks[task_id] = self.loop.create_task(coro)
             result = None
             try:
-                del self._prefetched[msg.task_id]
                 result = await self.tasks[task_id]
             except StreaqRetry as e:
                 result = e
@@ -911,6 +907,7 @@ class Worker(Generic[WD]):
             if success:
                 pipe = await self.redis.pipeline(transaction=False)
                 for dep_id in res[-1]:
+                    logger.info(f"↳ dependency {dep_id} triggered")
                     await pipe.xadd(stream_key, {"task_id": dep_id})
                 await pipe.execute()
             else:
@@ -931,11 +928,13 @@ class Worker(Generic[WD]):
                     ) from e
                 pipe = await self.redis.pipeline(transaction=False)
                 self.counters["failed"] += len(res[-1])
+                to_delete.clear()
                 for dep_id in res[-1]:
                     logger.info(f"task {dep_id} dependency failed ×")
-                    await pipe.delete(self._prefix + REDIS_TASK + dep_id)
+                    to_delete.append(self._prefix + REDIS_TASK + dep_id)
                     await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
                     await pipe.publish(self._channel_key, dep_id)
+                await pipe.delete(to_delete)
                 await pipe.execute()
 
     async def finish_failed_task(
@@ -944,7 +943,6 @@ class Worker(Generic[WD]):
         result_data: Any,
         silent: bool,
         ttl: timedelta | int | None,
-        lock_key: str | None,
     ) -> None:
         """
         Cleanup for a task that failed during execution.
@@ -958,14 +956,7 @@ class Worker(Generic[WD]):
             self.counters["failed"] += 1
         stream_key = self.stream_key + msg.priority
         pipe = await self.redis.pipeline(transaction=True)
-        await pipe.delete(
-            [
-                key(REDIS_RETRY),
-                key(REDIS_RUNNING),
-                key(REDIS_TASK),
-                *([lock_key] if lock_key else []),
-            ]
-        )
+        await pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
         await pipe.publish(self._channel_key, task_id)
         await pipe.srem(self._abort_key, [task_id])
         await pipe.xack(stream_key, self._group_name, [msg.message_id])
@@ -1000,11 +991,13 @@ class Worker(Generic[WD]):
                 ) from e
             pipe = await self.redis.pipeline(transaction=False)
             self.counters["failed"] += len(res[-1])
+            to_delete: list[KeyT] = []
             for dep_id in res[-1]:
                 logger.info(f"task {dep_id} dependency failed ×")
-                await pipe.delete(self._prefix + REDIS_TASK + dep_id)
+                to_delete.append(self._prefix + REDIS_TASK + dep_id)
                 await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
                 await pipe.publish(self._channel_key, dep_id)
+            await pipe.delete(to_delete)
             await pipe.execute()
 
     def enqueue_unsafe(
@@ -1039,6 +1032,47 @@ class Worker(Generic[WD]):
             _fn_name=fn_name,
         )
         return Task(args, kwargs, registered)
+
+    async def enqueue_many(
+        self,
+        tasks: list[Task[Any]],
+        priority: TaskPriority = TaskPriority.LOW,
+    ) -> None:
+        """
+        Enqueue multiple tasks for immediate execution in the given priority
+        queue. This uses a Redis pipeline, so it's much more efficient than
+        awaiting `enqueue` for each individual task.
+
+        :param tasks: list of task objects to enqueue
+        :param priority: priority queue for the tasks
+
+        Example usage::
+
+            # importantly, we're not using `await` here
+            tasks = [foobar.enqueue(i) for i in range(10)]
+            async with worker:
+                await worker.enqueue_many(tasks)
+
+        """
+        if not self.scripts:
+            raise StreaqError(
+                "Worker did not initialize correctly, are you using the async context "
+                "manager?"
+            )
+        enqueue_time = now_ms()
+        pipe = await self.redis.pipeline(transaction=False)
+        for task in tasks:
+            data = task.serialize(enqueue_time)
+            await self.scripts["publish_task"](
+                keys=[
+                    self.stream_key,
+                    task._task_key(REDIS_TASK),  # type: ignore
+                    self.queue_key,
+                ],
+                args=[task.id, DEFAULT_TTL, data, priority, 0],
+                client=pipe,
+            )
+        await pipe.execute()
 
     async def queue_size(self) -> int:
         """
@@ -1099,18 +1133,14 @@ class Worker(Generic[WD]):
         await asyncio.gather(
             *self.task_wrappers.values(), self.main_task, return_exceptions=True
         )
-        # delete consumers and return prefetched tasks to queue
         pipe = await self.redis.pipeline(transaction=False)
-        # for msg in self._prefetched:
-        # await pipe.xadd()
-        # TODO: xack, xdel etc
+        # delete consumers
         for priority in TaskPriority:
             await pipe.xgroup_delconsumer(
                 self.stream_key + priority.value,
                 groupname=self._group_name,
                 consumername=self.id,
             )
-        await pipe.hdel(self._health_key, [self.id])
         await pipe.execute(raise_on_error=False)
         run_time = now_ms() - self._start_time
         logger.info(f"shutdown {str(self)} after {run_time}ms")
