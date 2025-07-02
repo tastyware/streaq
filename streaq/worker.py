@@ -33,6 +33,7 @@ from streaq.constants import (
     REDIS_GROUP,
     REDIS_HEALTH,
     REDIS_PREFIX,
+    REDIS_PREVIOUS,
     REDIS_QUEUE,
     REDIS_RESULT,
     REDIS_RETRY,
@@ -89,7 +90,8 @@ class Worker(Generic[WD]):
         max number of synchronous tasks the worker can run simultaneously
         in separate threads; defaults to the same as ``concurrency``
     :param queue_name: name of queue in Redis
-    :param queue_fetch_limit: max number of tasks to prefetch from Redis
+    :param prefetch:
+        max number of tasks to prefetch from Redis, defaults to same as ``concurrency``
     :param lifespan:
         async context manager that wraps worker execution and provides task
         dependencies
@@ -110,7 +112,7 @@ class Worker(Generic[WD]):
         "concurrency",
         "queue_name",
         "_group_name",
-        "queue_fetch_limit",
+        "prefetch",
         "bs",
         "counters",
         "loop",
@@ -158,7 +160,7 @@ class Worker(Generic[WD]):
         concurrency: int = 16,
         sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
-        queue_fetch_limit: int | None = None,
+        prefetch: int | None = None,
         lifespan: Callable[[Worker[WD]], AbstractAsyncContextManager[WD]] = _lifespan,  # type: ignore
         serializer: Callable[[Any], Any] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
@@ -179,7 +181,7 @@ class Worker(Generic[WD]):
         self.concurrency = concurrency
         self.queue_name = queue_name
         self._group_name = REDIS_GROUP
-        self.queue_fetch_limit = queue_fetch_limit or concurrency * 2
+        self.prefetch = prefetch or concurrency
         #: semaphore controlling concurrency
         self.bs = asyncio.BoundedSemaphore(concurrency)
         #: mapping of type of task -> number of tasks of that type
@@ -464,7 +466,7 @@ class Worker(Generic[WD]):
             messages: list[StreamMessage] = []
             active_tasks = self.concurrency - self.bs._value
             pending_tasks = len(self.task_wrappers)
-            count = self.queue_fetch_limit - pending_tasks
+            count = self.concurrency + self.prefetch - pending_tasks
             pipe = await self.redis.pipeline(transaction=False)
             if count > 0:
                 idle = await self.scripts["reclaim_idle_tasks"](
@@ -690,7 +692,7 @@ class Worker(Generic[WD]):
                     self._timeout_key + msg.priority, {msg.message_id: timeout}
                 )
             if after:
-                await pipe.get(self._prefix + REDIS_RESULT + after + ":raw")
+                await pipe.get(self._prefix + REDIS_PREVIOUS + after)
             res = await pipe.execute()
             if task.unique and not res[0]:
                 if not task.silent:
@@ -730,6 +732,9 @@ class Worker(Generic[WD]):
             self.tasks[task_id] = self.loop.create_task(coro)
             result = None
             try:
+                # don't start if we're shutting down
+                if self._block_new_tasks:
+                    self.tasks[task_id].cancel()
                 result = await self.tasks[task_id]
             except StreaqRetry as e:
                 result = e
@@ -852,9 +857,7 @@ class Worker(Generic[WD]):
                     logger.info(f"task {task_id} ← {output}")
                 if triggers:
                     args = self.serialize(to_tuple(return_value))
-                    await pipe.set(
-                        key(REDIS_RESULT) + ":raw", args, ex=timedelta(minutes=5)
-                    )
+                    await pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
                 script = self.scripts["update_dependents"]
             else:
                 script = self.scripts["fail_dependents"]
@@ -885,31 +888,7 @@ class Worker(Generic[WD]):
                     await pipe.xadd(stream_key, {"task_id": dep_id})
                 await pipe.execute()
             else:
-                now = now_ms()
-                failure = {
-                    "s": False,
-                    "r": StreaqError("Dependency failed, not running task!"),
-                    "st": now,
-                    "ft": now,
-                    "et": 0,
-                    "f": "Unknown",
-                }
-                try:
-                    result = self.serialize(failure)
-                except Exception as e:
-                    raise StreaqError(
-                        f"Failed to serialize result for dependency of task {task_id}!"
-                    ) from e
-                pipe = await self.redis.pipeline(transaction=False)
-                self.counters["failed"] += len(res[-1])
-                to_delete.clear()
-                for dep_id in res[-1]:
-                    logger.info(f"task {dep_id} dependency failed ×")
-                    to_delete.append(self._prefix + REDIS_TASK + dep_id)
-                    await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
-                    await pipe.publish(self._channel_key, dep_id)
-                await pipe.delete(to_delete)
-                await pipe.execute()
+                await self.fail_dependencies(task_id, res[-1])
 
     async def finish_failed_task(
         self,
@@ -948,31 +927,35 @@ class Worker(Generic[WD]):
         )
         res = await pipe.execute()
         if res[-1]:
-            now = now_ms()
-            failure = {
-                "s": False,
-                "r": StreaqError("Dependency failed, not running task!"),
-                "st": now,
-                "ft": now,
-                "et": 0,
-                "f": "Unknown",
-            }
-            try:
-                result = self.serialize(failure)
-            except Exception as e:
-                raise StreaqError(
-                    f"Failed to serialize result for task {task_id}!"
-                ) from e
-            pipe = await self.redis.pipeline(transaction=False)
-            self.counters["failed"] += len(res[-1])
-            to_delete: list[KeyT] = []
-            for dep_id in res[-1]:
-                logger.info(f"task {dep_id} dependency failed ×")
-                to_delete.append(self._prefix + REDIS_TASK + dep_id)
-                await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
-                await pipe.publish(self._channel_key, dep_id)
-            await pipe.delete(to_delete)
-            await pipe.execute()
+            await self.fail_dependencies(task_id, res[-1])
+
+    async def fail_dependencies(self, task_id: str, dependencies: list[str]) -> None:
+        """
+        Fail dependencies for the given task.
+        """
+        now = now_ms()
+        failure = {
+            "s": False,
+            "r": StreaqError("Dependency failed, not running task!"),
+            "st": now,
+            "ft": now,
+            "et": 0,
+            "f": "Unknown",
+        }
+        try:
+            result = self.serialize(failure)
+        except Exception as e:
+            raise StreaqError(f"Failed to serialize result for task {task_id}!") from e
+        pipe = await self.redis.pipeline(transaction=False)
+        self.counters["failed"] += len(dependencies)
+        to_delete: list[KeyT] = []
+        for dep_id in dependencies:
+            logger.info(f"task {dep_id} dependency failed ×")
+            to_delete.append(self._prefix + REDIS_TASK + dep_id)
+            await pipe.set(self._prefix + REDIS_RESULT + dep_id, result, ex=300)
+            await pipe.publish(self._channel_key, dep_id)
+        await pipe.delete(to_delete)
+        await pipe.execute()
 
     def enqueue_unsafe(
         self,
@@ -1100,13 +1083,11 @@ class Worker(Generic[WD]):
         Cleanup worker and Redis connection
         """
         self._block_new_tasks = True
-        for t in self.task_wrappers.values():
+        for t in self.tasks.values():
             if not t.done():
                 t.cancel()
         self.main_task.cancel()
-        await asyncio.gather(
-            *self.task_wrappers.values(), self.main_task, return_exceptions=True
-        )
+        await asyncio.gather(*self.task_wrappers.values(), self.main_task)
         run_time = now_ms() - self._start_time
         logger.info(f"shutdown {str(self)} after {run_time}ms")
 
@@ -1183,13 +1164,30 @@ class Worker(Generic[WD]):
 
     async def abort_by_id(self, task_id: str, timeout: timedelta | int = 5) -> bool:
         """
-        Notify workers that the task should be aborted.
+        Notify workers that the task should be aborted if it's running.
+        Otherwise, remove the task from the delayed task queue.
 
         :param task_id: ID of the task to abort
         :param timeout: how long to wait to confirm abortion was successful
 
         :return: whether the task was aborted successfully
         """
+        queued = await self.redis.zrem(self.queue_key, [task_id])
+        if queued:
+            pipe = await self.redis.pipeline(transaction=False)
+            await pipe.delete([self._prefix + REDIS_TASK + task_id])
+            await self.scripts["fail_dependents"](
+                keys=[
+                    self._prefix + REDIS_DEPENDENTS,
+                    self._prefix + REDIS_DEPENDENCIES,
+                    task_id,
+                ],
+                client=pipe,
+            )
+            res = await pipe.execute()
+            if res[-1]:
+                await self.fail_dependencies(task_id, res[-1])
+            return True
         await self.redis.sadd(self._abort_key, [task_id])
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
@@ -1215,7 +1213,9 @@ class Worker(Generic[WD]):
         await pipe.get(key(REDIS_TASK))
         await pipe.get(key(REDIS_RETRY))
         await pipe.zscore(self.queue_key, task_id)
-        raw, task_try, score = await pipe.execute()
+        await pipe.smembers(key(REDIS_DEPENDENCIES))
+        await pipe.smembers(key(REDIS_DEPENDENTS))
+        raw, task_try, score, dependencies, dependents = await pipe.execute()
         data = self.deserialize(raw)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
         return TaskData(
@@ -1223,6 +1223,8 @@ class Worker(Generic[WD]):
             enqueue_time=data["t"],
             task_try=task_try,
             scheduled=dt,
+            dependencies=dependencies,
+            dependents=dependents,
         )
 
     async def __aenter__(self) -> Worker[WD]:

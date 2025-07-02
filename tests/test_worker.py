@@ -218,3 +218,17 @@ async def test_signed_data(redis_url: str):
         task = await foo.enqueue()
         res = await task.result(3)
         assert res.success and res.result == "bar"
+
+
+async def test_enqueue_many(redis_url: str):
+    worker = Worker(redis_url=redis_url, queue_name="test")
+
+    @worker.task()
+    async def foobar(val: int) -> int:
+        await asyncio.sleep(1)
+        return val
+
+    tasks = [foobar.enqueue(i) for i in range(10)]
+    async with worker:
+        await worker.enqueue_many(tasks)
+    assert await worker.queue_size() >= len(tasks)

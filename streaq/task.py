@@ -75,8 +75,10 @@ class TaskData:
 
     fn_name: str
     enqueue_time: int
-    task_try: int | None = None
-    scheduled: datetime | None = None
+    task_try: int | None
+    scheduled: datetime | None
+    dependencies: set[str]
+    dependents: set[str]
 
 
 @dataclass

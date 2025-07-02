@@ -6,8 +6,8 @@ from fastapi.templating import Jinja2Templates
 
 from streaq import Worker
 
-BASE_DIR = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=str(Path(BASE_DIR, "templates")))
+BASE_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(BASE_DIR))
 
 
 async def get_worker() -> AsyncGenerator[Worker[Any], None]:
