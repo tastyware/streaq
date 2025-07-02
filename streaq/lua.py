@@ -100,20 +100,26 @@ redis.call('del', dependents_key .. task_id, dependencies_key .. task_id)
 return runnable
 """
 
-PUBLISH_DELAYED_TASK = """
+PUBLISH_DELAYED_TASKS = """
 local queue_key = KEYS[1]
 local stream_key = KEYS[2]
 
-local task_id = ARGV[1]
-local priority = ARGV[2]
+local current_time = ARGV[1]
 
-if not redis.call('zscore', queue_key, task_id) then
-  return 0
+local task_ids = redis.call(
+  'zrange',
+  queue_key,
+  0,
+  current_time,
+  'byscore'
+)
+redis.call('zremrangebyscore', queue_key, 0, current_time)
+
+for _, task_id in ipairs(task_ids) do
+  redis.call('xadd', stream_key, '*', 'task_id', task_id)
 end
 
-redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
-redis.call('zrem', queue_key, task_id)
-return 1
+return #task_ids
 """
 
 RECLAIM_IDLE_TASKS = """
@@ -176,7 +182,7 @@ def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
         "add_dependencies": redis.register_script(ADD_DEPENDENCIES),
         "create_groups": redis.register_script(CREATE_GROUPS),
         "publish_task": redis.register_script(PUBLISH_TASK),
-        "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
+        "publish_delayed_tasks": redis.register_script(PUBLISH_DELAYED_TASKS),
         "fail_dependents": redis.register_script(FAIL_DEPENDENTS),
         "update_dependents": redis.register_script(UPDATE_DEPENDENTS),
         "reclaim_idle_tasks": redis.register_script(RECLAIM_IDLE_TASKS),

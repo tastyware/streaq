@@ -11,7 +11,6 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from functools import partial
 from signal import Signals
-from time import time
 from types import TracebackType
 from typing import Any, AsyncIterator, Callable, Generic, Type, cast
 from uuid import uuid4
@@ -99,10 +98,6 @@ class Worker(Generic[WD]):
     :param tz: timezone to use for cron jobs
     :param handle_signals: whether to handle signals for graceful shutdown
     :param health_crontab: crontab for frequency to store health info
-    :param with_scheduler:
-        whether to run a scheduler alongside the worker; if None, the CLI will run
-        a single scheduler instead of each worker running one. Multiple schedulers
-        can be redundant, so running just one may slightly improve performance.
     :param signing_secret:
         if provided, used to sign data stored in Redis, which can improve security
         especially if using pickle. For binary serializers only. You can generate
@@ -150,7 +145,6 @@ class Worker(Generic[WD]):
         "_limiter",
         "_sentinel",
         "_health_tab",
-        "with_scheduler",
         "middlewares",
         "signing_secret",
         "_task_context",
@@ -171,7 +165,6 @@ class Worker(Generic[WD]):
         tz: tzinfo = timezone.utc,
         handle_signals: bool = True,
         health_crontab: str = "*/5 * * * *",
-        with_scheduler: bool | None = None,
         signing_secret: str | None = None,
         idle_timeout: timedelta | int = 300,
     ):
@@ -220,7 +213,6 @@ class Worker(Generic[WD]):
         self.burst = False
         #: list of middlewares added to the worker
         self.middlewares: list[Middleware] = []
-        self.with_scheduler = with_scheduler
         self.signing_secret = signing_secret.encode() if signing_secret else None
         self.sync_concurrency = sync_concurrency or concurrency
         self._limiter = CapacityLimiter(self.sync_concurrency)
@@ -446,8 +438,6 @@ class Worker(Generic[WD]):
             )
             # run loops
             tasks = [self.listen_stream(), self.health_check()]
-            if self.with_scheduler:
-                tasks.append(self.listen_queue())
             futures = [self.loop.create_task(t) for t in tasks]
             try:
                 _, pending = await asyncio.wait(
@@ -462,69 +452,12 @@ class Worker(Generic[WD]):
                     task.cancel()
                 await asyncio.gather(*futures, return_exceptions=True)
 
-    async def listen_queue(self) -> None:
-        """
-        Periodically check the future queue (sorted set) for tasks, adding
-        them to the live queue (stream) when ready, as well as adding cron
-        jobs to the live queue when ready.
-        """
-        futures: set[TypedCoroutine[Task[Any]]] = set()
-        # schedule initial cron jobs
-        for name, cron_job in self.cron_jobs.items():
-            self.cron_schedule[name] = cron_job.next()
-            futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
-        if futures:
-            logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
-            await asyncio.gather(*futures)
-        while not self._block_new_tasks:
-            start_time = time()
-            now = now_ms()
-            task_ids = await self.redis.zrange(
-                self.queue_key,
-                0,
-                now,
-                count=self.queue_fetch_limit,
-                offset=0,
-                withscores=True,
-                sortby=PureToken.BYSCORE,
-            )
-            pipe = await self.redis.pipeline(transaction=False)
-            # TODO: wrap all into a single script
-            for task_id, score in task_ids:
-                expire_ms = int(score - now + DEFAULT_TTL)
-                if expire_ms <= 0:
-                    expire_ms = DEFAULT_TTL
-                await self.scripts["publish_delayed_task"](
-                    keys=[self.queue_key, self.stream_key],
-                    args=[task_id, TaskPriority.MEDIUM.value],
-                    client=pipe,
-                )
-            if task_ids:
-                logger.debug(
-                    f"enqueuing {len(task_ids)} delayed tasks in worker {self.id}"
-                )
-            await pipe.execute()
-
-            # cron jobs
-            futures = set()
-            ts = now_ms()
-            for name, cron_job in self.cron_jobs.items():
-                if ts - 500 > self.cron_schedule[name]:
-                    self.cron_schedule[name] = cron_job.next()
-                    futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
-            if futures:
-                logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
-                await asyncio.gather(*futures)
-
-            if (delay := time() - start_time) < 0.5:
-                await asyncio.sleep(0.5 - delay)
-
     async def listen_stream(self) -> None:
         """
-        Listen for new tasks from the stream and start them up.
-        Periodically check for tasks
-        that were never XACK'd but have timed out to reclaim.
+        Listen for new tasks or stale tasks from the stream and start them up,
+        as well as add cron jobs to the queue when ready.
         """
+        medium_stream = self.stream_key + TaskPriority.MEDIUM.value
         streams = {self.stream_key + p.value: ">" for p in TaskPriority}
         priority_order = {p.value: i for i, p in enumerate(TaskPriority)}
         while not self._block_new_tasks:
@@ -585,6 +518,11 @@ class Worker(Generic[WD]):
                 expire = now_ms() + self.idle_timeout * 1000
                 for k, v in priorities.items():
                     await pipe.zadd(self._timeout_key + k, {m: expire for m in v})
+            await self.scripts["publish_delayed_tasks"](
+                keys=[self.queue_key, medium_stream],
+                args=[now_ms()],
+                client=pipe,
+            )
             await pipe.smembers(self._abort_key)
             res = await pipe.execute()
             # Go through task_ids in the aborted tasks set and cancel those tasks.
@@ -598,6 +536,18 @@ class Worker(Generic[WD]):
                     logger.debug(f"aborting {len(aborted)} tasks in worker {self.id}")
                     self.aborting_tasks.update(aborted)
                     await self.redis.srem(self._abort_key, aborted)
+            if res[-2]:
+                logger.debug(f"added {res[-2]} delayed tasks to stream")  # type: ignore
+            # cron jobs
+            futures: set[TypedCoroutine[Task[Any]]] = set()
+            ts = now_ms()
+            for name, cron_job in self.cron_jobs.items():
+                if ts - 500 > self.cron_schedule[name]:
+                    self.cron_schedule[name] = cron_job.next()
+                    futures.add(cron_job.enqueue().start(schedule=cron_job.schedule()))
+            if futures:
+                logger.debug(f"enqueuing {len(futures)} cron jobs in worker {self.id}")
+                await asyncio.gather(*futures)
             # start new tasks
             if messages:
                 logger.debug(f"starting {len(messages)} new tasks in worker {self.id}")

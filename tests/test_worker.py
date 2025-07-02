@@ -58,7 +58,6 @@ async def test_health_check(redis_url: str):
         health_crontab="* * * * * * *",
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
     )
     await worker.redis.flushdb()
     worker.loop.create_task(worker.run_async())
@@ -151,7 +150,6 @@ async def test_reclaim_idle_task(redis_url: str):
     worker2 = Worker(
         redis_url=redis_url,
         queue_name="test",
-        with_scheduler=True,
     )
 
     @worker2.task(timeout=3)
@@ -181,7 +179,6 @@ async def test_change_cron_schedule(redis_url: str):
         redis_url=redis_url,
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
     )
     foo1 = worker1.cron("0 0 1 1 *")(foo)
     worker1.loop.create_task(worker1.run_async())
@@ -194,7 +191,6 @@ async def test_change_cron_schedule(redis_url: str):
         redis_url=redis_url,
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
     )
     foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
     worker2.loop.create_task(worker2.run_async())
@@ -210,7 +206,6 @@ async def test_signed_data(redis_url: str):
         redis_url=redis_url,
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
         signing_secret=secrets.token_urlsafe(32),
     )
 
