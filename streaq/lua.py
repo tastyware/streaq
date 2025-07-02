@@ -116,33 +116,45 @@ redis.call('zrem', queue_key, task_id)
 return 1
 """
 
-UNCLAIM_IDLE_TASKS = """
+RECLAIM_IDLE_TASKS = """
 local timeout_key = KEYS[1]
 local stream_key = KEYS[2]
 local group_name = KEYS[3]
 local consumer_name = KEYS[4]
 
 local current_time = ARGV[1]
+local count = ARGV[2]
 
-local timed_out = redis.call('zrangebyscore', timeout_key, 0, current_time)
-if #timed_out > 0 then
-  local claimed = redis.call(
-    'xclaim',
-    stream_key,
-    group_name,
-    consumer_name,
+local messages = {}
+
+for i=3, #ARGV do
+  local priority = ARGV[i]
+  local timed_out = redis.call(
+    'zrangebyscore',
+    timeout_key .. priority,
     0,
-    unpack(timed_out)
+    current_time,
+    'limit',
+    0,
+    count
   )
-  for _, message in ipairs(claimed) do
-    redis.call('xack', stream_key, group_name, message[1])
-    redis.call('xdel', stream_key, message[1])
-    redis.call('xadd', stream_key, '*', unpack(message[2]))
+
+  if #timed_out > 0 then
+    messages[priority] = redis.call(
+      'xclaim',
+      stream_key .. priority,
+      group_name,
+      consumer_name,
+      0,
+      unpack(timed_out)
+    )
+    redis.call('zrem', timeout_key .. priority, unpack(timed_out))
+    count = count - #messages[priority]
+    if count <= 0 then break end
   end
-  redis.call('zrem', timeout_key, unpack(timed_out))
 end
 
-return #timed_out
+return cjson.encode(messages)
 """
 
 CREATE_GROUPS = """
@@ -167,5 +179,5 @@ def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
         "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
         "fail_dependents": redis.register_script(FAIL_DEPENDENTS),
         "update_dependents": redis.register_script(UPDATE_DEPENDENTS),
-        "unclaim_idle_tasks": redis.register_script(UNCLAIM_IDLE_TASKS),
+        "reclaim_idle_tasks": redis.register_script(RECLAIM_IDLE_TASKS),
     }

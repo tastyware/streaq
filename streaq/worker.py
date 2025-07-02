@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import pickle
 import signal
 from collections import defaultdict
@@ -19,7 +20,7 @@ from anyio.abc import CapacityLimiter
 from coredis import PureToken, Redis
 from coredis.commands import PubSub, Script
 from coredis.sentinel import Sentinel
-from coredis.typing import KeyT, ValueT
+from coredis.typing import KeyT
 from crontab import CronTab
 
 from streaq import logger
@@ -106,6 +107,7 @@ class Worker(Generic[WD]):
         if provided, used to sign data stored in Redis, which can improve security
         especially if using pickle. For binary serializers only. You can generate
         a key using secrets, for example: `secrets.token_urlsafe(32)`
+    :param idle_timeout: the amount of time prefetched tasks wait before being requeued
     """
 
     __slots__ = (
@@ -140,6 +142,7 @@ class Worker(Generic[WD]):
         "_health_key",
         "_channel_key",
         "_timeout_key",
+        "idle_timeout",
         "main_task",
         "_start_time",
         "_prefix",
@@ -170,6 +173,7 @@ class Worker(Generic[WD]):
         health_crontab: str = "*/5 * * * *",
         with_scheduler: bool | None = None,
         signing_secret: str | None = None,
+        idle_timeout: timedelta | int = 300,
     ):
         #: Redis connection
         if redis_sentinel_nodes:
@@ -232,6 +236,7 @@ class Worker(Generic[WD]):
         self._health_key = self._prefix + REDIS_HEALTH
         self._channel_key = self._prefix + REDIS_CHANNEL
         self._timeout_key = self._prefix + REDIS_TIMEOUT
+        self.idle_timeout = cast(float, to_seconds(idle_timeout))
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
@@ -484,17 +489,7 @@ class Worker(Generic[WD]):
                 sortby=PureToken.BYSCORE,
             )
             pipe = await self.redis.pipeline(transaction=False)
-            for priority in TaskPriority:
-                await self.scripts["unclaim_idle_tasks"](
-                    keys=[
-                        self._timeout_key + priority.value,
-                        self.stream_key + priority.value,
-                        self._group_name,
-                        self.id,
-                    ],
-                    args=[now],
-                    client=pipe,
-                )
+            # TODO: wrap all into a single script
             for task_id, score in task_ids:
                 expire_ms = int(score - now + DEFAULT_TTL)
                 if expire_ms <= 0:
@@ -508,10 +503,7 @@ class Worker(Generic[WD]):
                 logger.debug(
                     f"enqueuing {len(task_ids)} delayed tasks in worker {self.id}"
                 )
-            res = await pipe.execute()
-            idle = res[0] + res[1] + res[2]  # for each priority level
-            if idle:
-                logger.info(f"retrying ↻ {idle} idle tasks")
+            await pipe.execute()
 
             # cron jobs
             futures = set()
@@ -533,49 +525,72 @@ class Worker(Generic[WD]):
         Periodically check for tasks
         that were never XACK'd but have timed out to reclaim.
         """
-        high_stream = self.stream_key + TaskPriority.HIGH.value
-        medium_stream = self.stream_key + TaskPriority.MEDIUM.value
-        low_stream = self.stream_key + TaskPriority.LOW.value
-        priority_order = {
-            TaskPriority.HIGH.value: 0,
-            TaskPriority.MEDIUM.value: 1,
-            TaskPriority.LOW.value: 2,
-        }
+        streams = {self.stream_key + p.value: ">" for p in TaskPriority}
+        priority_order = {p.value: i for i, p in enumerate(TaskPriority)}
         while not self._block_new_tasks:
             messages: list[StreamMessage] = []
             active_tasks = self.concurrency - self.bs._value
             pending_tasks = len(self.task_wrappers)
             count = self.queue_fetch_limit - pending_tasks
             pipe = await self.redis.pipeline(transaction=False)
-            await pipe.smembers(self._abort_key)
             if count > 0:
-                await pipe.xreadgroup(
-                    self._group_name,
-                    self.id,
-                    streams={high_stream: ">", medium_stream: ">", low_stream: ">"},
-                    block=500,
-                    count=count,
+                idle = await self.scripts["reclaim_idle_tasks"](
+                    keys=[
+                        self._timeout_key,
+                        self.stream_key,
+                        self._group_name,
+                        self.id,
+                    ],
+                    args=[now_ms(), count, *(p.value for p in TaskPriority)],
                 )
-            res = await pipe.execute()
-            if count > 0 and res[-1]:
-                for stream, msgs in res[-1].items():
-                    priority = stream.split(":")[-1]
-                    messages.extend(
-                        [
-                            StreamMessage(
-                                message_id=msg_id,
-                                task_id=msg["task_id"],
-                                priority=priority,
-                            )
-                            for msg_id, msg in msgs
-                        ]
+                mapping: dict[str, list[str | list[str]]] = json.loads(idle)  # type: ignore
+                if mapping:
+                    for priority, _entries in mapping.items():
+                        messages.extend(
+                            [
+                                StreamMessage(
+                                    priority=priority,
+                                    task_id=entry[1][1],
+                                    message_id=entry[0],
+                                )
+                                for entry in _entries
+                            ]
+                        )
+                    logger.info(f"retrying ↻ {len(messages)} idle tasks")
+                    count -= len(messages)
+                if count > 0:
+                    entries = await self.redis.xreadgroup(
+                        self._group_name,
+                        self.id,
+                        streams=streams,  # type: ignore
+                        block=500,
+                        count=count,
                     )
-            else:
-                await asyncio.sleep(0)  # yield control
+                    if entries:
+                        for stream, msgs in entries.items():
+                            priority = stream.split(":")[-1]
+                            messages.extend(
+                                [
+                                    StreamMessage(
+                                        message_id=msg_id,  # type: ignore
+                                        task_id=msg["task_id"],  # type: ignore
+                                        priority=priority,
+                                    )
+                                    for msg_id, msg in msgs
+                                ]
+                            )
+                priorities: dict[str, list[str]] = defaultdict(list)
+                for msg in messages:
+                    priorities[msg.priority].append(msg.message_id)
+                expire = now_ms() + self.idle_timeout * 1000
+                for k, v in priorities.items():
+                    await pipe.zadd(self._timeout_key + k, {m: expire for m in v})
+            await pipe.smembers(self._abort_key)
+            res = await pipe.execute()
             # Go through task_ids in the aborted tasks set and cancel those tasks.
-            if res[0]:
+            if res[-1]:
                 aborted: set[str] = set()
-                for task_id in res[0]:
+                for task_id in res[-1]:
                     if task_id in self.tasks:
                         self.tasks[task_id].cancel()
                         aborted.add(task_id)
@@ -615,6 +630,9 @@ class Worker(Generic[WD]):
         silent: bool = False,
         ttl: timedelta | int | None = 300,
     ) -> None:
+        """
+        Serialize a failed task with metadata and handle failure.
+        """
         now = now_ms()
         data = {
             "f": fn_name,
@@ -648,12 +666,18 @@ class Worker(Generic[WD]):
             await pipe.incr(key(REDIS_RETRY))
             await pipe.srem(self._abort_key, [task_id])
             await pipe.pexpire(key(REDIS_RETRY), DEFAULT_TTL)
-            raw, task_try, abort, _ = await pipe.execute()
+            await pipe.zrem(self._timeout_key + msg.priority, [msg.message_id])
+            raw, task_try, abort, _, removed = await pipe.execute()
             if not raw:
                 logger.warning(f"task {task_id} expired †")
                 return await self.handle_failure(
                     msg, StreaqError("Task execution failed!")
                 )
+            if not removed:
+                logger.warning(
+                    f"Task {task_id} reclaimed, is worker {self.id} backed up?"
+                )
+                return
 
             try:
                 data: dict[str, Any] = self.deserialize(raw)
@@ -1133,15 +1157,6 @@ class Worker(Generic[WD]):
         await asyncio.gather(
             *self.task_wrappers.values(), self.main_task, return_exceptions=True
         )
-        pipe = await self.redis.pipeline(transaction=False)
-        # delete consumers
-        for priority in TaskPriority:
-            await pipe.xgroup_delconsumer(
-                self.stream_key + priority.value,
-                groupname=self._group_name,
-                consumername=self.id,
-            )
-        await pipe.execute(raise_on_error=False)
         run_time = now_ms() - self._start_time
         logger.info(f"shutdown {str(self)} after {run_time}ms")
 

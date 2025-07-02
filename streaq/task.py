@@ -49,9 +49,9 @@ class TaskPriority(str, Enum):
     Enum of possible task priority levels.
     """
 
-    LOW = "low"
-    MEDIUM = "medium"
     HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 class TaskStatus(str, Enum):
