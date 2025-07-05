@@ -1,19 +1,12 @@
 import asyncio
-from typing import Awaitable
+import time as pytime
 
 import typer
 
 from streaq import Worker
 
-worker = Worker(concurrency=32, with_scheduler=False)
+worker = Worker(concurrency=32)
 N_TASKS = 20_000
-sem = asyncio.Semaphore(32)
-
-
-# control the number of simultaneous connections to Redis
-async def sem_task(task: Awaitable):
-    async with sem:
-        return await task
 
 
 @worker.task()
@@ -23,20 +16,16 @@ async def sleeper(time: int) -> None:
 
 
 async def main(time: int):
+    tasks = [sleeper.enqueue(time) for _ in range(N_TASKS)]
     async with worker:
-        await asyncio.gather(
-            *[
-                asyncio.create_task(sem_task(sleeper.enqueue(time).start()))
-                for _ in range(N_TASKS)
-            ]
-        )
+        await worker.enqueue_many(tasks)
 
 
 def run(time: int = 0):
     loop = asyncio.get_event_loop()
-    start = loop.time()
+    start = pytime.perf_counter()
     loop.run_until_complete(main(time))
-    end = loop.time()
+    end = pytime.perf_counter()
     print(f"enqueued {N_TASKS} tasks in {end - start:.2f}s")
 
 

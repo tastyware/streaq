@@ -9,7 +9,7 @@ Fast, async, type-safe distributed task queue via Redis streams
 
 ## Features
 
-- Up to [5x-15x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than arq
+- Up to [5x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than arq
 - Strongly typed
 - 95%+ unit test coverage
 - Comprehensive documentation
@@ -20,8 +20,8 @@ Fast, async, type-safe distributed task queue via Redis streams
 - Pipelining
 - Priority queues
 - Support for synchronous tasks (run in separate threads)
-- Dead simple, ~2k lines of code
 - Redis Sentinel support for production
+- Built-in web UI for monitoring tasks
 
 ## Installation
 
@@ -34,55 +34,33 @@ $ pip install streaq
 To start, you'll need to create a `Worker` object:
 
 ```python
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from typing import AsyncIterator
-from httpx import AsyncClient
 from streaq import Worker
 
-@dataclass
-class WorkerContext:
-    """
-    Type safe way of defining the dependencies of your tasks.
-    e.g. HTTP client, database connection, settings.
-    """
-    http_client: AsyncClient
-
-@asynccontextmanager
-async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
-    """
-    Here, we initialize the worker's dependencies.
-    You can also do any startup/shutdown work here!
-    """
-    async with AsyncClient() as http_client:
-        yield Context(http_client)
-
-worker = Worker(redis_url="redis://localhost:6379", lifespan=lifespan)
+worker = Worker(redis_url="redis://localhost:6379")
 ```
 
 You can then register async tasks with the worker like this:
 
 ```python
-@worker.task(timeout=5)
-async def fetch(url: str) -> int:
-    # worker.context here is of type WorkerContext, enforced by static typing
-    res = await worker.context.http_client.get(url)
-    return len(res.text)
+import asyncio
+
+@worker.task()
+async def sleeper(time: int) -> int:
+    await asyncio.sleep(time)
+    return time
 
 @worker.cron("* * * * mon-fri")  # every minute on weekdays
 async def cronjob() -> None:
-    print("It's a bird... It's a plane... It's CRON!")
+    print("Nobody respects the spammish repetition!")
 ```
 
 Finally, use the worker's async context manager to queue up tasks:
 
 ```python
 async with worker:
-    await fetch.enqueue("https://tastyware.dev/")
-    # this will be run directly locally, not enqueued
-    await fetch.run("https://github.com/python-arq/arq")
+    await sleeper.enqueue(3)
     # enqueue returns a task object that can be used to get results/info
-    task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
+    task = await sleeper.enqueue(1).start(delay=3)
     print(await task.info())
     print(await task.result(timeout=5))
 ```
@@ -99,18 +77,18 @@ $ python example.py
 Let's see what the output looks like:
 
 ```
-[INFO] 19:49:44: starting worker db064c92 for 3 functions
-[INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba → worker db064c92
-[INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba ← 15
-[INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 → worker db064c92
-[INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 ← 293784
-[INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 → worker db064c92
-It's a bird... It's a plane... It's CRON!
-[INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 ← None
+[INFO] 02:14:30: starting worker 3265311d for 2 functions
+[INFO] 02:14:35: task cf0c55387a214320bd23e8987283a562 → worker 3265311d
+[INFO] 02:14:38: task cf0c55387a214320bd23e8987283a562 ← 3
+[INFO] 02:14:40: task 1de3f192ee4a40d4884ebf303874681c → worker 3265311d
+[INFO] 02:14:41: task 1de3f192ee4a40d4884ebf303874681c ← 1
+[INFO] 02:15:00: task 2a4b864e5ecd4fc99979a92f5db3a6e0 → worker 3265311d
+Nobody respects the spammish repetition!
+[INFO] 02:15:00: task 2a4b864e5ecd4fc99979a92f5db3a6e0 ← None
 ```
 ```
-TaskData(fn_name='fetch', enqueue_time=1743468587037, task_try=None, scheduled=datetime.datetime(2025, 4, 1, 0, 49, 50, 37000, tzinfo=datetime.timezone.utc))
-TaskResult(success=True, result=293784, start_time=1743468590041, finish_time=1743468590576, queue_name='default')
+TaskInfo(fn_name='sleeper', enqueue_time=1751508876961, task_try=None, scheduled=datetime.datetime(2025, 7, 3, 2, 14, 39, 961000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+TaskResult(fn_name='sleeper', enqueue_time=1751508876961, success=True, result=1, start_time=1751508880500, finish_time=1751508881503)
 ```
 
 For more examples, check out the [documentation](https://streaq.readthedocs.io/en/latest/).

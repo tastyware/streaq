@@ -1,0 +1,20 @@
+<table class="table table-sm table-striped table-hover" id="tasks">
+  <thead>
+    <tr>
+      <th scope="col">Enqueue time</th>
+      <th scope="col">Function name</th>
+      <th scope="col">Status</th>
+      <th scope="col">Task ID</th>
+    </tr>
+  </thead>
+  <tbody class="font-monospace">
+    {% for task in tasks %}
+    <tr>
+      <td>{{ task.enqueue_time }}</td>
+      <td>{{ task.fn_name }}</td>
+      <td><span class="badge bg-{{task.color}} text-uppercase text-{{task.text_color}}">{{ task.status.value }}</span></td>
+      <td><a href="/task/{{task.task_id}}">{{ task.task_id }}</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

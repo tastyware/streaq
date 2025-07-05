@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from streaq import StreaqError, Worker
-from streaq.constants import REDIS_RUNNING
+from streaq.constants import REDIS_UNIQUE
 from streaq.task import StreaqRetry, TaskPriority, TaskStatus
 from streaq.types import ReturnCoroutine
 
@@ -77,7 +77,7 @@ async def test_task_cron(worker: Worker):
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
     # this will be set if task is running
-    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_UNIQUE + cron2.fn_name)
 
 
 async def test_task_info(redis_url: str):
@@ -201,7 +201,7 @@ async def test_task_dependency(worker: Worker):
     task = await foobar.enqueue().start(delay=1)
     task2 = await foobar.enqueue().start(after=task.id)
     worker.loop.create_task(worker.run_async())
-    assert await task2.status() == TaskStatus.PENDING
+    assert await task2.status() == TaskStatus.SCHEDULED
     await task.result(3)
     result = await task2.result(3)
     assert result.success
@@ -216,11 +216,11 @@ async def test_task_dependency_multiple(worker: Worker):
     task2 = await foobar.enqueue().start(after=task.id)
     task3 = await foobar.enqueue().start(after=[task.id, task2.id])
     worker.loop.create_task(worker.run_async())
-    assert await task2.status() == TaskStatus.PENDING
-    assert await task3.status() == TaskStatus.PENDING
+    assert await task2.status() == TaskStatus.SCHEDULED
+    assert await task3.status() == TaskStatus.SCHEDULED
     res1 = await task.result(3)
     assert res1.success
-    assert await task3.status() == TaskStatus.PENDING
+    assert await task3.status() == TaskStatus.SCHEDULED
     res2 = await task2.result(3)
     assert res2.success
     res3 = await task3.result(3)
@@ -391,7 +391,7 @@ async def test_sync_cron(worker: Worker):
 
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
-    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cronjob.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_UNIQUE + cronjob.fn_name)
 
 
 async def test_cron_multiple_runs(worker: Worker):

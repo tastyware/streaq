@@ -1,0 +1,74 @@
+{% extends "base.j2" %}
+
+{% block content %}
+<div class="container mt-3">
+  <div class="card shadow d-inline-block">
+    <div class="card-body">
+      <div class="row mb-3">
+        <h4 class="card-title">Task</h4>
+      </div>
+      <div class="row mb-3">
+        <table class="table table-sm table-striped table-hover w-auto">
+          <tbody class="font-monospace">
+            <tr>
+              <th scope="row">Function</th>
+              <td>{{ function }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Status</th>
+              <td>
+                <span class="badge bg-{{color}} text-uppercase text-{{text_color}}">{{ status }}</span>
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Enqueue time</th>
+              <td>{{ enqueue_time }}</td>
+            </tr>
+            {% if not is_done %}
+            <tr>
+              <th scope="row">Scheduled time</th>
+              <td>{{ scheduled }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Try count</th>
+              <td>{{ task_try }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Dependencies</th>
+              <td>{{ dependencies }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Dependents</th>
+              <td>{{ dependents }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <th scope="row">Success</th>
+              <td>{{ success }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Result</th>
+              <td>{{ result }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Start Time</th>
+              <td>{{ start_time }}</td>
+            </tr>
+            <tr>
+              <th scope="row">End Time</th>
+              <td>{{ finish_time }}</td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      {% if not is_done %}
+      <button type="button" class="btn btn-danger" hx-delete="/task/{{task_id}}" hx-indicator="#spinner">
+        Abort Task
+        <img id="spinner" class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg"/>
+      </button>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

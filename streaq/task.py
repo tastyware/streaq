@@ -17,7 +17,6 @@ from streaq.constants import (
     DEFAULT_TTL,
     REDIS_DEPENDENCIES,
     REDIS_DEPENDENTS,
-    REDIS_MESSAGE,
     REDIS_PREFIX,
     REDIS_RESULT,
     REDIS_TASK,
@@ -50,9 +49,9 @@ class TaskPriority(str, Enum):
     Enum of possible task priority levels.
     """
 
-    LOW = "low"
-    MEDIUM = "medium"
     HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 class TaskStatus(str, Enum):
@@ -68,7 +67,7 @@ class TaskStatus(str, Enum):
 
 
 @dataclass
-class TaskData:
+class TaskInfo:
     """
     Dataclass containing additional task information not stored locally,
     such as try and time enqueued.
@@ -76,8 +75,10 @@ class TaskData:
 
     fn_name: str
     enqueue_time: int
-    task_try: int | None = None
-    scheduled: datetime | None = None
+    task_try: int | None
+    scheduled: datetime | None
+    dependencies: set[str]
+    dependents: set[str]
 
 
 @dataclass
@@ -87,11 +88,12 @@ class TaskResult(Generic[R]):
     like run time and whether execution terminated successfully.
     """
 
+    fn_name: str
+    enqueue_time: int
     success: bool
     result: R | Exception
     start_time: int
     finish_time: int
-    queue_name: str
 
 
 @dataclass
@@ -163,7 +165,6 @@ class Task(Generic[R]):
             res = await self.parent.worker.scripts["publish_task"](
                 keys=[
                     self.parent.worker.stream_key,
-                    self._task_key(REDIS_MESSAGE),
                     self._task_key(REDIS_TASK),
                     self.parent.worker.queue_key,
                 ],
@@ -175,7 +176,7 @@ class Task(Generic[R]):
         return self
 
     def then(
-        self, task: RegisteredTask[WD, POther, ROther], **kwargs: dict[str, Any]
+        self, task: RegisteredTask[WD, POther, ROther], **kwargs: Any
     ) -> Task[ROther]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments will
@@ -221,9 +222,9 @@ class Task(Generic[R]):
                 data["A"] = self._after.id
             if self._triggers:
                 data["T"] = self._triggers.id
-            return self.parent.worker.serializer(data)
+            return self.parent.worker.serialize(data)
         except Exception as e:
-            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
+            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
 
     async def status(self) -> TaskStatus:
         """
@@ -253,7 +254,7 @@ class Task(Generic[R]):
         """
         return await self.parent.worker.abort_by_id(self.id, timeout=timeout)
 
-    async def info(self) -> TaskData:
+    async def info(self) -> TaskInfo:
         """
         Fetch info about a previously enqueued task.
 

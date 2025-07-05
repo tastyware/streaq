@@ -72,3 +72,27 @@ The second way is to use ``Worker.enqueue_unsafe``:
        await worker.enqueue_unsafe("fetch", "https://tastyware.dev")
 
 This method is not type-safe, but it doesn't require you to re-define the task signature in the backend. Here, the first parameter is the ``fn_name`` of the task defined elsewhere, and the rest of the args and kwargs can be passed normally.
+
+Web UI integration
+------------------
+
+The web UI is useful for monitoring tasks; however, the information available there (and the ability to cancel tasks) is probably not something you want to make available to all your users.
+
+With a little work the UI can be mounted as a part of an existing FastAPI application. You just need to override the ``get_worker()`` dependency:
+
+.. code-block:: python
+
+   # provide access to the worker we've defined elsewhere
+   async def _get_worker() -> AsyncGenerator[Worker[Any], None]:
+       yield worker
+
+With that done, we can integrate the UI into our existing app:
+
+.. code-block:: python
+
+   from streaq.ui import get_worker, router
+
+   app = FastAPI()
+   app.dependency_overrides[get_worker] = _get_worker
+   # here, you can add any auth-related dependencies as well
+   app.include_router(router, prefix="/streaq", dependencies=[...])

@@ -13,17 +13,30 @@ You can always run ``streaq --help`` to see the help page:
 
    Usage: streaq [OPTIONS] WORKER_PATH
 
-   ╭─ Arguments ────────────────────────────────────────────────────────────────────────────────────────────╮
-   │ *    worker_path      TEXT  [default: None] [required]                                                 │
-   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-   ╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────────╮
-   │ --workers             -w      INTEGER  Number of worker processes to spin up [default: 1]              │
-   │ --burst               -b               Whether to shut down worker when the queue is empty             │
-   │ --reload              -r               Whether to reload the worker upon changes detected              │
-   │ --verbose             -v               Whether to use logging.DEBUG instead of logging.INFO            │
-   │ --version                              Show installed version                                          │
-   │ --install-completion                   Install completion for the current shell.                       │
-   │ --show-completion                      Show completion for the current shell, to copy it or customize  │
-   │                                        the installation.                                               │
-   │ --help                                 Show this message and exit.                                     │
-   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+   ╭─ Arguments ─────────────────────────────────────────────────────────────╮
+   │ *    worker_path      TEXT  [default: None] [required]                  │
+   ╰─────────────────────────────────────────────────────────────────────────╯
+   ╭─ Options ───────────────────────────────────────────────────────────────╮
+   │ --workers             -w      INTEGER  Number of worker processes to    │
+   │                                        spin up                          │
+   │                                        [default: 1]                     │
+   │ --burst               -b               Whether to shut down worker when │
+   │                                        the queue is empty               │
+   │ --reload              -r               Whether to reload the worker     │
+   │                                        upon changes detected            │
+   │ --verbose             -v               Whether to use logging.DEBUG     │
+   │                                        instead of logging.INFO          │
+   │ --version                              Show installed version           │
+   │ --web                                  Run a web UI for monitoring      │
+   │                                        tasks in a separate process.     │
+   │ --host                -h      TEXT     Host for the web UI server.      │
+   │                                        [default: 0.0.0.0]               │
+   │ --port                -p      INTEGER  Port for the web UI server.      │
+   │                                        [default: 8000]                  │
+   │ --install-completion                   Install completion for the       │
+   │                                        current shell.                   │
+   │ --show-completion                      Show completion for the current  │
+   │                                        shell, to copy it or customize   │
+   │                                        the installation.                │
+   │ --help                                 Show this message and exit.      │
+   ╰─────────────────────────────────────────────────────────────────────────╯

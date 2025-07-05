@@ -43,12 +43,17 @@ You can register as many middleware as you like to a worker, which will run them
 
        return wrapper
 
+   # retry all exceptions up to a max of 3 tries
    @worker.middleware
    def retry(task: ReturnCoroutine) -> ReturnCoroutine:
        async def wrapper(*args, **kwargs) -> Any:
            try:
                return await task(*args, **kwargs)
-           except Exception:
-               raise StreaqRetry("Retrying on error!")
+           except Exception as e:
+               try_count = worker.task_context().tries
+               if try_count < 3:
+                   raise StreaqRetry("Retrying on error!") from e
+               else:
+                   raise e
 
        return wrapper

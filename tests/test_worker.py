@@ -1,5 +1,6 @@
 import asyncio
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -57,7 +58,6 @@ async def test_health_check(redis_url: str):
         health_crontab="* * * * * * *",
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
     )
     await worker.redis.flushdb()
     worker.loop.create_task(worker.run_async())
@@ -150,7 +150,6 @@ async def test_reclaim_idle_task(redis_url: str):
     worker2 = Worker(
         redis_url=redis_url,
         queue_name="test",
-        with_scheduler=True,
     )
 
     @worker2.task(timeout=3)
@@ -180,7 +179,6 @@ async def test_change_cron_schedule(redis_url: str):
         redis_url=redis_url,
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
     )
     foo1 = worker1.cron("0 0 1 1 *")(foo)
     worker1.loop.create_task(worker1.run_async())
@@ -193,7 +191,6 @@ async def test_change_cron_schedule(redis_url: str):
         redis_url=redis_url,
         queue_name="test",
         handle_signals=False,
-        with_scheduler=True,
     )
     foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
     worker2.loop.create_task(worker2.run_async())
@@ -202,3 +199,36 @@ async def test_change_cron_schedule(redis_url: str):
     task2 = foo2.enqueue()
     assert foo2.schedule() == (await task2.info()).scheduled
     assert foo1.schedule() != foo2.schedule()
+
+
+async def test_signed_data(redis_url: str):
+    worker = Worker(
+        redis_url=redis_url,
+        queue_name="test",
+        handle_signals=False,
+        signing_secret=secrets.token_urlsafe(32),
+    )
+
+    @worker.task()
+    async def foo() -> str:
+        return "bar"
+
+    worker.loop.create_task(worker.run_async())
+    async with worker:
+        task = await foo.enqueue()
+        res = await task.result(3)
+        assert res.success and res.result == "bar"
+
+
+async def test_enqueue_many(redis_url: str):
+    worker = Worker(redis_url=redis_url, queue_name="test")
+
+    @worker.task()
+    async def foobar(val: int) -> int:
+        await asyncio.sleep(1)
+        return val
+
+    tasks = [foobar.enqueue(i) for i in range(10)]
+    async with worker:
+        await worker.enqueue_many(tasks)
+    assert await worker.queue_size() >= len(tasks)
