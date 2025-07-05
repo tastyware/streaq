@@ -67,7 +67,7 @@ class TaskStatus(str, Enum):
 
 
 @dataclass
-class TaskData:
+class TaskInfo:
     """
     Dataclass containing additional task information not stored locally,
     such as try and time enqueued.
@@ -176,7 +176,7 @@ class Task(Generic[R]):
         return self
 
     def then(
-        self, task: RegisteredTask[WD, POther, ROther], **kwargs: dict[str, Any]
+        self, task: RegisteredTask[WD, POther, ROther], **kwargs: Any
     ) -> Task[ROther]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments will
@@ -254,7 +254,7 @@ class Task(Generic[R]):
         """
         return await self.parent.worker.abort_by_id(self.id, timeout=timeout)
 
-    async def info(self) -> TaskData:
+    async def info(self) -> TaskInfo:
         """
         Fetch info about a previously enqueued task.
 

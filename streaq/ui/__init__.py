@@ -4,6 +4,8 @@ from streaq import Worker
 from streaq.ui.deps import get_worker
 from streaq.ui.tasks import router
 
+__all__ = ["get_worker", "router"]
+
 
 def run_web(host: str, port: int, worker: Worker[Any]) -> None:  # pragma: no cover
     import uvicorn

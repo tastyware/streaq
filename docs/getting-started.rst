@@ -1,7 +1,7 @@
 Getting started
 ===============
 
-To start, you'll need to create a ``Worker`` object:
+To start, you'll need to create a ``Worker`` object. At worker creation, you can provide an async context manager "lifespan" which will initialize any global dependencies you want tasks to have access to:
 
 .. code-block:: python
 
@@ -23,7 +23,7 @@ To start, you'll need to create a ``Worker`` object:
    async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
        """
        Here, we initialize the worker's dependencies.
-       You can also do any startup/shutdown work here!
+       You can also do any startup/shutdown work here
        """
        async with AsyncClient() as http_client:
            yield Context(http_client)
@@ -36,13 +36,9 @@ You can then register async tasks with the worker like this:
 
    @worker.task(timeout=5)
    async def fetch(url: str) -> int:
-       # worker.context here is of type WorkerContext, enforced by static typing
+       # worker.context here is of type WorkerContext
        res = await worker.context.http_client.get(url)
        return len(res.text)
-
-   @worker.cron("* * * * mon-fri")  # every minute on weekdays
-   async def cronjob() -> None:
-       print("Nobody respects the spammish repetition!")
 
 Finally, use the worker's async context manager to queue up tasks:
 
@@ -50,39 +46,34 @@ Finally, use the worker's async context manager to queue up tasks:
 
    async with worker:
        await fetch.enqueue("https://tastyware.dev/")
-       # this will be run directly locally, not enqueued
-       await fetch.run("https://github.com/python-arq/arq")
        # enqueue returns a task object that can be used to get results/info
        task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
        print(await task.info())
        print(await task.result(timeout=5))
 
-Putting this all together gives us `example.py <https://github.com/tastyware/streaq/blob/master/example.py>`_. Let's spin up a worker:
+Put this all together in a script and spin up a worker:
 
 .. code-block:: bash
 
-   $ streaq example.worker
+   $ streaq script.worker
 
 and queue up some tasks like so:
 
 .. code-block:: bash
 
-   $ python example.py
+   $ python script.py
 
 Let's see what the output looks like:
 
 .. code-block::
 
-   [INFO] 19:49:44: starting worker db064c92 for 3 functions
-   [INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba → worker db064c92
-   [INFO] 19:49:46: task dc844a5b5f394caa97e4c6e702800eba ← 15
-   [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 → worker db064c92
-   [INFO] 19:49:50: task 178c4f4e057942d6b6269b38f5daaaa1 ← 293784
-   [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 → worker db064c92
-   Nobody respects the spammish repetition!
-   [INFO] 19:50:00: task cde2413d9593470babfd6d4e36cf4570 ← None
+   [INFO] 13:18:07: starting worker ca5bd9eb for 2 functions
+   [INFO] 13:18:10: task 1ab9543aae374bd89713ca00f5c566f9 → worker ca5bd9eb
+   [INFO] 13:18:10: task 1ab9543aae374bd89713ca00f5c566f9 ← 15
+   [INFO] 13:18:14: task cac277a9e3034704a36e67099c1d6f07 → worker ca5bd9eb
+   [INFO] 13:18:15: task cac277a9e3034704a36e67099c1d6f07 ← 303557
 
 .. code-block:: python
 
-   TaskData(fn_name='fetch', enqueue_time=1743468587037, task_try=None, scheduled=datetime.datetime(2025, 4, 1, 0, 49, 50, 37000, tzinfo=datetime.timezone.utc))
-   TaskResult(success=True, result=293784, start_time=1743468590041, finish_time=1743468590576, queue_name='default')
+   TaskInfo(fn_name='fetch', enqueue_time=1751635090933, task_try=None, scheduled=datetime.datetime(2025, 7, 4, 13, 18, 13, 933000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+   TaskResult(fn_name='fetch', enqueue_time=1751635090933, success=True, result=303557, start_time=1751635094068, finish_time=1751635095130)

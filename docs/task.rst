@@ -6,7 +6,7 @@ Task execution
 
 streaQ preserves arq's task execution model, called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will be cancelled immediately and will remain in the queue to be run again when the worker starts up again (or gets run by another worker which is still running).
 
-In the case of catastrophic failure (that is, the worker shuts down abruptly without doing cleanup), tasks can still be retried as long as you set a ``timeout`` when registering the task.
+In the case of a catastrophic failure (that is, the worker shuts down abruptly without doing cleanup), tasks can usually still be retried as long as you set a ``timeout`` when registering the task.
 
 All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice.
 
@@ -78,6 +78,59 @@ Tasks can depend on other tasks, meaning they won't be enqueued until their depe
        task2 = await sleeper.enqueue(2).start(after=task1.id)
        task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
+Task priorities
+---------------
+
+Sometimes, certain critical tasks should "skip the line" and receive priority over other tasks. streaQ supports this by allowing you to specify a priority when enqueuing tasks. If a low priority queue is backed up, you can use a high priority queue to ensure that critical tasks are executed quickly.
+
+There are three priorities: ``TaskPriority.LOW``, ``TaskPriority.MEDIUM``, and ``TaskPriority.HIGH``. By default, tasks are enqueued with a priority of ``TaskPriority.LOW``. You can specify a priority like so:
+
+.. code-block:: python
+
+   from streaq import TaskPriority
+
+   async with worker:
+       await sleeper.enqueue(3).start(priority=TaskPriority.HIGH)
+
+Here's an example that demonstrates how priorities work. Note that the low priority task is enqueued first, but the high priority task is executed first. (Make sure to run this *before* starting the worker!)
+
+.. code-block:: python
+
+   worker = Worker(concurrency=1)  # max 1 task running at a time for demo
+
+   @worker.task()
+   async def low() -> None:
+       print("Low priority task")
+
+   @worker.task()
+   async def high() -> None:
+       print("High priority task")
+
+   async with worker:
+       await low.enqueue().start(priority=TaskPriority.LOW)
+       await high.enqueue().start(priority=TaskPriority.HIGH)
+
+.. note::
+   Priorities can only be configured for tasks that are being enqueued directly. Tasks that are scheduled or deferred (and cron jobs) will always be enqueued with a priority of ``TaskPriority.MEDIUM``, which helps ensure they are executed close to their scheduled time.
+
+Enqueuing by batch
+------------------
+
+For most cases, the above method of enqueuing tasks is sufficient. However, streaQ also provides a way to enqueue a group of tasks together in order to maximize efficiency:
+
+.. code-block:: python
+
+   async with worker:
+       # importantly, we're not using `await` here
+       tasks = [sleeper.enqueue(i) for i in range(10)]
+       await worker.enqueue_many(tasks)
+
+Note that for batch enqueuing, you cannot pass any scheduling related arguments (``after``, ``delay``, ``schedule``) since tasks will be enqueued immediately; however, you can pass a priority:
+
+.. code-block:: python
+
+   await worker.enqueue_many(tasks, priority=TaskPriority.HIGH)
+
 Running tasks locally
 ---------------------
 
@@ -105,10 +158,24 @@ Enqueued tasks return a ``Task`` object which can be used to wait for task resul
 .. code-block:: python
 
    TaskStatus.SCHEDULED
-   TaskResult(success=True, result=3, start_time=1740763805099, finish_time=1740763808102, queue_name='streaq')
+   TaskResult(fn_name='sleeper', enqueue_time=1740763800091, success=True, result=3, start_time=1740763805099, finish_time=1740763808102)
    TaskStatus.DONE
 
 The ``TaskResult`` object contains information about the task, such as start/end time. The ``success`` flag will tell you whether the object stored in ``result`` is the result of task execution (if ``True``) or an exception raised during execution (if ``False``).
+
+Task context
+------------
+
+As we've already seen, tasks can access the worker context via ``Worker.context`` on a per-worker basis. In addition to this, streaQ provides a per-task context, ``Worker.task_context()``, with task-specific information such as the try count:
+
+.. code-block:: python
+
+   @worker.task()
+   async def get_id() -> str:
+       ctx = worker.task_context()
+       return ctx.task_id
+
+Calls to ``Worker.task_context()`` anywhere outside of a task or a middleware will result in an error.
 
 Retrying tasks
 --------------
@@ -125,10 +192,7 @@ streaQ provides a special exception that you can raise manually inside of your t
            raise StreaqRetry("Retrying!")
        return True
 
-By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` parameter to the ``StreaqRetry`` exception. ``task_context()`` is a special function that can be called within a running task to get extra task information (like how many times it's been tried in this case).
-
-.. note::
-   streaQ's default behavior when tasks fail is to save the exception raised as the task's result. The exception to this is when a worker is shutdown unexpectedly; when that happens, running tasks will be re-enqueued.
+By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` parameter to the ``StreaqRetry`` exception.
 
 Cancelling tasks
 ----------------
@@ -236,24 +300,27 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 
 .. code-block:: python
 
-   TaskResult(success=True, result=True, start_time=1743469913901, finish_time=1743469913902, queue_name='default')
+   TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, result=True, start_time=1743469913901, finish_time=1743469913902)
 
 This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. With a little work, you can build common pipelining utilities from these building blocks:
 
 .. code-block:: python
 
+   from typing import Any, Sequence
+   from streaq.utils import to_tuple
+
    @worker.task()
-   async def map(data: list, to: str) -> list:
-       task = worker.registry[fn_name]
-       coros = [task.enqueue(d).start() for d in data]
+   async def map(data: Sequence[Any], to: str) -> list[Any]:
+       task = worker.registry[to]
+       coros = [task.enqueue(*to_tuple(d)).start() for d in data]
        tasks = await asyncio.gather(*coros)
        results = await asyncio.gather(*[t.result(3) for t in tasks])
        return [r.result for r in results]
 
    @worker.task()
-   async def filter(data: list, by: str) -> list:
-       task = worker.registry[fn_name]
-       coros = [task.enqueue(d).start() for d in data]
+   async def filter(data: Sequence[Any], by: str) -> list[Any]:
+       task = worker.registry[by]
+       coros = [task.enqueue(*to_tuple(d)).start() for d in data]
        tasks = await asyncio.gather(*coros)
        results = await asyncio.gather(*[t.result(5) for t in tasks])
        return [data[i] for i in range(len(data)) if results[i].result]
@@ -267,43 +334,8 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
 .. code-block:: python
 
-   TaskResult(success=True, result=[0, 2, 4, 6], start_time=1743470002680, finish_time=1743470002688, queue_name='default')
-   TaskResult(success=True, result=[0, 4], start_time=1743470002706, finish_time=1743470002710, queue_name='default')
+   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, result=[0, 2, 4, 6], start_time=1751712228895, finish_time=1751712228919)
+   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, result=[0, 4], start_time=1751712228951, finish_time=1751712228966)
 
 .. note::
    For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
-
-Task priorities
----------------
-
-Sometimes, certain critical tasks should "skip the line" and receive priority over other tasks. streaQ supports this by allowing you to specify a priority when enqueuing tasks. If a low priority queue is backed up, you can use a high priority queue to ensure that critical tasks are executed quickly.
-
-There are three priorities: ``TaskPriority.LOW``, ``TaskPriority.MEDIUM``, and ``TaskPriority.HIGH``. By default, tasks are enqueued with a priority of ``TaskPriority.LOW``. You can specify a priority like so:
-
-.. code-block:: python
-
-   from streaq import TaskPriority
-
-   async with worker:
-       await sleeper.enqueue(3).start(priority=TaskPriority.HIGH)
-
-Here's an example that demonstrates how priorities work. Note that the low priority task is enqueued first, but the high priority task is executed first. (Make sure to run this before starting the worker!)
-
-.. code-block:: python
-
-   worker = Worker(concurrency=1)  # max 1 task running at a time for demo
-
-   @worker.task()
-   async def low() -> None:
-       print("Low priority task")
-
-   @worker.task()
-   async def high() -> None:
-       print("High priority task")
-
-   async with worker:
-       await low.enqueue().start(priority=TaskPriority.LOW)
-       await high.enqueue().start(priority=TaskPriority.HIGH)
-
-.. note::
-   Priorities can only be configured for tasks that are being enqueued directly. Tasks that are scheduled or deferred (and cron jobs) will always be enqueued with a priority of ``TaskPriority.MEDIUM``, which helps ensure they are executed close to their scheduled time.
