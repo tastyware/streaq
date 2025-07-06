@@ -84,7 +84,7 @@
     <div class="col-12">
       <div class="card shadow">
         <div class="card-body">
-          <form hx-post="/queue" hx-trigger="change" hx-target="#tasks">
+          <form hx-patch="/queue" hx-trigger="change" hx-target="#tasks">
             <div class="row mb-3" style="max-height: 100%">
               <div class="col-8">
                 <h3 class="card-title">streaQ</h3>
@@ -132,4 +132,5 @@
       </div>
     </div>
   </div>
+</div>
 {% endblock %}

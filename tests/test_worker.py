@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import pickle
 import secrets
 import signal
 import subprocess
@@ -12,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+from streaq.constants import REDIS_TASK
 from streaq.task import TaskStatus
 from streaq.utils import StreaqError
 from streaq.worker import Worker
@@ -20,7 +23,7 @@ NAME_STR = "Freddy"
 
 
 async def test_worker_redis(redis_url: str):
-    worker = Worker(redis_url=redis_url)
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
     await worker.redis.ping()
 
 
@@ -35,7 +38,7 @@ async def deps(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
 
 
 async def test_lifespan(redis_url: str):
-    worker = Worker(redis_url=redis_url, lifespan=deps)
+    worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> str:
@@ -56,7 +59,7 @@ async def test_health_check(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
         health_crontab="* * * * * * *",
-        queue_name="test",
+        queue_name=uuid4().hex,
         handle_signals=False,
     )
     await worker.redis.flushdb()
@@ -79,7 +82,7 @@ def raise_error(*arg, **kwargs) -> Any:
 
 
 async def test_bad_serializer(redis_url: str):
-    worker = Worker(redis_url=redis_url, serializer=raise_error)
+    worker = Worker(redis_url=redis_url, serializer=raise_error, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> None:
@@ -91,7 +94,9 @@ async def test_bad_serializer(redis_url: str):
 
 
 async def test_bad_deserializer(redis_url: str):
-    worker = Worker(redis_url=redis_url, deserializer=raise_error)
+    worker = Worker(
+        redis_url=redis_url, deserializer=raise_error, queue_name=uuid4().hex
+    )
 
     @worker.task()
     async def foobar() -> None:
@@ -106,8 +111,21 @@ async def test_bad_deserializer(redis_url: str):
         await task.result(3)
 
 
+async def test_custom_serializer(worker: Worker):
+    worker.serializer = json.dumps
+    worker.deserializer = json.loads
+
+    @worker.task()
+    async def foobar() -> None:
+        pass
+
+    task = await foobar.enqueue()
+    worker.loop.create_task(worker.run_async())
+    assert (await task.result(3)).success
+
+
 async def test_uninitialized_worker(redis_url: str):
-    worker = Worker(redis_url=redis_url)
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> None:
@@ -149,7 +167,7 @@ async def test_handle_signal(worker: Worker):
 async def test_reclaim_idle_task(redis_url: str):
     worker2 = Worker(
         redis_url=redis_url,
-        queue_name="test",
+        queue_name="reclaim",
     )
 
     @worker2.task(timeout=3)
@@ -177,7 +195,7 @@ async def test_change_cron_schedule(redis_url: str):
 
     worker1 = Worker(
         redis_url=redis_url,
-        queue_name="test",
+        queue_name=uuid4().hex,
         handle_signals=False,
     )
     foo1 = worker1.cron("0 0 1 1 *")(foo)
@@ -189,7 +207,7 @@ async def test_change_cron_schedule(redis_url: str):
 
     worker2 = Worker(
         redis_url=redis_url,
-        queue_name="test",
+        queue_name=worker1.queue_name,
         handle_signals=False,
     )
     foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
@@ -204,7 +222,7 @@ async def test_change_cron_schedule(redis_url: str):
 async def test_signed_data(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
-        queue_name="test",
+        queue_name=uuid4().hex,
         handle_signals=False,
         signing_secret=secrets.token_urlsafe(32),
     )
@@ -220,8 +238,48 @@ async def test_signed_data(redis_url: str):
         assert res.success and res.result == "bar"
 
 
+async def test_sign_non_binary_data(redis_url: str):
+    worker = Worker(
+        redis_url=redis_url,
+        queue_name=uuid4().hex,
+        handle_signals=False,
+        signing_secret=secrets.token_urlsafe(32),
+        serializer=json.dumps,
+    )
+
+    @worker.task()
+    async def foo() -> str:
+        return "bar"
+
+    async with worker:
+        with pytest.raises(StreaqError):
+            await foo.enqueue()
+
+
+async def test_corrupt_signed_data(redis_url: str):
+    worker = Worker(
+        redis_url=redis_url,
+        queue_name=uuid4().hex,
+        handle_signals=False,
+        signing_secret=secrets.token_urlsafe(32),
+    )
+
+    @worker.task()
+    async def foo() -> str:
+        return "bar"
+
+    async with worker:
+        task = await foo.enqueue()
+        await worker.redis.set(
+            task._task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
+        )
+        worker.loop.create_task(worker.run_async())
+        res = await task.result(5)
+        assert not res.success and isinstance(res.result, StreaqError)
+
+
 async def test_enqueue_many(redis_url: str):
-    worker = Worker(redis_url=redis_url, queue_name="test")
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar(val: int) -> int:
@@ -232,3 +290,10 @@ async def test_enqueue_many(redis_url: str):
     async with worker:
         await worker.enqueue_many(tasks)
     assert await worker.queue_size() >= len(tasks)
+
+
+async def test_invalid_task_context(redis_url: str):
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+
+    with pytest.raises(StreaqError):
+        worker.task_context()

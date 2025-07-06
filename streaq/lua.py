@@ -3,37 +3,13 @@ from typing import Any
 from coredis import Redis
 from coredis.commands import Script
 
-ADD_DEPENDENCIES = """
-local task_key = KEYS[1]
-local task_id = KEYS[2]
-local dependents_key = KEYS[3]
-local dependencies_key = KEYS[4]
-local prefix = KEYS[5]
-
-local task_data = ARGV[1]
-local ttl = ARGV[2]
-
-if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
-  return false
-end
-
-local modified = 0
-for i=3, #ARGV do
-  local dep_id = ARGV[i]
-  if redis.call('exists', prefix .. dep_id) ~= 1 then
-    modified = modified + 1
-    redis.call('sadd', dependencies_key .. task_id, dep_id)
-    redis.call('sadd', dependents_key .. dep_id, task_id)
-  end
-end
-
-return modified == 0
-"""
-
 PUBLISH_TASK = """
 local stream_key = KEYS[1]
-local task_key = KEYS[2]
-local queue_key = KEYS[3]
+local queue_key = KEYS[2]
+local task_key = KEYS[3]
+local dependents_key = KEYS[4]
+local dependencies_key = KEYS[5]
+local results_key = KEYS[6]
 
 local task_id = ARGV[1]
 local ttl = ARGV[2]
@@ -44,12 +20,26 @@ local score = ARGV[5]
 if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
   return 0
 end
-if score ~= '0' then
-  redis.call('zadd', queue_key, score, task_id)
-  return 1
-else
-  return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+
+local modified = 0
+for i=6, #ARGV do
+  local dep_id = ARGV[i]
+  if redis.call('exists', results_key .. dep_id) ~= 1 then
+    modified = modified + 1
+    redis.call('sadd', dependencies_key .. task_id, dep_id)
+    redis.call('sadd', dependents_key .. dep_id, task_id)
+  end
 end
+
+if modified == 0 then
+  if score ~= '0' then
+    redis.call('zadd', queue_key .. priority, score, task_id)
+  else
+    return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+  end
+end
+
+return 1
 """
 
 FAIL_DEPENDENTS = """
@@ -106,20 +96,16 @@ local stream_key = KEYS[2]
 
 local current_time = ARGV[1]
 
-local task_ids = redis.call(
-  'zrange',
-  queue_key,
-  0,
-  current_time,
-  'byscore'
-)
-redis.call('zremrangebyscore', queue_key, 0, current_time)
+for i=2, #ARGV do
+  local priority = ARGV[i]
+  local queue = queue_key .. priority
+  local tids = redis.call('zrange', queue, 0, current_time, 'byscore')
+  redis.call('zremrangebyscore', queue, 0, current_time)
 
-for _, task_id in ipairs(task_ids) do
-  redis.call('xadd', stream_key, '*', 'task_id', task_id)
+  for _, task_id in ipairs(tids) do
+    redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+  end
 end
-
-return #task_ids
 """
 
 RECLAIM_IDLE_TASKS = """
@@ -179,7 +165,6 @@ end
 
 def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
     return {
-        "add_dependencies": redis.register_script(ADD_DEPENDENCIES),
         "create_groups": redis.register_script(CREATE_GROUPS),
         "publish_task": redis.register_script(PUBLISH_TASK),
         "publish_delayed_tasks": redis.register_script(PUBLISH_DELAYED_TASKS),

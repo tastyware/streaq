@@ -29,7 +29,7 @@ async def test_get_pages(worker: Worker):
         assert res.status_code == 303
         res = await client.get("/queue")
         assert res.status_code == 200
-        res = await client.post("/queue")
+        res = await client.patch("/queue")
         assert res.status_code == 200
 
         short = await sleeper.enqueue(0)

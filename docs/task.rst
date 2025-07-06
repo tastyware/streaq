@@ -83,14 +83,15 @@ Task priorities
 
 Sometimes, certain critical tasks should "skip the line" and receive priority over other tasks. streaQ supports this by allowing you to specify a priority when enqueuing tasks. If a low priority queue is backed up, you can use a high priority queue to ensure that critical tasks are executed quickly.
 
-There are three priorities: ``TaskPriority.LOW``, ``TaskPriority.MEDIUM``, and ``TaskPriority.HIGH``. By default, tasks are enqueued with a priority of ``TaskPriority.LOW``. You can specify a priority like so:
+By passing the ``priorities`` argument on worker creation, you can create an arbitrary number of queues with your priority ordering. (Please take into account that there will be a slight performance penalty per additional queue.)
 
 .. code-block:: python
 
-   from streaq import TaskPriority
+   # this list should be ordered from lowest to highest
+   worker = Worker(priorities=["low", "high"])
 
    async with worker:
-       await sleeper.enqueue(3).start(priority=TaskPriority.HIGH)
+       await sleeper.enqueue(3).start(priority="low")
 
 Here's an example that demonstrates how priorities work. Note that the low priority task is enqueued first, but the high priority task is executed first. (Make sure to run this *before* starting the worker!)
 
@@ -107,11 +108,21 @@ Here's an example that demonstrates how priorities work. Note that the low prior
        print("High priority task")
 
    async with worker:
-       await low.enqueue().start(priority=TaskPriority.LOW)
-       await high.enqueue().start(priority=TaskPriority.HIGH)
+       await low.enqueue().start(priority="low")
+       await high.enqueue().start(priority="high")
 
-.. note::
-   Priorities can only be configured for tasks that are being enqueued directly. Tasks that are scheduled or deferred (and cron jobs) will always be enqueued with a priority of ``TaskPriority.MEDIUM``, which helps ensure they are executed close to their scheduled time.
+To organize your priorities efficiently, consider using an enum:
+
+.. code-block:: python
+
+   from enum import Enum
+
+   class TaskPriority(str, Enum):
+       LOW = "low"
+       MEDIUM = "medium"
+       HIGH = "high"
+
+   worker = Worker(priorities=[p.value for p in TaskPriority])
 
 Enqueuing by batch
 ------------------

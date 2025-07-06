@@ -94,6 +94,7 @@ Other configuration options
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
 - ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
 - ``idle_timeout``: the amount of time prefetched tasks wait before being requeued if they haven't started yet
+- ``priorities``: a list of custom priorities for tasks, ordered from lowest to highest
 
 Deploying with Redis Sentinel
 -----------------------------
