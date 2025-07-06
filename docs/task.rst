@@ -136,12 +136,6 @@ For most cases, the above method of enqueuing tasks is sufficient. However, stre
        tasks = [sleeper.enqueue(i) for i in range(10)]
        await worker.enqueue_many(tasks)
 
-Note that for batch enqueuing, you cannot pass any scheduling related arguments (``after``, ``delay``, ``schedule``) since tasks will be enqueued immediately; however, you can pass a priority:
-
-.. code-block:: python
-
-   await worker.enqueue_many(tasks, priority=TaskPriority.HIGH)
-
 Running tasks locally
 ---------------------
 
