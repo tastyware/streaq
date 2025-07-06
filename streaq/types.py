@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -16,8 +15,6 @@ from typing import (
     TypeVar,
     overload,
 )
-
-from coredis.commands import Library
 
 if TYPE_CHECKING:
     from streaq.task import RegisteredCron, RegisteredTask
