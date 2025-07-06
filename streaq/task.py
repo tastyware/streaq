@@ -13,15 +13,7 @@ from coredis import Redis
 from crontab import CronTab
 
 from streaq import logger
-from streaq.constants import (
-    DEFAULT_TTL,
-    REDIS_DEPENDENCIES,
-    REDIS_DEPENDENTS,
-    REDIS_MESSAGE,
-    REDIS_PREFIX,
-    REDIS_RESULT,
-    REDIS_TASK,
-)
+from streaq.constants import DEFAULT_TTL, REDIS_PREFIX, REDIS_TASK
 from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
@@ -45,16 +37,6 @@ class StreaqRetry(StreaqError):
         self.delay = delay
 
 
-class TaskPriority(str, Enum):
-    """
-    Enum of possible task priority levels.
-    """
-
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-
-
 class TaskStatus(str, Enum):
     """
     Enum of possible task statuses.
@@ -68,7 +50,7 @@ class TaskStatus(str, Enum):
 
 
 @dataclass
-class TaskData:
+class TaskInfo:
     """
     Dataclass containing additional task information not stored locally,
     such as try and time enqueued.
@@ -76,8 +58,10 @@ class TaskData:
 
     fn_name: str
     enqueue_time: int
-    task_try: int | None = None
-    scheduled: datetime | None = None
+    task_try: int | None
+    scheduled: datetime | None
+    dependencies: set[str]
+    dependents: set[str]
 
 
 @dataclass
@@ -87,17 +71,20 @@ class TaskResult(Generic[R]):
     like run time and whether execution terminated successfully.
     """
 
+    fn_name: str
+    enqueue_time: int
     success: bool
     result: R | Exception
     start_time: int
     finish_time: int
-    queue_name: str
 
 
 @dataclass
 class Task(Generic[R]):
     """
     Represents a task that has been enqueued or scheduled.
+
+    Awaiting the object directly will enqueue it.
     """
 
     args: tuple[Any, ...]
@@ -105,18 +92,21 @@ class Task(Generic[R]):
     parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
     id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any] | None = None
+    after: list[str] = field(default_factory=lambda: [])
+    delay: timedelta | int | None = None
+    schedule: datetime | None = None
+    priority: str | None = None
     _triggers: Task[Any] | None = None
 
-    async def start(
+    def start(
         self,
         after: str | list[str] | None = None,
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
-        priority: TaskPriority = TaskPriority.LOW,
+        priority: str | None = None,
     ) -> Task[R]:
         """
-        Enqueues a task immediately, for running after a delay, or for running
-        at a specified time.
+        Configure the task to modify schedule, queue, or dependencies.
 
         :param after: task ID(s) to wait for before running this task
         :param delay: duration to wait before running the task
@@ -125,57 +115,58 @@ class Task(Generic[R]):
 
         :return: self
         """
-        after = self._after.id if self._after else after
+        # merge _after and after into a single list[str]
+        if isinstance(after, str):
+            self.after.append(after)
+        elif after:
+            self.after.extend(after)
+        self.delay = delay
+        self.schedule = schedule
+        self.priority = priority
         if (delay and schedule) or (delay and after) or (schedule and after):
             raise StreaqError(
                 "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not "
                 "multiple!"
             )
+        return self
+
+    async def _enqueue(self) -> Task[R]:
+        """
+        This is called when the task is awaited.
+        """
         if not self.parent.worker.scripts:
             raise StreaqError(
                 "Worker did not initialize correctly, are you using the async context "
                 "manager?"
             )
+        if self._after:
+            self.after.append(self._after.id)
         enqueue_time = now_ms()
-        if schedule:
-            score = datetime_ms(schedule)
-        elif delay is not None:
-            score = enqueue_time + to_ms(delay)
+        if self.schedule:
+            score = datetime_ms(self.schedule)
+        elif self.delay is not None:
+            score = enqueue_time + to_ms(self.delay)
         else:
             score = 0
-        ttl = (score or enqueue_time) - enqueue_time + DEFAULT_TTL
+        ttl = DEFAULT_TTL + score
         data = self.serialize(enqueue_time)
-        run_now = None
-        if after:
-            if isinstance(after, str):
-                after = [after]
-            run_now = await self.parent.worker.scripts["add_dependencies"](
-                keys=[
-                    self._task_key(REDIS_TASK),
-                    self.id,
-                    REDIS_PREFIX + self.queue + REDIS_DEPENDENTS,
-                    REDIS_PREFIX + self.queue + REDIS_DEPENDENCIES,
-                    REDIS_PREFIX + self.queue + REDIS_RESULT,
-                ],
-                args=[data, ttl] + after,
-            )
-        if not after or run_now:
-            res = await self.parent.worker.scripts["publish_task"](
-                keys=[
-                    self.parent.worker.stream_key,
-                    self._task_key(REDIS_MESSAGE),
-                    self._task_key(REDIS_TASK),
-                    self.parent.worker.queue_key,
-                ],
-                args=[self.id, ttl, data, priority, score],
-            )
-            if res == 0:
-                logger.debug("Task is unique and already exists, not enqueuing!")
-
+        _priority = self.priority or self.parent.worker.priorities[0]
+        if not await self.parent.worker.scripts["publish_task"](
+            keys=[
+                self.parent.worker._stream_key,  # type: ignore
+                self.parent.worker._queue_key,  # type: ignore
+                self._task_key(REDIS_TASK),
+                self.parent.worker._dependents_key,  # type: ignore
+                self.parent.worker._dependencies_key,  # type: ignore
+                self.parent.worker._results_key,  # type: ignore
+            ],
+            args=[self.id, ttl, data, _priority, score] + self.after,
+        ):
+            logger.debug("Task is unique and already exists, not enqueuing!")
         return self
 
     def then(
-        self, task: RegisteredTask[WD, POther, ROther], **kwargs: dict[str, Any]
+        self, task: RegisteredTask[WD, POther, ROther], **kwargs: Any
     ) -> Task[ROther]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments will
@@ -194,7 +185,7 @@ class Task(Generic[R]):
         # traverse backwards
         if self._after:
             await self._after
-        return await self.start()
+        return await self._enqueue()
 
     def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
@@ -221,9 +212,9 @@ class Task(Generic[R]):
                 data["A"] = self._after.id
             if self._triggers:
                 data["T"] = self._triggers.id
-            return self.parent.worker.serializer(data)
+            return self.parent.worker.serialize(data)
         except Exception as e:
-            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}:") from e
+            raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
 
     async def status(self) -> TaskStatus:
         """
@@ -253,7 +244,7 @@ class Task(Generic[R]):
         """
         return await self.parent.worker.abort_by_id(self.id, timeout=timeout)
 
-    async def info(self) -> TaskData:
+    async def info(self) -> TaskInfo:
         """
         Fetch info about a previously enqueued task.
 

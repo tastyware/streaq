@@ -5,7 +5,7 @@ from streaq import Worker
 
 
 async def test_reclaim_idle_task(redis_url: str):
-    worker1 = Worker(redis_url=redis_url, queue_name="test")
+    worker1 = Worker(redis_url=redis_url, queue_name="reclaim")
 
     @worker1.task(timeout=3)
     async def foo() -> None:

@@ -65,6 +65,12 @@ benchmark = [
     "saq[hiredis]==0.22.2",
     "taskiq-redis==1.0.3",
 ]
+web = [
+    "async-lru>=2.0.5",
+    "fastapi>=0.115.12",
+    "python-multipart>=0.0.20",
+    "uvicorn>=0.34.2",
+]
 
 [project.scripts]
 streaq = "streaq.__main__:cli"

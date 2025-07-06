@@ -1,4 +1,5 @@
 import asyncio
+import time as pytime
 from typing import Awaitable
 
 import typer
@@ -40,9 +41,9 @@ async def main(time: int):
 
 def run(time: int = 0):
     loop = asyncio.get_event_loop()
-    start = loop.time()
+    start = pytime.perf_counter()
     loop.run_until_complete(main(time))
-    end = loop.time()
+    end = pytime.perf_counter()
     print(f"enqueued {N_TASKS} tasks in {end - start:.2f}s")
 
 

@@ -3,38 +3,13 @@ from typing import Any
 from coredis import Redis
 from coredis.commands import Script
 
-ADD_DEPENDENCIES = """
-local task_key = KEYS[1]
-local task_id = KEYS[2]
-local dependents_key = KEYS[3]
-local dependencies_key = KEYS[4]
-local prefix = KEYS[5]
-
-local task_data = ARGV[1]
-local ttl = ARGV[2]
-
-if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
-  return false
-end
-
-local modified = 0
-for i=3, #ARGV do
-  local dep_id = ARGV[i]
-  if redis.call('exists', prefix .. dep_id) ~= 1 then
-    modified = modified + 1
-    redis.call('sadd', dependencies_key .. task_id, dep_id)
-    redis.call('sadd', dependents_key .. dep_id, task_id)
-  end
-end
-
-return modified == 0
-"""
-
 PUBLISH_TASK = """
 local stream_key = KEYS[1]
-local message_key = KEYS[2]
+local queue_key = KEYS[2]
 local task_key = KEYS[3]
-local queue_key = KEYS[4]
+local dependents_key = KEYS[4]
+local dependencies_key = KEYS[5]
+local results_key = KEYS[6]
 
 local task_id = ARGV[1]
 local ttl = ARGV[2]
@@ -45,70 +20,26 @@ local score = ARGV[5]
 if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
   return 0
 end
-if score ~= '0' then
-  redis.call('zadd', queue_key, score, task_id)
-  return 1
-else
-  local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
-  redis.call('set', message_key, message_id, 'px', ttl)
-  return message_id
-end
-"""
 
-PUBLISH_DELAYED_TASK = """
-local delayed_queue_key = KEYS[1]
-local stream_key = KEYS[2]
-local task_message_id_key = KEYS[3]
-
-local task_id = ARGV[1]
-local task_message_id_expire_ms = ARGV[2]
-local priority = ARGV[3]
-
-local score = redis.call('zscore', delayed_queue_key, task_id)
-if not score then
-  return 0
+local modified = 0
+for i=6, #ARGV do
+  local dep_id = ARGV[i]
+  if redis.call('exists', results_key .. dep_id) ~= 1 then
+    modified = modified + 1
+    redis.call('sadd', dependencies_key .. task_id, dep_id)
+    redis.call('sadd', dependents_key .. dep_id, task_id)
+  end
 end
 
-local message_id = redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
-redis.call('set', task_message_id_key, message_id, 'px', task_message_id_expire_ms)
-redis.call('zrem', delayed_queue_key, task_id)
+if modified == 0 then
+  if score ~= '0' then
+    redis.call('zadd', queue_key .. priority, score, task_id)
+  else
+    return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+  end
+end
+
 return 1
-"""
-
-RETRY_TASK = """
-local stream_key = KEYS[1]
-local message_key = KEYS[2]
-
-local task_id = ARGV[1]
-local expire_ms = ARGV[2]
-
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', task_id)
-redis.call('set', message_key, message_id, 'px', expire_ms)
-return message_id
-"""
-
-PUBLISH_DEPENDENT = """
-local stream_key = KEYS[1]
-local message_key = KEYS[2]
-local dep_id = KEYS[3]
-
-local ttl = ARGV[1]
-
-local message_id = redis.call('xadd', stream_key, '*', 'task_id', dep_id)
-redis.call('set', message_key, message_id, 'px', ttl)
-"""
-
-UNPUBLISH_DEPENDENT = """
-local task_key = KEYS[1]
-local result_key = KEYS[2]
-local channel_key = KEYS[3]
-local dep_id = KEYS[4]
-
-local result_data = ARGV[1]
-
-redis.call('del', task_key)
-redis.call('set', result_key, result_data, 'ex', 300)
-redis.call('publish', channel_key, dep_id)
 """
 
 FAIL_DEPENDENTS = """
@@ -159,36 +90,63 @@ redis.call('del', dependents_key .. task_id, dependencies_key .. task_id)
 return runnable
 """
 
-UNCLAIM_IDLE_TASKS = """
-local sorted_set_key = KEYS[1]
+PUBLISH_DELAYED_TASKS = """
+local queue_key = KEYS[1]
+local stream_key = KEYS[2]
+
+local current_time = ARGV[1]
+
+for i=2, #ARGV do
+  local priority = ARGV[i]
+  local queue = queue_key .. priority
+  local tids = redis.call('zrange', queue, 0, current_time, 'byscore')
+  redis.call('zremrangebyscore', queue, 0, current_time)
+
+  for _, task_id in ipairs(tids) do
+    redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+  end
+end
+"""
+
+RECLAIM_IDLE_TASKS = """
+local timeout_key = KEYS[1]
 local stream_key = KEYS[2]
 local group_name = KEYS[3]
 local consumer_name = KEYS[4]
-local message_key = KEYS[5]
 
 local current_time = ARGV[1]
-local ttl = ARGV[2]
+local count = ARGV[2]
 
-local timed_out = redis.call('zrangebyscore', sorted_set_key, '-inf', current_time)
-if #timed_out > 0 then
-  local claimed = redis.call(
-    'xclaim',
-    stream_key,
-    group_name,
-    consumer_name,
+local messages = {}
+
+for i=3, #ARGV do
+  local priority = ARGV[i]
+  local timed_out = redis.call(
+    'zrangebyscore',
+    timeout_key .. priority,
     0,
-    unpack(timed_out)
+    current_time,
+    'limit',
+    0,
+    count
   )
-  for _, message in ipairs(claimed) do
-    redis.call('xack', stream_key, group_name, message[1])
-    redis.call('xdel', stream_key, message[1])
-    local message_id = redis.call('xadd', stream_key, '*', unpack(message[2]))
-    redis.call('set', message_key .. message[2][2], message_id, 'px', ttl)
+
+  if #timed_out > 0 then
+    messages[priority] = redis.call(
+      'xclaim',
+      stream_key .. priority,
+      group_name,
+      consumer_name,
+      0,
+      unpack(timed_out)
+    )
+    redis.call('zrem', timeout_key .. priority, unpack(timed_out))
+    count = count - #messages[priority]
+    if count <= 0 then break end
   end
-  redis.call('zrem', sorted_set_key, unpack(timed_out))
 end
 
-return #timed_out
+return cjson.encode(messages)
 """
 
 CREATE_GROUPS = """
@@ -207,14 +165,10 @@ end
 
 def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
     return {
-        "add_dependencies": redis.register_script(ADD_DEPENDENCIES),
         "create_groups": redis.register_script(CREATE_GROUPS),
         "publish_task": redis.register_script(PUBLISH_TASK),
-        "publish_delayed_task": redis.register_script(PUBLISH_DELAYED_TASK),
-        "retry_task": redis.register_script(RETRY_TASK),
+        "publish_delayed_tasks": redis.register_script(PUBLISH_DELAYED_TASKS),
         "fail_dependents": redis.register_script(FAIL_DEPENDENTS),
-        "publish_dependent": redis.register_script(PUBLISH_DEPENDENT),
-        "unpublish_dependent": redis.register_script(UNPUBLISH_DEPENDENT),
         "update_dependents": redis.register_script(UPDATE_DEPENDENTS),
-        "unclaim_idle_tasks": redis.register_script(UNCLAIM_IDLE_TASKS),
+        "reclaim_idle_tasks": redis.register_script(RECLAIM_IDLE_TASKS),
     }

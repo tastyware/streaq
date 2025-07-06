@@ -1,5 +1,6 @@
 import sys
 from typing import AsyncGenerator
+from uuid import uuid4
 
 from pytest import fixture
 from typer.testing import CliRunner
@@ -13,7 +14,7 @@ test_module = sys.modules["tests.test_cli"]
 
 @fixture(scope="function")
 async def worker_no_cleanup(redis_url: str) -> AsyncGenerator[Worker, None]:
-    yield Worker(redis_url=redis_url)
+    yield Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
 
 def test_burst(worker_no_cleanup: Worker):

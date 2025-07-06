@@ -65,6 +65,22 @@ If desired, you can use a custom serializing scheme for speed or security reason
 
    worker = Worker(serializer=json.dumps, deserializer=json.loads)
 
+Signature validation before deserialization
+-------------------------------------------
+
+Pickle is great for serializing/deserializing Python objects. However, it presents security risks when we're using Redis, as an attacker who gains access to the Redis database would be able to run arbitrary code. You can protect against this attack vector by passing a ``signing_secret`` to the worker. The signing key ensures corrupted data from Redis will not be unpickled.
+
+.. code-block:: python
+
+   worker = Worker(signing_secret="MY-SECRET-KEY")
+
+The easiest way to generate a new key is with the ``secrets`` module:
+
+.. code-block:: python
+
+   import secrets
+   print(secrets.token_urlsafe(32))
+
 Other configuration options
 ---------------------------
 
@@ -73,10 +89,12 @@ Other configuration options
 - ``redis_url``: the URI for connecting to your Redis instance
 - ``concurrency``: the maximum number of tasks the worker can run concurrently; by default, this also controls the number of tasks which will be pre-fetched by the worker
 - ``sync_concurrency``: the maximum number of tasks the worker can run simultaneously in separate threads; defaults to the same as ``concurrency``
-- ``queue_fetch_limit``: the number of tasks to pre-fetch from Redis, defaults to ``concurrency * 2``
+- ``prefetch``: the number of tasks to pre-fetch from Redis, defaults to ``concurrency``. You can set this to ``0`` to disable prefetching entirely.
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler and logs
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
 - ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
+- ``idle_timeout``: the amount of time prefetched tasks wait before being requeued if they haven't started yet
+- ``priorities``: a list of custom priorities for tasks, ordered from lowest to highest
 
 Deploying with Redis Sentinel
 -----------------------------

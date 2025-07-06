@@ -2,12 +2,13 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from streaq import StreaqError, Worker
-from streaq.constants import REDIS_RUNNING
-from streaq.task import StreaqRetry, TaskPriority, TaskStatus
+from streaq.constants import REDIS_UNIQUE
+from streaq.task import StreaqRetry, TaskStatus
 from streaq.types import ReturnCoroutine
 
 
@@ -77,11 +78,11 @@ async def test_task_cron(worker: Worker):
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
     # this will be set if task is running
-    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cron2.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_UNIQUE + cron2.fn_name)
 
 
 async def test_task_info(redis_url: str):
-    worker = Worker(redis_url=redis_url)
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> None:
@@ -114,7 +115,7 @@ async def test_task_retry_with_delay(worker: Worker):
     async def foobar() -> int:
         ctx = worker.task_context()
         if ctx.tries == 1:
-            raise StreaqRetry("Retrying!", delay=3)
+            raise StreaqRetry("Retrying!", delay=timedelta(seconds=3))
         return ctx.tries
 
     task = await foobar.enqueue()
@@ -201,7 +202,7 @@ async def test_task_dependency(worker: Worker):
     task = await foobar.enqueue().start(delay=1)
     task2 = await foobar.enqueue().start(after=task.id)
     worker.loop.create_task(worker.run_async())
-    assert await task2.status() == TaskStatus.PENDING
+    assert await task2.status() == TaskStatus.SCHEDULED
     await task.result(3)
     result = await task2.result(3)
     assert result.success
@@ -216,11 +217,11 @@ async def test_task_dependency_multiple(worker: Worker):
     task2 = await foobar.enqueue().start(after=task.id)
     task3 = await foobar.enqueue().start(after=[task.id, task2.id])
     worker.loop.create_task(worker.run_async())
-    assert await task2.status() == TaskStatus.PENDING
-    assert await task3.status() == TaskStatus.PENDING
+    assert await task2.status() == TaskStatus.SCHEDULED
+    assert await task3.status() == TaskStatus.SCHEDULED
     res1 = await task.result(3)
     assert res1.success
-    assert await task3.status() == TaskStatus.PENDING
+    assert await task3.status() == TaskStatus.SCHEDULED
     res2 = await task2.result(3)
     assert res2.success
     res3 = await task3.result(3)
@@ -263,7 +264,7 @@ async def test_unsafe_enqueue(redis_url: str, worker: Worker):
         return ret
 
     worker.loop.create_task(worker.run_async())
-    worker2 = Worker(redis_url=redis_url, queue_name="test")
+    worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
 
     async with worker2:
         task = await worker2.enqueue_unsafe(foobar.fn_name, 42)
@@ -281,7 +282,7 @@ async def test_chained_failed_dependencies(worker: Worker):
     async def child() -> None:
         pass
 
-    task = await foobar.enqueue().start(delay=3)
+    task = await foobar.enqueue().start(delay=timedelta(seconds=3))
     dep1 = await child.enqueue().start(after=task.id)
     dep2 = await child.enqueue().start(after=[task.id, dep1.id])
     worker.loop.create_task(worker.run_async())
@@ -294,19 +295,21 @@ async def test_chained_failed_dependencies(worker: Worker):
 
 
 async def test_task_priorities(redis_url: str):
-    worker = Worker(redis_url=redis_url, queue_name="test", concurrency=4)
+    worker = Worker(
+        redis_url=redis_url,
+        queue_name=uuid4().hex,
+        concurrency=4,
+        priorities=["low", "high"],
+    )
 
     @worker.task()
     async def foobar() -> None:
         await asyncio.sleep(1)
 
     async with worker:
-        low = [foobar.enqueue() for _ in range(4)]
-        high = [foobar.enqueue() for _ in range(4)]
-        await asyncio.gather(  # enqueue all tasks
-            *[t.start(priority=TaskPriority.LOW) for t in low],
-            *[t.start(priority=TaskPriority.HIGH) for t in high],
-        )
+        low = [foobar.enqueue().start(priority="low") for _ in range(4)]
+        high = [foobar.enqueue().start(priority="high") for _ in range(4)]
+        await worker.enqueue_many(low + high)
         worker.loop.create_task(worker.run_async())
         results = await asyncio.gather(*[t.result(3) for t in high])
         statuses = await asyncio.gather(*[t.status() for t in low])
@@ -329,7 +332,7 @@ async def test_scheduled_task(worker: Worker):
 
 
 async def test_bad_start_params(redis_url: str):
-    worker = Worker(redis_url=redis_url)
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> None:
@@ -368,7 +371,7 @@ async def test_failed_abort(worker: Worker):
 
 
 async def test_cron_run(redis_url: str):
-    worker = Worker(redis_url=redis_url)
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
     @worker.cron("* * * * * * *")
     async def cron1() -> bool:
@@ -391,7 +394,7 @@ async def test_sync_cron(worker: Worker):
 
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
-    assert await worker.redis.get(worker._prefix + REDIS_RUNNING + cronjob.fn_name)
+    assert await worker.redis.get(worker._prefix + REDIS_UNIQUE + cronjob.fn_name)
 
 
 async def test_cron_multiple_runs(worker: Worker):
@@ -402,7 +405,7 @@ async def test_cron_multiple_runs(worker: Worker):
         await worker.redis.incr(key)
 
     worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
     runs = await worker.redis.get(key)
     assert int(runs or 0) > 1
 
@@ -438,6 +441,6 @@ async def test_task_pipeline(worker: Worker):
 
     worker.loop.create_task(worker.run_async())
     async with worker:
-        task = await double.enqueue(2).then(double).then(is_even)
+        task = await double.enqueue(1).then(double).then(is_even)
         res = await task.result(3)
         assert res.result and res.success
