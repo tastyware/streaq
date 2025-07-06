@@ -25,6 +25,12 @@ async def test_get_pages(worker: Worker):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
+        # queue up some tasks
+        tasks = [sleeper.enqueue(i) for i in range(10)]
+        for t in tasks[:5]:
+            t.delay = 3
+        await worker.enqueue_many(tasks)
+        # endpoints
         res = await client.get("/")
         assert res.status_code == 303
         res = await client.get("/queue")

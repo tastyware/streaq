@@ -115,7 +115,7 @@ async def test_task_retry_with_delay(worker: Worker):
     async def foobar() -> int:
         ctx = worker.task_context()
         if ctx.tries == 1:
-            raise StreaqRetry("Retrying!", delay=3)
+            raise StreaqRetry("Retrying!", delay=timedelta(seconds=3))
         return ctx.tries
 
     task = await foobar.enqueue()
@@ -282,7 +282,7 @@ async def test_chained_failed_dependencies(worker: Worker):
     async def child() -> None:
         pass
 
-    task = await foobar.enqueue().start(delay=3)
+    task = await foobar.enqueue().start(delay=timedelta(seconds=3))
     dep1 = await child.enqueue().start(after=task.id)
     dep2 = await child.enqueue().start(after=[task.id, dep1.id])
     worker.loop.create_task(worker.run_async())

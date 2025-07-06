@@ -33,7 +33,7 @@ class TimezoneFormatter(Formatter):
         return datetime.now(self.tz).timetuple()
 
 
-def import_string(dotted_path: str) -> Any:
+def import_string(dotted_path: str) -> Any:  # pragma: no cover
     """
     Taken from pydantic.utils. Import and return the object at a path.
     """
