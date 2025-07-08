@@ -253,7 +253,7 @@ class Worker(Generic[WD]):
         self._timeout_key = self._prefix + REDIS_TIMEOUT
 
         @self.cron(health_crontab, silent=True, timeout=3, ttl=0)
-        async def redis_health_check() -> None:  # type: ignore[unused-function]
+        async def _() -> None:
             """
             Saves Redis health in Redis.
             """

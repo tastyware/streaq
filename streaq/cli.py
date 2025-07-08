@@ -81,7 +81,7 @@ def main(
             [
                 Process(
                     target=run_worker,
-                    args=(worker_path, burst, reload, verbose, False),
+                    args=(worker_path, burst, reload, verbose),
                 )
                 for _ in range(workers - 1)
             ]
