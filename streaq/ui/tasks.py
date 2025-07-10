@@ -97,13 +97,20 @@ async def _get_context(worker: Worker[Any], task_url: str) -> dict[str, Any]:
 
 async def get_context(
     request: Request,
-    worker: Annotated[Worker[Any], Depends(get_worker)],
+    worker: Worker[Any],
+    functions: list[str] | None = None,
+    statuses: list[TaskStatus] | None = None,
 ) -> dict[str, Any]:
     task_url = request.url_for("get_task", task_id="{task_id}").path
     tasks_filter_url = request.url_for("filter_tasks").path
 
     context = await _get_context(worker, task_url)
     context["tasks_filter_url"] = tasks_filter_url
+
+    if functions:
+        context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
+    if statuses:
+        context["tasks"] = [t for t in context["tasks"] if t.status in statuses]
 
     return context
 
@@ -117,22 +124,20 @@ async def get_root(request: Request) -> RedirectResponse:
 @router.get("/queue", response_class=HTMLResponse)
 async def get_tasks(
     request: Request,
-    context: Annotated[dict[str, Any], Depends(get_context)],
+    worker: Annotated[Worker[Any], Depends(get_worker)],
 ) -> Any:
+    context = await get_context(request, worker)
     return templates.TemplateResponse(request, "queue.j2", context=context)
 
 
 @router.patch("/queue", response_class=HTMLResponse)
 async def filter_tasks(
     request: Request,
-    context: Annotated[dict[str, Any], Depends(get_context)],
+    worker: Annotated[Worker[Any], Depends(get_worker)],
     functions: Annotated[list[str] | None, Form()] = None,
     statuses: Annotated[list[TaskStatus] | None, Form()] = None,
 ) -> Any:
-    if functions:
-        context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
-    if statuses:
-        context["tasks"] = [t for t in context["tasks"] if t.status in statuses]
+    context = await get_context(request, worker, functions, statuses)
     return templates.TemplateResponse(request, "table.j2", context=context)
 
 
