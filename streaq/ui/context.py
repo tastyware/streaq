@@ -32,7 +32,7 @@ class ContextDict(TypedDict, total=False):
 @alru_cache(ttl=1)
 async def get_context(
     worker: Worker[Any],
-    task_url: str = '/tasks/{task_id}'
+    task_url: str = "/tasks/{task_id}"
 ) -> ContextDict:
     pipe = await worker.redis.pipeline(transaction=False)
     for priority in worker.priorities:
