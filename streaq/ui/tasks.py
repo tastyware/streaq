@@ -44,8 +44,7 @@ async def filter_tasks(
 @router.get("/task/{task_id}", response_class=HTMLResponse)
 async def get_task(
     request: Request,
-    worker: Annotated[Worker[Any],
-    Depends(get_worker)],
+    worker: Annotated[Worker[Any], Depends(get_worker)],
     task_id: str,
 ) -> Any:
     status = await worker.status_by_id(task_id)
