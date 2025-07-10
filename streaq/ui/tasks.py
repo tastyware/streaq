@@ -5,10 +5,25 @@ from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from streaq import TaskStatus, Worker
-from streaq.ui.context import get_context
+from streaq.ui.context import ContextDict, get_context
 from streaq.ui.deps import get_worker, templates
 
 router = APIRouter()
+
+async def _get_context(
+    request: Request,
+    worker: Annotated[Worker[Any], Depends(get_worker)],
+) -> ContextDict:
+    task_url = request.url_for("get_task", task_id="{task_id}").path
+    tasks_filter_url = request.url_for("filter_tasks").path
+
+    context = await get_context(worker, task_url)
+    context["tasks_filter_url"] = tasks_filter_url
+
+    return context
+
+
+Context = Annotated[ContextDict, Depends(_get_context)]
 
 
 @router.get("/")
@@ -18,22 +33,17 @@ async def get_root(request: Request) -> RedirectResponse:
 
 
 @router.get("/queue", response_class=HTMLResponse)
-async def get_tasks(
-    request: Request,
-    worker: Annotated[Worker[Any], Depends(get_worker)],
-) -> Any:
-    context = await get_context(request, worker)
+async def get_tasks(request: Request, context: Context) -> Any:
     return templates.TemplateResponse(request, "queue.j2", context=context)
 
 
 @router.patch("/queue", response_class=HTMLResponse)
 async def filter_tasks(
     request: Request,
-    worker: Annotated[Worker[Any], Depends(get_worker)],
+    context: Context,
     functions: Annotated[list[str] | None, Form()] = None,
     statuses: Annotated[list[TaskStatus] | None, Form()] = None,
 ) -> Any:
-    context = await get_context(request, worker)
     if functions:
         context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
     if statuses:

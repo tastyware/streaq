@@ -123,7 +123,7 @@
                 <td>{{ task.enqueue_time }}</td>
                 <td>{{ task.fn_name }}</td>
                 <td><span class="badge bg-{{task.color}} text-uppercase text-{{task.text_color}}">{{ task.status.value }}</span></td>
-                <td><a href="{{task.get_url}}">{{ task.task_id }}</a></td>
+                <td><a href="{{task.url}}">{{ task.task_id }}</a></td>
               </tr>
               {% endfor %}
             </tbody>

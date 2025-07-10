@@ -1,8 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 
 from async_lru import alru_cache
-from fastapi import Request
 from pydantic import BaseModel
 
 from streaq import TaskStatus, Worker
@@ -17,11 +16,24 @@ class TaskData(BaseModel):
     status: TaskStatus
     fn_name: str
     sort_time: datetime
-    get_url: str
+    url: str
+
+
+class ContextDict(TypedDict, total=False):
+    running: int
+    queued: int
+    scheduled: int
+    finished: int
+    functions: list[str]
+    tasks: list[TaskData]
+    title: str
 
 
 @alru_cache(ttl=1)
-async def get_context(request: Request, worker: Worker[Any]) -> dict[str, Any]:
+async def get_context(
+    worker: Worker[Any],
+    task_url: str = '/tasks/{task_id}'
+) -> ContextDict:
     pipe = await worker.redis.pipeline(transaction=False)
     for priority in worker.priorities:
         await pipe.zrange(worker._queue_key + priority, 0, -1)  # type: ignore
@@ -76,7 +88,7 @@ async def get_context(request: Request, worker: Worker[Any]) -> dict[str, Any]:
                 task_id=task_id,
                 fn_name=td["f"],
                 sort_time=dt,
-                get_url=request.url_for("get_task", task_id=task_id).path,
+                url=task_url.format(task_id=task_id),
             )
         )
     tasks.sort(key=lambda td: td.sort_time)
@@ -88,5 +100,4 @@ async def get_context(request: Request, worker: Worker[Any]) -> dict[str, Any]:
         "functions": list(worker.registry.keys()),
         "tasks": tasks,
         "title": worker.queue_name,
-        "tasks_filter_url": request.url_for("filter_tasks").path,
     }
