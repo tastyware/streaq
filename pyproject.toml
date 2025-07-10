@@ -112,14 +112,7 @@ asyncio_default_fixture_loop_scope = "function"
 arq = { git = "https://github.com/graeme22/arq" }
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "Q"]
-
-[tool.ruff.lint.flake8-quotes]
-docstring-quotes = "double"
-inline-quotes = "double"
-
-[tool.ruff.format]
-quote-style = "double"
+select = ["E", "F", "I"]
 
 [tool.pyright]
 strict = ["streaq/"]
