@@ -365,9 +365,9 @@ wheels = [
 
 [[package]]
 name = "crontab"
-version = "1.0.1"
+version = "1.0.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ae/13/696cac391e97fa47ec7323936838a540a610894a1d516a6b0cefbb1e495b/crontab-1.0.1.tar.gz", hash = "sha256:89477e3f93c81365e738d5ee2659509e6373bb2846de13922663e79aa74c6b91", size = 19616, upload-time = "2023-04-04T01:44:03.611Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/36/a255b6f5a2e22df03fd2b2f3088974b44b8c9e9407e26b44742cb7cfbf5b/crontab-1.0.5.tar.gz", hash = "sha256:f80e01b4f07219763a9869f926dd17147278e7965a928089bca6d3dc80ae46d5", size = 21963, upload-time = "2025-07-09T17:09:38.264Z" }
 
 [[package]]
 name = "cssutils"
@@ -1586,7 +1586,7 @@ requires-dist = [
     { name = "arq", marker = "extra == 'benchmark'", git = "https://github.com/graeme22/arq" },
     { name = "async-lru", marker = "extra == 'web'", specifier = ">=2.0.5" },
     { name = "coredis", specifier = ">=4.23.1" },
-    { name = "crontab", specifier = ">=1.0.1" },
+    { name = "crontab", specifier = ">=1.0.5" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115.12" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.20" },
     { name = "saq", extras = ["hiredis"], marker = "extra == 'benchmark'", specifier = "==0.22.2" },

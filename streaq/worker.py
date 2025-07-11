@@ -92,6 +92,7 @@ class Worker(Generic[WD]):
     Worker object that fetches and executes tasks from a queue.
 
     :param redis_url: connection URI for Redis
+    :param redis_kwargs: additional keyword arguments for Redis client
     :param concurrency: number of tasks the worker can run simultaneously
     :param sync_concurrency:
         max number of synchronous tasks the worker can run simultaneously
@@ -169,6 +170,7 @@ class Worker(Generic[WD]):
         redis_url: str = "redis://localhost:6379",
         redis_sentinel_nodes: list[tuple[str, int]] | None = None,
         redis_sentinel_master: str = "mymaster",
+        redis_kwargs: dict[str, Any] | None = None,
         concurrency: int = 16,
         sync_concurrency: int | None = None,
         queue_name: str = DEFAULT_QUEUE_NAME,
@@ -184,13 +186,21 @@ class Worker(Generic[WD]):
         idle_timeout: timedelta | int = 300,
     ):
         #: Redis connection
+        redis_kwargs = redis_kwargs or {}
+        if redis_kwargs.pop("decode_responses", None) is None:
+            logger.warning("decode_responses ignored in redis_kwargs")
         if redis_sentinel_nodes:
+            redis_kwargs["socket_timeout"] = redis_kwargs.get("socket_timeout", 2.0)
             self._sentinel = Sentinel(
-                redis_sentinel_nodes, decode_responses=True, socket_timeout=2.0
+                redis_sentinel_nodes,
+                decode_responses=True,
+                **redis_kwargs,
             )
             self.redis = self._sentinel.primary_for(redis_sentinel_master)
         else:
-            self.redis = Redis.from_url(redis_url, decode_responses=True)
+            self.redis = Redis.from_url(
+                redis_url, decode_responses=True, **redis_kwargs
+            )
         self.concurrency = concurrency
         self.queue_name = queue_name
         self.priorities = priorities or ["default"]
@@ -300,7 +310,7 @@ class Worker(Generic[WD]):
                 "Worker did not initialize correctly, are you using the "
                 "async context manager?"
             )
-        return self._worker_context
+        return self._worker_context  # type: ignore
 
     def build_context(
         self,
