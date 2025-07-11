@@ -13,11 +13,6 @@ from streaq.ui.deps import get_worker, templates
 router = APIRouter()
 
 
-@router.get("/")
-async def get_root() -> RedirectResponse:
-    return RedirectResponse("/queue", status_code=status.HTTP_303_SEE_OTHER)
-
-
 class TaskData(BaseModel):
     color: str
     text_color: str
@@ -26,10 +21,11 @@ class TaskData(BaseModel):
     status: TaskStatus
     fn_name: str
     sort_time: datetime
+    url: str
 
 
 @alru_cache(ttl=1)
-async def get_context(worker: Worker[Any]) -> dict[str, Any]:
+async def _get_context(worker: Worker[Any], task_url: str) -> dict[str, Any]:
     pipe = await worker.redis.pipeline(transaction=False)
     for priority in worker.priorities:
         await pipe.zrange(worker._queue_key + priority, 0, -1)  # type: ignore
@@ -84,6 +80,7 @@ async def get_context(worker: Worker[Any]) -> dict[str, Any]:
                 task_id=task_id,
                 fn_name=td["f"],
                 sort_time=dt,
+                url=task_url.format(task_id=task_id),
             )
         )
     tasks.sort(key=lambda td: td.sort_time)
@@ -98,11 +95,38 @@ async def get_context(worker: Worker[Any]) -> dict[str, Any]:
     }
 
 
+async def get_context(
+    request: Request,
+    worker: Worker[Any],
+    functions: list[str] | None = None,
+    statuses: list[TaskStatus] | None = None,
+) -> dict[str, Any]:
+    task_url = request.url_for("get_task", task_id="{task_id}").path
+    tasks_filter_url = request.url_for("filter_tasks").path
+
+    context = await _get_context(worker, task_url)
+    context["tasks_filter_url"] = tasks_filter_url
+
+    if functions:
+        context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
+    if statuses:
+        context["tasks"] = [t for t in context["tasks"] if t.status in statuses]
+
+    return context
+
+
+@router.get("/")
+async def get_root(request: Request) -> RedirectResponse:
+    url = request.url_for("get_tasks").path
+    return RedirectResponse(url, status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.get("/queue", response_class=HTMLResponse)
 async def get_tasks(
-    request: Request, worker: Annotated[Worker[Any], Depends(get_worker)]
+    request: Request,
+    worker: Annotated[Worker[Any], Depends(get_worker)],
 ) -> Any:
-    context = await get_context(worker)
+    context = await get_context(request, worker)
     return templates.TemplateResponse(request, "queue.j2", context=context)
 
 
@@ -113,17 +137,15 @@ async def filter_tasks(
     functions: Annotated[list[str] | None, Form()] = None,
     statuses: Annotated[list[TaskStatus] | None, Form()] = None,
 ) -> Any:
-    context = await get_context(worker)
-    if functions:
-        context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
-    if statuses:
-        context["tasks"] = [t for t in context["tasks"] if t.status in statuses]
+    context = await get_context(request, worker, functions, statuses)
     return templates.TemplateResponse(request, "table.j2", context=context)
 
 
 @router.get("/task/{task_id}", response_class=HTMLResponse)
 async def get_task(
-    request: Request, worker: Annotated[Worker[Any], Depends(get_worker)], task_id: str
+    request: Request,
+    worker: Annotated[Worker[Any], Depends(get_worker)],
+    task_id: str,
 ) -> Any:
     status = await worker.status_by_id(task_id)
     if status == TaskStatus.DONE:
@@ -183,6 +205,7 @@ async def get_task(
             "title": "task",
             "status": status.value,
             "task_id": task_id,
+            "task_abort_url": request.url_for("abort_task", task_id=task_id).path,
             **extra,
         },
     )
@@ -190,9 +213,10 @@ async def get_task(
 
 @router.delete("/task/{task_id}")
 async def abort_task(
+    request: Request,
     response: Response,
     worker: Annotated[Worker[Any], Depends(get_worker)],
     task_id: str,
 ) -> None:
     await worker.abort_by_id(task_id, timeout=3)
-    response.headers["HX-Redirect"] = "/queue"
+    response.headers["HX-Redirect"] = request.url_for("get_tasks").path

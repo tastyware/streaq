@@ -84,7 +84,7 @@
     <div class="col-12">
       <div class="card shadow">
         <div class="card-body">
-          <form hx-patch="/queue" hx-trigger="change" hx-target="#tasks">
+          <form hx-patch="{{tasks_filter_url}}" hx-trigger="change" hx-target="#tasks">
             <div class="row mb-3" style="max-height: 100%">
               <div class="col-8">
                 <h3 class="card-title">streaQ</h3>
@@ -123,7 +123,7 @@
                 <td>{{ task.enqueue_time }}</td>
                 <td>{{ task.fn_name }}</td>
                 <td><span class="badge bg-{{task.color}} text-uppercase text-{{task.text_color}}">{{ task.status.value }}</span></td>
-                <td><a href="/task/{{task.task_id}}">{{ task.task_id }}</a></td>
+                <td><a href="{{task.url}}">{{ task.task_id }}</a></td>
               </tr>
               {% endfor %}
             </tbody>

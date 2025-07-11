@@ -63,7 +63,7 @@
         </table>
       </div>
       {% if not is_done %}
-      <button type="button" class="btn btn-danger" hx-delete="/task/{{task_id}}" hx-indicator="#spinner">
+      <button type="button" class="btn btn-danger" hx-delete="{{task_abort_url}}" hx-indicator="#spinner">
         Abort Task
         <img id="spinner" class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg"/>
       </button>
