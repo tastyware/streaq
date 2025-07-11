@@ -187,7 +187,7 @@ class Worker(Generic[WD]):
     ):
         #: Redis connection
         redis_kwargs = redis_kwargs or {}
-        if redis_kwargs.pop("decode_responses", None) is None:
+        if redis_kwargs.pop("decode_responses", None) is not None:
             logger.warning("decode_responses ignored in redis_kwargs")
         if redis_sentinel_nodes:
             redis_kwargs["socket_timeout"] = redis_kwargs.get("socket_timeout", 2.0)
