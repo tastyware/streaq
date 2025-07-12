@@ -147,7 +147,7 @@ class Task(Generic[R]):
         elif self.delay is not None:
             score = enqueue_time + to_ms(self.delay)
         else:
-            score = 0
+            score = enqueue_time
         ttl = DEFAULT_TTL + score
         data = self.serialize(enqueue_time)
         _priority = self.priority or self.parent.worker.priorities[0]

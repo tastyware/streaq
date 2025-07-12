@@ -1049,7 +1049,7 @@ class Worker(Generic[WD]):
             elif task.delay is not None:
                 score = enqueue_time + to_ms(task.delay)
             else:
-                score = 0
+                score = enqueue_time
             ttl = DEFAULT_TTL + score
             data = task.serialize(enqueue_time)
             _priority = task.priority or self.priorities[0]

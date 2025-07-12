@@ -17,7 +17,7 @@ local task_data = ARGV[3]
 local priority = ARGV[4]
 local score = ARGV[5]
 
-if not redis.call('set', task_key, task_data, 'nx', 'px', ttl) then
+if not redis.call('set', task_key, task_data, 'nx', 'pxat', ttl) then
   return 0
 end
 
