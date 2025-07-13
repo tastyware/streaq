@@ -498,7 +498,7 @@ class Worker(Generic[WD]):
                     ],
                     args=[now_ms(), count, *self.priorities],
                 )
-                mapping: dict[str, list[str | list[str]]] = json.loads(idle)  # type: ignore
+                mapping: Any = json.loads(idle)  # type: ignore
                 # this is covered but pytest can't detect
                 if mapping:  # pragma: no cover
                     for priority, _entries in mapping.items():
@@ -1049,8 +1049,7 @@ class Worker(Generic[WD]):
             elif task.delay is not None:
                 score = enqueue_time + to_ms(task.delay)
             else:
-                score = enqueue_time
-            ttl = DEFAULT_TTL + score
+                score = 0
             data = task.serialize(enqueue_time)
             _priority = task.priority or self.priorities[0]
             await self.scripts["publish_task"](
@@ -1062,7 +1061,7 @@ class Worker(Generic[WD]):
                     self._dependencies_key,
                     self._results_key,
                 ],
-                args=[task.id, ttl, data, _priority, score] + task.after,
+                args=[task.id, data, _priority, score] + task.after,
                 client=pipe,
             )
         await pipe.execute()

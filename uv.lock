@@ -1585,7 +1585,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.8.0" },
     { name = "arq", marker = "extra == 'benchmark'", git = "https://github.com/graeme22/arq" },
     { name = "async-lru", marker = "extra == 'web'", specifier = ">=2.0.5" },
-    { name = "coredis", specifier = ">=4.23.1" },
+    { name = "coredis", specifier = "==4.24.0" },
     { name = "crontab", specifier = ">=1.0.5" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115.12" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.20" },

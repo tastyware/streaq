@@ -12,17 +12,16 @@ local dependencies_key = KEYS[5]
 local results_key = KEYS[6]
 
 local task_id = ARGV[1]
-local ttl = ARGV[2]
-local task_data = ARGV[3]
-local priority = ARGV[4]
-local score = ARGV[5]
+local task_data = ARGV[2]
+local priority = ARGV[3]
+local score = ARGV[4]
 
-if not redis.call('set', task_key, task_data, 'nx', 'pxat', ttl) then
+if not redis.call('set', task_key, task_data, 'nx') then
   return 0
 end
 
 local modified = 0
-for i=6, #ARGV do
+for i=5, #ARGV do
   local dep_id = ARGV[i]
   if redis.call('exists', results_key .. dep_id) ~= 1 then
     modified = modified + 1

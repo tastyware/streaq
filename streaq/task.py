@@ -13,7 +13,7 @@ from coredis import Redis
 from crontab import CronTab
 
 from streaq import logger
-from streaq.constants import DEFAULT_TTL, REDIS_PREFIX, REDIS_TASK
+from streaq.constants import REDIS_PREFIX, REDIS_TASK
 from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
@@ -147,8 +147,7 @@ class Task(Generic[R]):
         elif self.delay is not None:
             score = enqueue_time + to_ms(self.delay)
         else:
-            score = enqueue_time
-        ttl = DEFAULT_TTL + score
+            score = 0
         data = self.serialize(enqueue_time)
         _priority = self.priority or self.parent.worker.priorities[0]
         if not await self.parent.worker.scripts["publish_task"](
@@ -160,7 +159,7 @@ class Task(Generic[R]):
                 self.parent.worker._dependencies_key,  # type: ignore
                 self.parent.worker._results_key,  # type: ignore
             ],
-            args=[self.id, ttl, data, _priority, score] + self.after,
+            args=[self.id, data, _priority, score] + self.after,
         ):
             logger.debug("Task is unique and already exists, not enqueuing!")
         return self

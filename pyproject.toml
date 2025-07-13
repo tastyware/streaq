@@ -52,7 +52,7 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.8.0",
-    "coredis>=4.23.1",
+    "coredis==4.24.0",
     "crontab>=1.0.5",
     "typer>=0.15.2",
     "watchfiles>=1.0.4",
