@@ -134,7 +134,7 @@ class Task(Generic[R]):
         """
         This is called when the task is awaited.
         """
-        if not self.parent.worker.scripts:
+        if not self.parent.worker._stack:  # type: ignore
             raise StreaqError(
                 "Worker did not initialize correctly, are you using the async context "
                 "manager?"
@@ -150,14 +150,14 @@ class Task(Generic[R]):
             score = 0
         data = self.serialize(enqueue_time)
         _priority = self.priority or self.parent.worker.priorities[0]
-        if not await self.parent.worker.scripts["publish_task"](
+        if not await self.parent.worker.publish_task(
             keys=[
-                self.parent.worker._stream_key,  # type: ignore
-                self.parent.worker._queue_key,  # type: ignore
-                self._task_key(REDIS_TASK),
-                self.parent.worker._dependents_key,  # type: ignore
-                self.parent.worker._dependencies_key,  # type: ignore
-                self.parent.worker._results_key,  # type: ignore
+                self.parent.worker.stream_key,
+                self.parent.worker.queue_key,
+                self.task_key(REDIS_TASK),
+                self.parent.worker.dependents_key,
+                self.parent.worker.dependencies_key,
+                self.parent.worker.results_key,
             ],
             args=[self.id, data, _priority, score] + self.after,
         ):
@@ -189,7 +189,7 @@ class Task(Generic[R]):
     def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
 
-    def _task_key(self, mid: str) -> str:
+    def task_key(self, mid: str) -> str:
         return REDIS_PREFIX + self.queue + mid + self.id
 
     def serialize(self, enqueue_time: int) -> Any:

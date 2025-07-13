@@ -271,7 +271,7 @@ async def test_corrupt_signed_data(redis_url: str):
     async with worker:
         task = await foo.enqueue()
         await worker.redis.set(
-            task._task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
+            task.task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
         )
         worker.loop.create_task(worker.run_async())
         res = await task.result(5)

@@ -1,8 +1,3 @@
-from typing import Any
-
-from coredis import Redis
-from coredis.commands import Script
-
 PUBLISH_TASK = """
 local stream_key = KEYS[1]
 local queue_key = KEYS[2]
@@ -160,14 +155,3 @@ for i=1, #ARGV do
   end
 end
 """
-
-
-def register_scripts(redis: Redis[Any]) -> dict[str, Script[str]]:
-    return {
-        "create_groups": redis.register_script(CREATE_GROUPS),
-        "publish_task": redis.register_script(PUBLISH_TASK),
-        "publish_delayed_tasks": redis.register_script(PUBLISH_DELAYED_TASKS),
-        "fail_dependents": redis.register_script(FAIL_DEPENDENTS),
-        "update_dependents": redis.register_script(UPDATE_DEPENDENTS),
-        "reclaim_idle_tasks": redis.register_script(RECLAIM_IDLE_TASKS),
-    }
