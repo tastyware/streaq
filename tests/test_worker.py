@@ -202,7 +202,8 @@ async def test_change_cron_schedule(redis_url: str):
     await asyncio.sleep(2)
     await worker1.close()
     task1 = foo1.enqueue()
-    assert foo1.schedule() == (await task1.info()).scheduled
+    info = await task1.info()
+    assert info and foo1.schedule() == info.scheduled
 
     worker2 = Worker(
         redis_url=redis_url,
@@ -214,7 +215,8 @@ async def test_change_cron_schedule(redis_url: str):
     await asyncio.sleep(2)
     await worker2.close()
     task2 = foo2.enqueue()
-    assert foo2.schedule() == (await task2.info()).scheduled
+    info2 = await task2.info()
+    assert info2 and foo2.schedule() == info2.scheduled
     assert foo1.schedule() != foo2.schedule()
 
 

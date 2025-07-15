@@ -1245,13 +1245,13 @@ class Worker(Generic[WD]):
         except asyncio.TimeoutError:
             return False
 
-    async def info_by_id(self, task_id: str) -> TaskInfo:
+    async def info_by_id(self, task_id: str) -> TaskInfo | None:
         """
         Fetch info about a previously enqueued task.
 
         :param task_id: ID of the task to get info for
 
-        :return: task info object
+        :return: task info, unless task has finished or doesn't exist
         """
 
         def key(mid: str) -> str:
@@ -1263,13 +1263,16 @@ class Worker(Generic[WD]):
             for priority in self.priorities
         ]
         commands = (
+            pipe.get(key(REDIS_RESULT)),
             pipe.get(key(REDIS_TASK)),
             pipe.get(key(REDIS_RETRY)),
             pipe.smembers(key(REDIS_DEPENDENCIES)),
             pipe.smembers(key(REDIS_DEPENDENTS)),
         )
         await pipe.execute()
-        raw, try_count, dependencies, dependents = await asyncio.gather(*commands)
+        result, raw, try_count, dependencies, dependents = await asyncio.gather(*commands)
+        if result or not raw:  # if result exists or task data doesn't
+            return None
         data = self.deserialize(raw)
         res = await asyncio.gather(*delayed)
         score = next((r for r in res if r), None)

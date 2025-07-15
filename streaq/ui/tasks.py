@@ -3,7 +3,17 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from async_lru import alru_cache
-from fastapi import APIRouter, Depends, Form, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+)
+from fastapi import (
+    status as fast_status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -124,7 +134,7 @@ async def get_context(
 @router.get("/")
 async def get_root(request: Request) -> RedirectResponse:
     url = request.url_for("get_tasks").path
-    return RedirectResponse(url, status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url, status_code=fast_status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/queue", response_class=HTMLResponse)
@@ -172,6 +182,10 @@ async def get_task(
         }
     else:
         info = await worker.info_by_id(task_id)
+        if not info:
+            raise HTTPException(
+                status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
+            )
         function = info.fn_name
         enqueue_time = info.enqueue_time
         is_done = False

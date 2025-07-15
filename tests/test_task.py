@@ -91,8 +91,10 @@ async def test_task_info(redis_url: str):
     async with worker:
         task = await foobar.enqueue().start(delay=5)
         task2 = await foobar.enqueue()
-        assert (await task.info()).scheduled is not None
-        assert (await task2.info()).scheduled is None
+        info = await task.info()
+        info2 = await task2.info()
+        assert info and info.scheduled is not None
+        assert info2 and info2.scheduled is None
 
 
 async def test_task_retry(worker: Worker):

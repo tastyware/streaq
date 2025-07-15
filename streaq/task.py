@@ -39,7 +39,9 @@ class StreaqRetry(StreaqError):
 
 class TaskStatus(str, Enum):
     """
-    Enum of possible task statuses.
+    Enum of possible task statuses:
+
+    Note: PENDING represents a task that has not been enqueued yet (or doesn't exist)
     """
 
     PENDING = "pending"
@@ -52,8 +54,7 @@ class TaskStatus(str, Enum):
 @dataclass
 class TaskInfo:
     """
-    Dataclass containing additional task information not stored locally,
-    such as try and time enqueued.
+    Dataclass containing information about a running or enqueued task.
     """
 
     fn_name: str
@@ -243,11 +244,11 @@ class Task(Generic[R]):
         """
         return await self.parent.worker.abort_by_id(self.id, timeout=timeout)
 
-    async def info(self) -> TaskInfo:
+    async def info(self) -> TaskInfo | None:
         """
         Fetch info about a previously enqueued task.
 
-        :return: task info object
+        :return: task info, unless task has finished or doesn't exist
         """
         return await self.parent.worker.info_by_id(self.id)
 
