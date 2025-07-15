@@ -264,7 +264,7 @@ class Worker(Generic[WD]):
         self._block_new_tasks = False
         self.lifespan = lifespan
         self._stack: list[AbstractAsyncContextManager[WD]] = []
-        self.idle_timeout = cast(float, to_seconds(idle_timeout))
+        self.idle_timeout = to_ms(idle_timeout)
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
@@ -556,7 +556,7 @@ class Worker(Generic[WD]):
                 priorities: dict[str, list[str]] = defaultdict(list)
                 for msg in messages:
                     priorities[msg.priority].append(msg.message_id)
-                expire = now_ms() + self.idle_timeout * 1000
+                expire = now_ms() + self.idle_timeout
                 for k, v in priorities.items():
                     await pipe.zadd(self._timeout_key + k, {m: expire for m in v})
             await self.publish_delayed_tasks(
@@ -1258,13 +1258,13 @@ class Worker(Generic[WD]):
         except asyncio.TimeoutError:
             return False
 
-    async def info_by_id(self, task_id: str) -> TaskInfo:
+    async def info_by_id(self, task_id: str) -> TaskInfo | None:
         """
         Fetch info about a previously enqueued task.
 
         :param task_id: ID of the task to get info for
 
-        :return: task info object
+        :return: task info, unless task has finished or doesn't exist
         """
 
         def key(mid: str) -> str:
@@ -1273,11 +1273,14 @@ class Worker(Generic[WD]):
         pipe = await self.redis.pipeline(transaction=False)
         for priority in self.priorities:
             await pipe.zscore(self.queue_key + priority, task_id)
+        await pipe.get(key(REDIS_RESULT))
         await pipe.get(key(REDIS_TASK))
         await pipe.get(key(REDIS_RETRY))
         await pipe.smembers(key(REDIS_DEPENDENCIES))
         await pipe.smembers(key(REDIS_DEPENDENTS))
         res = await pipe.execute()
+        if res[-5] or not res[-4]:  # if result exists or task data doesn't
+            return None
         data = self.deserialize(res[-4])
         score = next((r for r in res[: len(self.priorities)] if r), None)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
