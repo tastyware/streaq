@@ -25,7 +25,6 @@ from crontab import CronTab
 from streaq import logger
 from streaq.constants import (
     DEFAULT_QUEUE_NAME,
-    DEFAULT_TTL,
     REDIS_ABORT,
     REDIS_CHANNEL,
     REDIS_DEPENDENCIES,
@@ -790,7 +789,6 @@ class Worker(Generic[WD]):
                 pipe.srem(self._abort_key, [task_id]),
                 pipe.zrem(self._timeout_key + msg.priority, [msg.message_id]),
             )
-            pipe.pexpire(key(REDIS_RETRY), DEFAULT_TTL)
             pipe.zadd(
                 self._timeout_key + msg.priority,
                 {msg.message_id: now_ms() + self.idle_timeout},
