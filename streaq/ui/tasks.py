@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -27,28 +28,33 @@ class TaskData(BaseModel):
 @alru_cache(ttl=1)
 async def _get_context(worker: Worker[Any], task_url: str) -> dict[str, Any]:
     pipe = await worker.redis.pipeline(transaction=False)
-    for priority in worker.priorities:
-        await pipe.zrange(worker.queue_key + priority, 0, -1)
-    await pipe.xread(
-        {worker.stream_key + p: "0-0" for p in worker.priorities},
-        count=1000,
+    delayed = [
+        pipe.zrange(worker.queue_key + priority, 0, -1)
+        for priority in worker.priorities
+    ]
+    commands = (
+        pipe.xread(
+            {worker.stream_key + p: "0-0" for p in worker.priorities},
+            count=1000,
+        ),
+        pipe.keys(worker.prefix + REDIS_RESULT + "*"),
+        pipe.keys(worker.prefix + REDIS_RUNNING + "*"),
+        pipe.keys(worker.prefix + REDIS_TASK + "*"),
     )
-    await pipe.keys(worker.prefix + REDIS_RESULT + "*")
-    await pipe.keys(worker.prefix + REDIS_RUNNING + "*")
-    await pipe.keys(worker.prefix + REDIS_TASK + "*")
-    res = await pipe.execute()
+    await pipe.execute()
+    _stream, _results, _running, _data = await asyncio.gather(*commands)
     stream: set[str] = (
-        set(t.field_values["task_id"] for v in res[-4].values() for t in v)
-        if res[-4]
+        set(t.field_values["task_id"] for v in _stream.values() for t in v)  # type: ignore
+        if _stream
         else set()
     )
     queue: set[str] = set()
-    for r in res[: len(worker.priorities)]:
+    for r in await asyncio.gather(*delayed):
         queue |= set(r)
-    results = set(r.split(":")[-1] for r in res[-3])
-    running = set(r.split(":")[-1] for r in res[-2])
+    results = set(r.split(":")[-1] for r in _results)
+    running = set(r.split(":")[-1] for r in _running)
     tasks: list[TaskData] = []
-    to_fetch: list[str] = list(res[-1] | res[-3])
+    to_fetch: list[str] = list(_data | _results)
     serialized = await worker.redis.mget(to_fetch) if to_fetch else ()  # type: ignore
     for i, entry in enumerate(serialized):
         td = worker.deserialize(entry)

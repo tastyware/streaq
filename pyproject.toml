@@ -52,7 +52,7 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.8.0",
-    "coredis==4.24.0",
+    "coredis",
     "crontab>=1.0.5",
     "typer>=0.15.2",
     "watchfiles>=1.0.4",
@@ -110,6 +110,7 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.uv.sources]
 arq = { git = "https://github.com/graeme22/arq" }
+coredis = { git = "https://github.com/alisaifee/coredis" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
