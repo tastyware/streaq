@@ -358,6 +358,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
+        name: str | None = None,
     ) -> CronDefinition[WD]:
         """
         Registers a task to be run at regular intervals as specified.
@@ -372,6 +373,7 @@ class Worker(Generic[WD]):
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
+        :param name: use a custom name for the cron job instead of the function name
         """
 
         def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredCron[WD, R]:
@@ -380,15 +382,22 @@ class Worker(Generic[WD]):
             else:
                 _fn = asyncify(fn, self._limiter)
             task = RegisteredCron(
-                cast(AsyncCron[R], _fn),
-                CronTab(tab),
-                max_tries,
-                silent,
-                timeout,
-                ttl,
-                unique,
-                self,
+                fn=cast(AsyncCron[R], _fn),
+                crontab=CronTab(tab),
+                max_tries=max_tries,
+                silent=silent,
+                timeout=timeout,
+                ttl=ttl,
+                unique=unique,
+                worker=self,
+                _fn_name=name,
             )
+
+            if task.fn_name in self.registry:
+                raise StreaqError(
+                    f"A cron job named {task.fn_name!r} has already been registered."
+                )
+
             self.cron_jobs[task.fn_name] = task
             self.registry[task.fn_name] = task
             logger.debug(f"cron job {task.fn_name} registered in worker {self.id}")
@@ -404,6 +413,7 @@ class Worker(Generic[WD]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
+        name: str | None = None,
     ) -> TaskDefinition[WD]:
         """
         Registers a task with the worker which can later be enqueued by the user.
@@ -415,6 +425,7 @@ class Worker(Generic[WD]):
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
+        :param name: use a custom name for the task instead of the function name
         """
 
         def wrapped(
@@ -425,14 +436,21 @@ class Worker(Generic[WD]):
             else:
                 _fn = asyncify(fn, self._limiter)
             task = RegisteredTask(
-                cast(AsyncTask[P, R], _fn),
-                max_tries,
-                silent,
-                timeout,
-                ttl,
-                unique,
-                self,
+                fn=cast(AsyncTask[P, R], _fn),
+                max_tries=max_tries,
+                silent=silent,
+                timeout=timeout,
+                ttl=ttl,
+                unique=unique,
+                worker=self,
+                _fn_name=name,
             )
+
+            if task.fn_name in self.registry:
+                raise StreaqError(
+                    f"A task named {task.fn_name!r} has already been registered."
+                )
+
             self.registry[task.fn_name] = task
             logger.debug(f"task {task.fn_name} registered in worker {self.id}")
             return task

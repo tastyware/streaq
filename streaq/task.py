@@ -298,7 +298,10 @@ class RegisteredTask(Generic[WD, P, R]):
         return self._fn_name or self.fn.__qualname__
 
     def __repr__(self) -> str:
-        return f"<Task fn={self.fn_name} timeout={self.timeout} ttl={self.ttl}>"
+        return (
+            f"<Task name={self.fn_name} fn={self.fn.__qualname__} "
+            f"timeout={self.timeout} ttl={self.ttl}>"
+        )
 
 
 @dataclass
@@ -311,6 +314,7 @@ class RegisteredCron(Generic[WD, R]):
     ttl: timedelta | int | None
     unique: bool
     worker: Worker[WD]
+    _fn_name: str | None = None
 
     def enqueue(self) -> Task[R]:
         """
@@ -333,7 +337,7 @@ class RegisteredCron(Generic[WD, R]):
 
     @property
     def fn_name(self) -> str:
-        return self.fn.__qualname__
+        return self._fn_name or self.fn.__qualname__
 
     def schedule(self) -> datetime:
         """
@@ -353,6 +357,6 @@ class RegisteredCron(Generic[WD, R]):
 
     def __repr__(self) -> str:
         return (
-            f"<Cron fn={self.fn_name} timeout={self.timeout} "
-            f"schedule={self.schedule()}>"
+            f"<Cron name={self.fn_name} fn={self.fn.__qualname__} "
+            f"timeout={self.timeout} schedule={self.schedule()}>"
         )
