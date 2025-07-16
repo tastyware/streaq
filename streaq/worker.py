@@ -268,6 +268,7 @@ class Worker(Generic[WD]):
         self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
+        self.main_task: asyncio.Task[Any] | None = None
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
         self.queue_key = self.prefix + REDIS_QUEUE
@@ -1134,6 +1135,9 @@ class Worker(Generic[WD]):
         """
         Cleanup worker and Redis connection
         """
+        if not self.main_task:
+            logger.warning("Unable to close worker that hasn't started yet!")
+            return
         self._block_new_tasks = True
         for t in self.tasks.values():
             if not t.done():
