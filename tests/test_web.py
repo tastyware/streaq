@@ -45,7 +45,13 @@ async def test_get_pages(worker: Worker, prefix: str):
         assert res.status_code == 303
         res = await client.get(f"{prefix}/queue")
         assert res.status_code == 200
-        res = await client.patch(f"{prefix}/queue")
+        res = await client.patch(
+            f"{prefix}/queue",
+            data={
+                "functions": ["Worker.__init__.<locals>._"],
+                "statuses": ["queued", "running", "done"],
+            },
+        )
         assert res.status_code == 200
 
         res = await client.get(f"{prefix}/task/{done.id}")
