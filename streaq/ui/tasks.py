@@ -174,6 +174,8 @@ async def get_task(
         output, truncate_length = str(result.result), 32
         if len(output) > truncate_length:
             output = f"{output[:truncate_length]}…"
+        task_try = result.task_try
+        worker_id = result.worker_id
         extra = {
             "success": result.success,
             "result": output,
@@ -188,13 +190,14 @@ async def get_task(
             )
         function = info.fn_name
         enqueue_time = info.enqueue_time
+        worker_id = None
         is_done = False
         if info.scheduled:
             schedule = info.scheduled.strftime("%Y-%m-%d %H:%M:%S")
         else:
             schedule = None
+        task_try = info.task_try
         extra = {
-            "task_try": info.task_try or 0,
             "scheduled": schedule,
             "dependencies": len(info.dependencies),
             "dependents": len(info.dependents),
@@ -226,6 +229,8 @@ async def get_task(
             "status": status.value,
             "task_id": task_id,
             "task_abort_url": request.url_for("abort_task", task_id=task_id).path,
+            "try_count": task_try,
+            "worker_id": worker_id,
             **extra,
         },
     )

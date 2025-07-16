@@ -285,12 +285,12 @@ class Worker(Generic[WD]):
             Saves Redis health in Redis.
             """
             pipe = await self.redis.pipeline(transaction=False)
-            streams = (
+            streams = [
                 pipe.xlen(self.stream_key + priority) for priority in self.priorities
-            )
-            queues = (
+            ]
+            queues = [
                 pipe.zcard(self.queue_key + priority) for priority in self.priorities
-            )
+            ]
             infos = (
                 pipe.info("Memory", "Clients"),
                 pipe.dbsize(),
@@ -520,7 +520,7 @@ class Worker(Generic[WD]):
                     args=[now_ms(), count, *self.priorities],
                 )
                 mapping: Any = json.loads(idle)  # type: ignore
-                if mapping:  # pragma: no cover
+                if mapping:
                     for priority, _entries in mapping.items():
                         messages.extend(
                             [
@@ -621,6 +621,7 @@ class Worker(Generic[WD]):
         self,
         msg: StreamMessage,
         exc: BaseException,
+        tries: int,
         enqueue_time: int = 0,
         fn_name: str = "Unknown",
         silent: bool = False,
@@ -638,6 +639,8 @@ class Worker(Generic[WD]):
             "r": exc,
             "st": now,
             "ft": now,
+            "t": tries,
+            "w": self.id,
         }
         try:
             raw = self.serialize(data)
@@ -689,6 +692,7 @@ class Worker(Generic[WD]):
         ttl: timedelta | int | None,
         triggers: str | None,
         lock_key: str | None,
+        tries: int,
     ) -> None:
         """
         Cleanup for a task that executed successfully or will be retried.
@@ -700,6 +704,8 @@ class Worker(Generic[WD]):
             "r": return_value,
             "st": start_time,
             "ft": finish_time,
+            "t": tries,
+            "w": self.id,
         }
         task_id = msg.task_id
         try:
@@ -766,7 +772,7 @@ class Worker(Generic[WD]):
                 pipe = await self.redis.pipeline(transaction=False)
                 for dep_id in res:
                     logger.info(f"↳ dependent {dep_id} triggered")
-                    await pipe.xadd(stream_key, {"task_id": dep_id})
+                    pipe.xadd(stream_key, {"task_id": dep_id})
                 await pipe.execute()
             else:
                 await self.fail_dependencies(task_id, res)
@@ -798,7 +804,9 @@ class Worker(Generic[WD]):
             if not raw:
                 logger.warning(f"task {task_id} expired †")
                 return await asyncio.shield(
-                    self.finish_failed_task(msg, StreaqError("Task execution failed!"))
+                    self.finish_failed_task(
+                        msg, StreaqError("Task execution failed!"), task_try
+                    )
                 )
             if not removed:
                 logger.warning(f"task {task_id} reclaimed ↩ from worker {self.id}")
@@ -809,7 +817,7 @@ class Worker(Generic[WD]):
                 data: dict[str, Any] = self.deserialize(raw)
             except Exception as e:
                 logger.exception(f"Failed to deserialize task {task_id}!")
-                return await asyncio.shield(self.finish_failed_task(msg, e))
+                return await asyncio.shield(self.finish_failed_task(msg, e, task_try))
 
             if (fn_name := data["f"]) not in self.registry:
                 logger.error(
@@ -819,6 +827,7 @@ class Worker(Generic[WD]):
                     self.finish_failed_task(
                         msg,
                         StreaqError("Nonexistent function!"),
+                        task_try,
                         enqueue_time=data["t"],
                         fn_name=data["f"],
                     )
@@ -831,7 +840,8 @@ class Worker(Generic[WD]):
                 return await asyncio.shield(
                     self.finish_failed_task(
                         msg,
-                        asyncio.CancelledError(),
+                        asyncio.CancelledError("Task aborted prior to run!"),
+                        task_try,
                         enqueue_time=data["t"],
                         fn_name=data["f"],
                         silent=task.silent,
@@ -847,6 +857,7 @@ class Worker(Generic[WD]):
                     self.finish_failed_task(
                         msg,
                         StreaqError(f"Max retry attempts reached for task {task_id}!"),
+                        task_try,
                         enqueue_time=data["t"],
                         fn_name=data["f"],
                         silent=task.silent,
@@ -889,6 +900,7 @@ class Worker(Generic[WD]):
                             "Task is unique and another instance of the same task is "
                             "already running!"
                         ),
+                        task_try,
                         enqueue_time=data["t"],
                         fn_name=data["f"],
                         silent=task.silent,
@@ -976,6 +988,7 @@ class Worker(Generic[WD]):
                         ttl=task.ttl,
                         triggers=data.get("T"),
                         lock_key=lock_key,
+                        tries=task_try,
                     )
                 )
                 self._task_context.reset(token)
@@ -992,6 +1005,8 @@ class Worker(Generic[WD]):
             "ft": now,
             "et": 0,
             "f": "Unknown",
+            "t": 0,
+            "w": self.id,
         }
         try:
             result = self.serialize(failure)
@@ -1219,6 +1234,8 @@ class Worker(Generic[WD]):
                 result=data["r"],
                 start_time=data["st"],
                 finish_time=data["ft"],
+                task_try=data["t"],
+                worker_id=data["w"],
             )
         except Exception as e:
             raise StreaqError(
@@ -1270,7 +1287,9 @@ class Worker(Generic[WD]):
             pipe.smembers(key(REDIS_DEPENDENTS)),
         )
         await pipe.execute()
-        result, raw, try_count, dependencies, dependents = await asyncio.gather(*commands)
+        result, raw, try_count, dependencies, dependents = await asyncio.gather(
+            *commands
+        )
         if result or not raw:  # if result exists or task data doesn't
             return None
         data = self.deserialize(raw)

@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from typing import AsyncGenerator
 from uuid import uuid4
@@ -35,7 +36,7 @@ def test_verbose(worker_no_cleanup: Worker):
     setattr(test_module, "test_worker", worker_no_cleanup)
     result = runner.invoke(cli, ["tests.test_cli.test_worker", "--burst", "--verbose"])
     assert result.exit_code == 0
-    assert "main loop" in result.stdout
+    assert "main loop" in result.stderr
 
 
 def test_version(worker_no_cleanup: Worker):
@@ -43,3 +44,21 @@ def test_version(worker_no_cleanup: Worker):
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
     assert VERSION in result.stdout
+
+
+def test_help(worker_no_cleanup: Worker):
+    setattr(test_module, "test_worker", worker_no_cleanup)
+    result = runner.invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "--help" in result.stdout
+
+
+def test_main_entry_point():
+    result = subprocess.run(
+        [sys.executable, "-m", "streaq", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "--help" in result.stdout
