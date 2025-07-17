@@ -11,7 +11,7 @@ lint:
 	uv run mypy streaq/
 
 test:
-	uv run pytest --cov=streaq --cov-report=term-missing --cov-fail-under=95
+	uv run pytest -n auto --cov=streaq --cov-report=term-missing --cov-fail-under=95
 
 docs:
 	uv run -m sphinx -T -b html -d docs/_build/doctrees -D language=en docs/ docs/_build/
