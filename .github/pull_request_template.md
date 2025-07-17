@@ -7,3 +7,4 @@ Fixes ...
 - [ ] Code formatted correctly (check with `make lint`)
 - [ ] Passing tests locally (check with `make test`)
 - [ ] New tests added (if applicable)
+- [ ] Docs updated (if applicable)
