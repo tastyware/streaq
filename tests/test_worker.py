@@ -62,7 +62,6 @@ async def test_health_check(redis_url: str):
         queue_name=uuid4().hex,
         handle_signals=False,
     )
-    await worker.redis.flushdb()
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
     worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
@@ -162,6 +161,35 @@ async def test_handle_signal(worker: Worker):
     await asyncio.sleep(1)
     task = await foo.enqueue()
     assert await task.status() == TaskStatus.QUEUED
+
+
+async def test_reclaim_backed_up(redis_url: str):
+    queue_name = uuid4().hex
+    worker = Worker(
+        concurrency=2, redis_url=redis_url, queue_name=queue_name, idle_timeout=2
+    )
+    worker2 = Worker(redis_url=redis_url, queue_name=queue_name, idle_timeout=2)
+
+    async def foo() -> None:
+        await asyncio.sleep(3)
+
+    registered = worker.task()(foo)
+    worker2.task()(foo)
+
+    # enqueue tasks
+    async with worker:
+        tasks = [registered.enqueue() for _ in range(4)]
+        await worker.enqueue_many(tasks)
+    # run first worker which will pick up all tasks
+    worker.loop.create_task(worker.run_async())
+    await asyncio.sleep(1)
+    # run second worker which will pick up prefetched tasks
+    worker2.loop.create_task(worker2.run_async())
+
+    results = await asyncio.gather(*[t.result(8) for t in tasks])
+    assert any(r.worker_id == worker2.id for r in results)
+    await worker.close()
+    await worker2.close()
 
 
 async def test_reclaim_idle_task(redis_url: str):

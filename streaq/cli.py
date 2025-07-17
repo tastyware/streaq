@@ -8,7 +8,7 @@ from typer import Exit, Option, Typer
 from watchfiles import run_process
 
 from streaq import VERSION, logger
-from streaq.utils import default_log_config, import_string
+from streaq.utils import StreaqError, default_log_config, import_string
 from streaq.worker import Worker
 
 cli = Typer()
@@ -65,7 +65,12 @@ def main(
 ) -> None:
     processes: list[Process] = []
     if web:  # pragma: no cover
-        from streaq.ui import run_web
+        try:
+            from streaq.ui import run_web
+        except ModuleNotFoundError as e:
+            raise StreaqError(
+                "web module not installed, try `pip install streaq[web]`"
+            ) from e
 
         sys.path.append(os.getcwd())
         worker = cast(Worker[Any], import_string(worker_path))
@@ -97,7 +102,7 @@ def run_worker(path: str, burst: bool, watch: bool, verbose: bool) -> None:
     """
     Run a worker with the given options.
     """
-    if watch:
+    if watch:  # pragma: no cover
         run_process(
             ".",
             target=_run_worker,

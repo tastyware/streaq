@@ -1,5 +1,4 @@
 DEFAULT_QUEUE_NAME = "default"
-DEFAULT_TTL = 86_400_000  # 1 day in ms
 REDIS_ABORT = ":aborted"
 REDIS_CHANNEL = ":channel"
 REDIS_DEPENDENCIES = ":task:dependencies:"

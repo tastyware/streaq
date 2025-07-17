@@ -59,7 +59,7 @@ class TaskInfo:
 
     fn_name: str
     enqueue_time: int
-    task_try: int | None
+    task_try: int
     scheduled: datetime | None
     dependencies: set[str]
     dependents: set[str]
@@ -78,6 +78,8 @@ class TaskResult(Generic[R]):
     result: R | Exception
     start_time: int
     finish_time: int
+    task_try: int
+    worker_id: str
 
 
 @dataclass
