@@ -46,6 +46,7 @@ The ``task`` decorator has several optional arguments that can be used to custom
 - ``timeout``: amount of time to run the task before raising ``asyncio.TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
 - ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
+- ``name``: use a custom name for the task instead of the function name
 
 Enqueuing tasks
 ---------------
