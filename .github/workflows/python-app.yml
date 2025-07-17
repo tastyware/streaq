@@ -43,4 +43,4 @@ jobs:
         uv run mypy streaq/
     - name: Test with pytest
       run: |
-        uv run pytest --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=95
+        uv run pytest -n auto --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=95
