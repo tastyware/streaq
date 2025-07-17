@@ -281,7 +281,9 @@ class Worker(Generic[WD]):
         self._channel_key = self.prefix + REDIS_CHANNEL
         self._timeout_key = self.prefix + REDIS_TIMEOUT
 
-        @self.cron(health_crontab, silent=True, timeout=3, ttl=0)
+        @self.cron(
+            health_crontab, silent=True, timeout=3, ttl=0, name="redis_health_check"
+        )
         async def _() -> None:
             """
             Saves Redis health in Redis.
@@ -392,12 +394,10 @@ class Worker(Generic[WD]):
                 worker=self,
                 _fn_name=name,
             )
-
             if task.fn_name in self.registry:
                 raise StreaqError(
-                    f"A cron job named {task.fn_name!r} has already been registered."
+                    f"A task named {task.fn_name!r} has already been registered!"
                 )
-
             self.cron_jobs[task.fn_name] = task
             self.registry[task.fn_name] = task
             logger.debug(f"cron job {task.fn_name} registered in worker {self.id}")
@@ -445,12 +445,10 @@ class Worker(Generic[WD]):
                 worker=self,
                 _fn_name=name,
             )
-
             if task.fn_name in self.registry:
                 raise StreaqError(
-                    f"A task named {task.fn_name!r} has already been registered."
+                    f"A task named {task.fn_name!r} has already been registered!"
                 )
-
             self.registry[task.fn_name] = task
             logger.debug(f"task {task.fn_name} registered in worker {self.id}")
             return task

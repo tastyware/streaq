@@ -453,13 +453,12 @@ async def test_task_with_custom_name(worker: Worker):
     async def foo() -> int:
         return 42
 
+    async def foobar():
+        return
+
     assert foo.fn_name == "bar"
-
     with pytest.raises(StreaqError):
-
-        @worker.task(name="bar")
-        async def foobar():
-            return
+        worker.task(name="bar")(foobar)
 
     @worker.task()
     async def bar():
@@ -468,15 +467,11 @@ async def test_task_with_custom_name(worker: Worker):
     task1 = await worker.enqueue_unsafe("bar")
     task2 = await worker.enqueue_unsafe(bar.fn_name)
     task3 = await worker.enqueue_unsafe(foo.fn.__qualname__)
-
     worker.loop.create_task(worker.run_async())
-
     res = await task1.result(3)
     assert res.result == 42
-
     res = await task2.result(3)
     assert res.result == 10
-
     res = await task3.result(3)
     assert not res.success
 
@@ -486,14 +481,12 @@ async def test_cron_with_custom_name(worker: Worker):
     async def cronjob() -> None:
         await asyncio.sleep(3)
 
+    async def cronjob1() -> None:
+        pass
+
     assert cronjob.fn_name == "foo"
-
     with pytest.raises(StreaqError):
-
-        @worker.cron("* * * * * * *", name="foo")
-        async def cronjob1() -> None:
-            pass
-
+        worker.cron("* * * * * * *", name="foo")(cronjob1)
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
     assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
