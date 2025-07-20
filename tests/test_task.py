@@ -361,6 +361,18 @@ async def test_enqueue_unique_task(worker: Worker):
     assert any(r.result is None for r in results)
 
 
+@pytest.mark.parametrize("ttl", [60, 0])
+async def test_abort(worker: Worker, ttl: int):
+    @worker.task(ttl=ttl)
+    async def foobar() -> None:
+        await asyncio.sleep(5)
+
+    task = await foobar.enqueue()
+    worker.loop.create_task(worker.run_async())
+    await asyncio.sleep(1)
+    assert await task.abort(1)
+
+
 async def test_failed_abort(worker: Worker):
     @worker.task(ttl=0)
     async def foobar() -> None:

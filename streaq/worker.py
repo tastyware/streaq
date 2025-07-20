@@ -1273,12 +1273,21 @@ class Worker(Generic[WD]):
 
         :return: whether the task was aborted successfully
         """
+        info = await self.info_by_id(task_id)
+        if not info:
+            return False
+
         await self.redis.sadd(self._abort_key, [task_id])
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
             return not result.success and isinstance(
                 result.result, asyncio.CancelledError
             )
+        except StreaqError as e:
+            if e.__cause__:
+                # deserialization error in result_by_id
+                raise
+            return True
         except asyncio.TimeoutError:
             return False
 
