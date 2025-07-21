@@ -16,7 +16,9 @@ def redis_container() -> Generator[RedisContainer, Any, None]:
 
 @fixture(scope="session")
 def redis_url(redis_container: RedisContainer) -> Generator[str, None, None]:
-    yield f"redis://{redis_container.get_container_host_ip()}:{redis_container.port}"
+    host = redis_container.get_container_host_ip()
+    port = redis_container.get_exposed_port(redis_container.port)
+    yield f"redis://{host}:{port}"
 
 
 @fixture(scope="function")
