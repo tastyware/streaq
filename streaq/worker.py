@@ -1272,7 +1272,7 @@ class Worker(Generic[WD]):
         :return: whether the task was aborted successfully
         """
         await self.redis.sadd(self._abort_key, [task_id])
-        if not timeout:
+        if timeout is not None and not timeout:  # check for 0, works with timedelta
             return False
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
