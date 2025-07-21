@@ -1258,10 +1258,10 @@ class Worker(Generic[WD]):
         self, task_id: str, timeout: timedelta | int | None = 5
     ) -> bool:
         """
-        Notify workers that the task should be aborted if it's running.
+        Notify workers that the task should be aborted, then wait for confirmation.
 
         If the task is still enqueued, it will not be removed from the queue, but it
-        will not be started when it gets eventually dequeued. (Note that in this case,
+        will be aborted when it gets eventually dequeued. (Note that in this case,
         confirmation will also be delayed until dequeuing.)
 
         :param task_id: ID of the task to abort
