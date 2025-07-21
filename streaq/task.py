@@ -9,7 +9,6 @@ from time import time
 from typing import TYPE_CHECKING, Any, Generator, Generic
 from uuid import UUID, uuid4
 
-from coredis import Redis
 from crontab import CronTab
 
 from streaq import logger
@@ -40,11 +39,9 @@ class StreaqRetry(StreaqError):
 class TaskStatus(str, Enum):
     """
     Enum of possible task statuses:
-
-    Note: PENDING represents a task that has not been enqueued yet (or doesn't exist)
     """
 
-    PENDING = "pending"
+    NOT_FOUND = "missing"
     QUEUED = "queued"
     RUNNING = "running"
     SCHEDULED = "scheduled"
@@ -59,7 +56,7 @@ class TaskInfo:
 
     fn_name: str
     enqueue_time: int
-    task_try: int
+    tries: int
     scheduled: datetime | None
     dependencies: set[str]
     dependents: set[str]
@@ -78,7 +75,7 @@ class TaskResult(Generic[R]):
     result: R | Exception
     start_time: int
     finish_time: int
-    task_try: int
+    tries: int
     worker_id: str
 
 
@@ -255,10 +252,6 @@ class Task(Generic[R]):
         return await self.parent.worker.info_by_id(self.id)
 
     @property
-    def redis(self) -> Redis[str]:
-        return self.parent.worker.redis
-
-    @property
     def queue(self) -> str:
         return self.parent.worker.queue_name
 
@@ -298,12 +291,6 @@ class RegisteredTask(Generic[WD, P, R]):
     @property
     def fn_name(self) -> str:
         return self._fn_name or self.fn.__qualname__
-
-    def __repr__(self) -> str:
-        return (
-            f"<Task name={self.fn_name} fn={self.fn.__qualname__} "
-            f"timeout={self.timeout} ttl={self.ttl}>"
-        )
 
 
 @dataclass
@@ -356,9 +343,3 @@ class RegisteredCron(Generic[WD, R]):
     @property
     def delay(self) -> float:
         return self.crontab.next(now=datetime.now(self.worker.tz))  # type: ignore
-
-    def __repr__(self) -> str:
-        return (
-            f"<Cron name={self.fn_name} fn={self.fn.__qualname__} "
-            f"timeout={self.timeout} schedule={self.schedule()}>"
-        )

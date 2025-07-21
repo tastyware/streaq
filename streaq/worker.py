@@ -1217,7 +1217,7 @@ class Worker(Generic[WD]):
             return TaskStatus.SCHEDULED
         elif data:
             return TaskStatus.QUEUED
-        return TaskStatus.PENDING
+        return TaskStatus.NOT_FOUND
 
     async def result_by_id(
         self, task_id: str, timeout: timedelta | int | None = None
@@ -1246,7 +1246,7 @@ class Worker(Generic[WD]):
                 result=data["r"],
                 start_time=data["st"],
                 finish_time=data["ft"],
-                task_try=data["t"],
+                tries=data["t"],
                 worker_id=data["w"],
             )
         except Exception as e:
@@ -1319,7 +1319,7 @@ class Worker(Generic[WD]):
         return TaskInfo(
             fn_name=data["f"],
             enqueue_time=data["t"],
-            task_try=int(try_count or 0),
+            tries=int(try_count or 0),
             scheduled=dt,
             dependencies=dependencies,
             dependents=dependents,
@@ -1354,9 +1354,6 @@ class Worker(Generic[WD]):
     def __str__(self) -> str:
         counters_str = dict.__repr__(self.counters).replace("'", "")  # type: ignore
         return f"worker {self.id} {counters_str}"
-
-    def __repr__(self) -> str:
-        return f"<{str(self)}>"
 
     def serialize(self, data: Any) -> Any:
         """

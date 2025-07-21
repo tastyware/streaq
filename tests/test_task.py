@@ -41,7 +41,7 @@ async def test_task_status(worker: Worker):
         await asyncio.sleep(1)
 
     task = foobar.enqueue()
-    assert await task.status() == TaskStatus.PENDING
+    assert await task.status() == TaskStatus.NOT_FOUND
     await task.start()
     assert await task.status() == TaskStatus.QUEUED
     task2 = await foobar.enqueue().start(delay=5)
