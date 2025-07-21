@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from anyio.abc import CapacityLimiter
 from coredis import PureToken, Redis
-from coredis.commands import PubSub, Script
+from coredis.commands import Script
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
 from crontab import CronTab
@@ -674,7 +674,7 @@ class Worker(Generic[WD]):
         stream_key = self.stream_key + msg.priority
         pipe = await self.redis.pipeline(transaction=True)
         pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
-        pipe.publish(self._channel_key, task_id)
+        pipe.publish(self._channel_key + task_id, raw)
         pipe.srem(self._abort_key, [task_id])
         pipe.xack(stream_key, self._group_name, [msg.message_id])
         pipe.xdel(stream_key, [msg.message_id])
@@ -742,7 +742,7 @@ class Worker(Generic[WD]):
         if lock_key:
             to_delete.append(lock_key)
         if finish:
-            pipe.publish(self._channel_key, task_id)
+            pipe.publish(self._channel_key + task_id, result)
             if not silent:
                 if success:
                     self.counters["completed"] += 1
@@ -1036,7 +1036,7 @@ class Worker(Generic[WD]):
             logger.info(f"task {dep_id} dependency failed ×")
             to_delete.append(self.prefix + REDIS_TASK + dep_id)
             pipe.set(self.results_key + dep_id, result, ex=300)
-            pipe.publish(self._channel_key, dep_id)
+            pipe.publish(self._channel_key + dep_id, result)
         pipe.delete(to_delete)
         await pipe.execute()
 
@@ -1182,11 +1182,6 @@ class Worker(Generic[WD]):
         run_time = now_ms() - self._start_time
         logger.info(f"shutdown {str(self)} after {run_time}ms")
 
-    async def _listen_for_result(self, pubsub: PubSub[str], task_id: str) -> None:
-        async for msg in pubsub:
-            if msg.get("data") == task_id:
-                break
-
     async def status_by_id(self, task_id: str) -> TaskStatus:
         """
         Fetch the current status of the given task.
@@ -1236,15 +1231,12 @@ class Worker(Generic[WD]):
         :return: wrapped result object
         """
         result_key = self.results_key + task_id
-        async with self.redis.pubsub(channels=[self._channel_key]) as pubsub:
+        async with self.redis.pubsub(
+            channels=[self._channel_key + task_id], ignore_subscribe_messages=True
+        ) as pubsub:
             if not (raw := await self.redis.get(result_key)):
-                await asyncio.wait_for(
-                    self._listen_for_result(pubsub, task_id), to_seconds(timeout)
-                )
-        if not (raw := await self.redis.get(result_key)):
-            raise StreaqError(
-                "Task finished but result was not stored, did you set ttl=0?"
-            )
+                msg = await asyncio.wait_for(pubsub.__anext__(), to_seconds(timeout))
+                raw = msg["data"]  # type: ignore
         try:
             data = self.deserialize(raw)
             return TaskResult(
@@ -1262,18 +1254,26 @@ class Worker(Generic[WD]):
                 f"Unable to deserialize result for task {task_id}:"
             ) from e
 
-    async def abort_by_id(self, task_id: str, timeout: timedelta | int = 5) -> bool:
+    async def abort_by_id(
+        self, task_id: str, timeout: timedelta | int | None = 5
+    ) -> bool:
         """
         Notify workers that the task should be aborted if it's running.
-        If the task is still enqueued, it will not be removed from the queue,
-        but it will not be started when it gets dequeued.
+
+        If the task is still enqueued, it will not be removed from the queue, but it
+        will not be started when it gets eventually dequeued. (Note that in this case,
+        confirmation will also be delayed until dequeuing.)
 
         :param task_id: ID of the task to abort
-        :param timeout: how long to wait to confirm abortion was successful
+        :param timeout:
+            how long to wait to confirm abortion was successful. None means wait
+            forever, 0 means don't wait at all.
 
         :return: whether the task was aborted successfully
         """
         await self.redis.sadd(self._abort_key, [task_id])
+        if not timeout:
+            return False
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
             return not result.success and isinstance(
