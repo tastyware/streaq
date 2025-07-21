@@ -266,6 +266,7 @@ async def test_signed_data(redis_url: str):
         task = await foo.enqueue()
         res = await task.result(3)
         assert res.success and res.result == "bar"
+    await worker.close()
 
 
 async def test_sign_non_binary_data(redis_url: str):
