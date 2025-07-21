@@ -1,6 +1,6 @@
 DEFAULT_QUEUE_NAME = "default"
 REDIS_ABORT = ":aborted"
-REDIS_CHANNEL = ":channel"
+REDIS_CHANNEL = ":channels:"
 REDIS_DEPENDENCIES = ":task:dependencies:"
 REDIS_DEPENDENTS = ":task:dependents:"
 REDIS_GROUP = "workers"

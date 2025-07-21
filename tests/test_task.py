@@ -13,13 +13,13 @@ from streaq.types import ReturnCoroutine
 
 
 async def test_result_timeout(worker: Worker):
-    @worker.task(ttl=0)
-    async def foobar() -> bool:
-        return False
+    @worker.task()
+    async def foobar() -> None:
+        await asyncio.sleep(5)
 
     task = await foobar.enqueue()
     worker.loop.create_task(worker.run_async())
-    with pytest.raises(StreaqError):
+    with pytest.raises(asyncio.TimeoutError):
         await task.result(3)
 
 
@@ -181,8 +181,7 @@ async def test_task_failed_abort(worker: Worker):
     result = await task.result(3)
     assert result.success
     assert result.result
-    aborted = await task.abort()
-    assert not aborted
+    assert not await task.abort()
 
 
 async def test_task_nonexistent_or_finished_dependency(worker: Worker):
@@ -490,3 +489,14 @@ async def test_cron_with_custom_name(worker: Worker):
     worker.loop.create_task(worker.run_async())
     await asyncio.sleep(2)
     assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
+
+
+@pytest.mark.parametrize("ttl", [60, 0])
+async def test_abort(worker: Worker, ttl: int):
+    @worker.task(ttl=ttl)
+    async def foobar() -> None:
+        await asyncio.sleep(5)
+
+    task = await foobar.enqueue()
+    worker.loop.create_task(worker.run_async())
+    assert await task.abort(2)

@@ -306,6 +306,7 @@ async def test_corrupt_signed_data(redis_url: str):
         worker.loop.create_task(worker.run_async())
         res = await task.result(5)
         assert not res.success and isinstance(res.result, StreaqError)
+    await worker.close()
 
 
 async def test_enqueue_many(redis_url: str):
