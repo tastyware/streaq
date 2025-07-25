@@ -4,7 +4,7 @@ VERSION = "4.1.1"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.addHandler(logging.NullHandler())
 
 # ruff: noqa: E402
 
