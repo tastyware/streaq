@@ -1740,6 +1740,7 @@ benchmark = [
 web = [
     { name = "async-lru" },
     { name = "fastapi" },
+    { name = "jinja2" },
     { name = "python-multipart" },
     { name = "uvicorn" },
 ]
@@ -1769,6 +1770,7 @@ requires-dist = [
     { name = "coredis", specifier = ">=5.0.0" },
     { name = "crontab", specifier = ">=1.0.5" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115.12" },
+    { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1.6" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.20" },
     { name = "saq", extras = ["hiredis"], marker = "extra == 'benchmark'", specifier = "==0.22.2" },
     { name = "taskiq-redis", marker = "extra == 'benchmark'", specifier = "==1.0.3" },
