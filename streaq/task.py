@@ -299,12 +299,6 @@ class RegisteredTask(Generic[WD, P, R]):
     def fn_name(self) -> str:
         return self._fn_name or self.fn.__qualname__
 
-    def __repr__(self) -> str:
-        return (
-            f"<Task name={self.fn_name} fn={self.fn.__qualname__} "
-            f"timeout={self.timeout} ttl={self.ttl}>"
-        )
-
 
 @dataclass
 class RegisteredCron(Generic[WD, R]):
@@ -356,9 +350,3 @@ class RegisteredCron(Generic[WD, R]):
     @property
     def delay(self) -> float:
         return self.crontab.next(now=datetime.now(self.worker.tz))  # type: ignore
-
-    def __repr__(self) -> str:
-        return (
-            f"<Cron name={self.fn_name} fn={self.fn.__qualname__} "
-            f"timeout={self.timeout} schedule={self.schedule()}>"
-        )
