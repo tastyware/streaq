@@ -190,7 +190,7 @@ class Task(Generic[R]):
         return self._chain().__await__()
 
     def task_key(self, mid: str) -> str:
-        return REDIS_PREFIX + self.queue + mid + self.id
+        return REDIS_PREFIX + self.parent.worker.queue_name + mid + self.id
 
     def serialize(self, enqueue_time: int) -> Any:
         """
@@ -250,10 +250,6 @@ class Task(Generic[R]):
         :return: task info, unless task has finished or doesn't exist
         """
         return await self.parent.worker.info_by_id(self.id)
-
-    @property
-    def queue(self) -> str:
-        return self.parent.worker.queue_name
 
 
 @dataclass

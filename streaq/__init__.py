@@ -1,10 +1,14 @@
 import logging
 
+import uvloop
+
 VERSION = "5.0.0"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+uvloop.install()
 
 # ruff: noqa: E402
 
