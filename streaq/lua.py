@@ -155,3 +155,37 @@ for i=1, #ARGV do
   end
 end
 """
+
+READ_STREAMS = """
+local stream_key = KEYS[1]
+local group_name = KEYS[2]
+local consumer_name = KEYS[3]
+
+local count = ARGV[1]
+
+local entries = {}
+
+for i=2, #ARGV do
+  local stream = stream_key .. ARGV[i]
+  local res = redis.call(
+    'xreadgroup',
+    'group',
+    group_name,
+    consumer_name,
+    'count',
+    count,
+    'streams',
+    stream,
+    '>'
+  )
+  if res then
+    table.insert(entries, res[1])
+    count = count - #res[1][2]
+    if count <= 0 then
+      break
+    end
+  end
+end
+
+return entries
+"""

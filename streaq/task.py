@@ -9,15 +9,14 @@ from time import time
 from typing import TYPE_CHECKING, Any, Generator, Generic
 from uuid import UUID, uuid4
 
-from coredis import Redis
 from crontab import CronTab
 
 from streaq import logger
-from streaq.constants import REDIS_PREFIX, REDIS_TASK
+from streaq.constants import REDIS_TASK
 from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
 
 
@@ -40,11 +39,9 @@ class StreaqRetry(StreaqError):
 class TaskStatus(str, Enum):
     """
     Enum of possible task statuses:
-
-    Note: PENDING represents a task that has not been enqueued yet (or doesn't exist)
     """
 
-    PENDING = "pending"
+    NOT_FOUND = "missing"
     QUEUED = "queued"
     RUNNING = "running"
     SCHEDULED = "scheduled"
@@ -59,7 +56,7 @@ class TaskInfo:
 
     fn_name: str
     enqueue_time: int
-    task_try: int
+    tries: int
     scheduled: datetime | None
     dependencies: set[str]
     dependents: set[str]
@@ -78,7 +75,7 @@ class TaskResult(Generic[R]):
     result: R | Exception
     start_time: int
     finish_time: int
-    task_try: int
+    tries: int
     worker_id: str
 
 
@@ -152,7 +149,7 @@ class Task(Generic[R]):
         else:
             score = 0
         data = self.serialize(enqueue_time)
-        _priority = self.priority or self.parent.worker.priorities[0]
+        _priority = self.priority or self.parent.worker.priorities[-1]
         if not await self.parent.worker.publish_task(
             keys=[
                 self.parent.worker.stream_key,
@@ -193,7 +190,7 @@ class Task(Generic[R]):
         return self._chain().__await__()
 
     def task_key(self, mid: str) -> str:
-        return REDIS_PREFIX + self.queue + mid + self.id
+        return self.parent.worker.prefix + mid + self.id
 
     def serialize(self, enqueue_time: int) -> Any:
         """
@@ -253,14 +250,6 @@ class Task(Generic[R]):
         :return: task info, unless task has finished or doesn't exist
         """
         return await self.parent.worker.info_by_id(self.id)
-
-    @property
-    def redis(self) -> Redis[str]:
-        return self.parent.worker.redis
-
-    @property
-    def queue(self) -> str:
-        return self.parent.worker.queue_name
 
 
 @dataclass

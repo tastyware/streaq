@@ -5,7 +5,9 @@ from typing import Awaitable
 import typer
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
 
-broker = RedisStreamBroker("redis://localhost:6379").with_result_backend(
+broker = RedisStreamBroker(
+    "redis://localhost:6379", xread_count=32
+).with_result_backend(
     RedisAsyncResultBackend("redis://localhost:6379", result_ex_time=1)
 )
 

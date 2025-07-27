@@ -55,15 +55,16 @@ dependencies = [
     "coredis>=5.0.0",
     "crontab>=1.0.5",
     "typer>=0.15.2",
-    "watchfiles>=1.0.4",
+    "uvloop>=0.21.0",
+    "watchfiles>=1.1.0",
 ]
 dynamic = ["version"]
 
 [project.optional-dependencies]
 benchmark = [
     "arq==0.26.3",
-    "saq[hiredis]==0.22.2",
-    "taskiq-redis==1.0.3",
+    "saq[hiredis]==0.25.2",
+    "taskiq-redis==1.1.0",
 ]
 web = [
     "async-lru>=2.0.5",
