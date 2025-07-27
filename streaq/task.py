@@ -12,11 +12,11 @@ from uuid import UUID, uuid4
 from crontab import CronTab
 
 from streaq import logger
-from streaq.constants import REDIS_PREFIX, REDIS_TASK
+from streaq.constants import REDIS_TASK
 from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
 
 
@@ -149,7 +149,7 @@ class Task(Generic[R]):
         else:
             score = 0
         data = self.serialize(enqueue_time)
-        _priority = self.priority or self.parent.worker.priorities[0]
+        _priority = self.priority or self.parent.worker.priorities[-1]
         if not await self.parent.worker.publish_task(
             keys=[
                 self.parent.worker.stream_key,
@@ -190,7 +190,7 @@ class Task(Generic[R]):
         return self._chain().__await__()
 
     def task_key(self, mid: str) -> str:
-        return REDIS_PREFIX + self.parent.worker.queue_name + mid + self.id
+        return self.parent.worker.prefix + mid + self.id
 
     def serialize(self, enqueue_time: int) -> Any:
         """

@@ -18,6 +18,7 @@ from uuid import uuid4
 from anyio.abc import CapacityLimiter
 from coredis import PureToken, Redis
 from coredis.commands import Script
+from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
 from crontab import CronTab
@@ -47,6 +48,7 @@ from streaq.lua import (
     FAIL_DEPENDENTS,
     PUBLISH_DELAYED_TASKS,
     PUBLISH_TASK,
+    READ_STREAMS,
     RECLAIM_IDLE_TASKS,
     UPDATE_DEPENDENTS,
 )
@@ -128,6 +130,7 @@ class Worker(Generic[WD]):
     fail_dependents: Script[str]
     update_dependents: Script[str]
     reclaim_idle_tasks: Script[str]
+    read_streams: Script[str]
     _worker_context: WD
 
     __slots__ = (
@@ -182,6 +185,7 @@ class Worker(Generic[WD]):
         "fail_dependents",
         "update_dependents",
         "reclaim_idle_tasks",
+        "read_streams",
     )
 
     def __init__(
@@ -223,6 +227,7 @@ class Worker(Generic[WD]):
         self.concurrency = concurrency
         self.queue_name = queue_name
         self.priorities = priorities or ["default"]
+        self.priorities.reverse()
         self._group_name = REDIS_GROUP
         self.prefetch = prefetch or concurrency
         #: semaphore controlling concurrency
@@ -518,8 +523,8 @@ class Worker(Generic[WD]):
         Listen for new tasks or stale tasks from the stream and start them up,
         as well as add cron jobs to the queue when ready.
         """
-        streams = {self.stream_key + p: ">" for p in reversed(self.priorities)}
-        priority_order = {p: -i for i, p in enumerate(self.priorities)}
+        streams = {self.stream_key + p: ">" for p in self.priorities}
+        priority_order = {p: i for i, p in enumerate(self.priorities)}
         while not self._block_new_tasks:
             messages: list[StreamMessage] = []
             active_tasks = self.concurrency - self.bs._value
@@ -527,6 +532,7 @@ class Worker(Generic[WD]):
             count = self.concurrency + self.prefetch - pending_tasks
             pipe = await self.redis.pipeline(transaction=False)
             if count > 0:
+                # first, check for idle tasks to be reclaimed
                 idle = await self.reclaim_idle_tasks(
                     keys=[
                         self._timeout_key,
@@ -551,14 +557,24 @@ class Worker(Generic[WD]):
                         )
                     logger.info(f"retrying ↻ {len(messages)} idle tasks")
                     count -= len(messages)
+                # next, read from streams for remaining quota
                 if count > 0:
-                    entries = await self.redis.xreadgroup(
-                        self._group_name,
-                        self.id,
-                        streams=streams,  # type: ignore
-                        block=500,
-                        count=count,
+                    # non-blocking, priority ordered first
+                    entries = MultiStreamRangeCallback[str]().transform(
+                        await self.read_streams(
+                            keys=[self.stream_key, self._group_name, self.id],
+                            args=[count, *self.priorities],
+                        )
                     )
+                    # blocking second if nothing fetched
+                    if not entries:
+                        entries = await self.redis.xreadgroup(
+                            self._group_name,
+                            self.id,
+                            streams=streams,  # type: ignore
+                            block=400,
+                            count=count,
+                        )
                     if entries:
                         for stream, msgs in entries.items():
                             priority = stream.split(":")[-1]
@@ -1105,7 +1121,7 @@ class Worker(Generic[WD]):
             else:
                 score = 0
             data = task.serialize(enqueue_time)
-            _priority = task.priority or self.priorities[0]
+            _priority = task.priority or self.priorities[-1]
             self.publish_task(
                 keys=[
                     self.stream_key,
@@ -1333,6 +1349,7 @@ class Worker(Generic[WD]):
         self.fail_dependents = self.redis.register_script(FAIL_DEPENDENTS)
         self.update_dependents = self.redis.register_script(UPDATE_DEPENDENTS)
         self.reclaim_idle_tasks = self.redis.register_script(RECLAIM_IDLE_TASKS)
+        self.read_streams = self.redis.register_script(READ_STREAMS)
         # user-defined deps
         lifespan = self.lifespan(self)
         self._worker_context = await lifespan.__aenter__()

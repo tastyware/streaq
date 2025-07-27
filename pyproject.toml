@@ -56,7 +56,7 @@ dependencies = [
     "crontab>=1.0.5",
     "typer>=0.15.2",
     "uvloop>=0.21.0",
-    "watchfiles>=1.0.4",
+    "watchfiles>=1.1.0",
 ]
 dynamic = ["version"]
 

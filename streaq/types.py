@@ -16,7 +16,7 @@ from typing import (
     overload,
 )
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from streaq.task import RegisteredCron, RegisteredTask
 
 P = ParamSpec("P")
