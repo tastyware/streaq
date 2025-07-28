@@ -1,12 +1,15 @@
 import asyncio
 
 import pytest
+from anyio import create_task_group
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from streaq.ui import router
 from streaq.ui.deps import get_worker
 from streaq.worker import Worker
+
+pytestmark = pytest.mark.anyio
 
 
 async def test_no_override():
@@ -29,37 +32,42 @@ async def test_get_pages(worker: Worker, prefix: str):
         yield worker
 
     app.dependency_overrides[get_worker] = _get_worker
-    worker.loop.create_task(worker.run_async())
-    # queue up some tasks
-    scheduled = await sleeper.enqueue(10).start(delay=5)
-    done = await sleeper.enqueue(0)
-    running = await sleeper.enqueue(10)
-    queued = await sleeper.enqueue(10)
-    await asyncio.sleep(2)
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        # queue up some tasks
+        async with worker:
+            scheduled = await sleeper.enqueue(10).start(delay=5)
+            done = await sleeper.enqueue(0)
+            running = await sleeper.enqueue(10)
+            queued = await sleeper.enqueue(10)
+        await asyncio.sleep(2)
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        # endpoints
-        res = await client.get(f"{prefix}/")
-        assert res.status_code == 303
-        res = await client.get(f"{prefix}/queue")
-        assert res.status_code == 200
-        res = await client.patch(
-            f"{prefix}/queue",
-            data={
-                "functions": ["Worker.__init__.<locals>._"],
-                "statuses": ["queued", "running", "done"],
-            },
-        )
-        assert res.status_code == 200
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # endpoints
+            res = await client.get(f"{prefix}/")
+            assert res.status_code == 303
+            res = await client.get(f"{prefix}/queue")
+            assert res.status_code == 200
+            res = await client.patch(
+                f"{prefix}/queue",
+                data={
+                    "functions": ["redis_health_check"],
+                    "statuses": ["queued", "running", "done"],
+                },
+            )
+            assert res.status_code == 200
 
-        res = await client.get(f"{prefix}/task/{done.id}")
-        assert res.status_code == 200
-        res = await client.get(f"{prefix}/task/{running.id}")
-        assert res.status_code == 200
-        res = await client.get(f"{prefix}/task/{queued.id}")
-        assert res.status_code == 200
-        res = await client.delete(f"{prefix}/task/{scheduled.id}")
-        assert res.status_code == 200
-        assert res.headers["HX-Redirect"] == f"{prefix}/queue"
+            res = await client.get(f"{prefix}/task/{done.id}")
+            assert res.status_code == 200
+            res = await client.get(f"{prefix}/task/{running.id}")
+            assert res.status_code == 200
+            res = await client.get(f"{prefix}/task/{queued.id}")
+            assert res.status_code == 200
+            res = await client.delete(f"{prefix}/task/{scheduled.id}")
+            assert res.status_code == 200
+            assert res.headers["HX-Redirect"] == f"{prefix}/queue"
+
+        # cleanup worker
+        tg.cancel_scope.cancel()

@@ -168,7 +168,7 @@ async def test_reclaim_backed_up(redis_url: str):
     worker = Worker(
         concurrency=2, redis_url=redis_url, queue_name=queue_name, idle_timeout=2
     )
-    worker2 = Worker(redis_url=redis_url, queue_name=queue_name, idle_timeout=2)
+    worker2 = Worker(redis_url=redis_url, queue_name=queue_name)
 
     async def foo() -> None:
         await asyncio.sleep(3)

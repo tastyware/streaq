@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -9,6 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, Any, Generator, Generic
 from uuid import UUID, uuid4
 
+from anyio import fail_after
 from crontab import CronTab
 
 from streaq import logger
@@ -280,9 +280,8 @@ class RegisteredTask(Generic[WD, P, R]):
         Run the task in the local event loop with the given params and return the
         result. This skips enqueuing and result storing in Redis.
         """
-        return await asyncio.wait_for(
-            self.fn(*args, **kwargs), to_seconds(self.timeout)
-        )
+        with fail_after(to_seconds(self.timeout)):
+            return await self.fn(*args, **kwargs)
 
     @property
     def fn_name(self) -> str:
@@ -318,7 +317,8 @@ class RegisteredCron(Generic[WD, R]):
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.
         """
-        return await asyncio.wait_for(self.fn(), to_seconds(self.timeout))
+        with fail_after(to_seconds(self.timeout)):
+            return await self.fn()
 
     @property
     def fn_name(self) -> str:
