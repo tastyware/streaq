@@ -474,17 +474,17 @@ async def test_sync_cron(worker: Worker):
 
 
 async def test_cron_multiple_runs(worker: Worker):
-    key = "runs"
+    val = 0
 
     @worker.cron("* * * * * * *")
     async def cronjob() -> None:
-        await worker.redis.incr(key)
+        nonlocal val
+        val += 1
 
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         await asyncio.sleep(5)
-        runs = await worker.redis.get(key)
-        assert int(runs or 0) > 1
+        assert val > 1
         tg.cancel_scope.cancel()
 
 

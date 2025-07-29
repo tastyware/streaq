@@ -39,8 +39,6 @@ Next, create an async context manager to run at worker creation/teardown. Use th
            yield Context(http_client)
        # here we run code if desired before worker shutdown
 
-Note that ``worker.redis`` here is NOT a ``redis-py`` client, but a `coredis <https://github.com/alisaifee/coredis>`_ client.
-
 Now, tasks created for the worker will have access to the dependencies like so:
 
 .. code-block:: python
