@@ -17,7 +17,7 @@ streaQ handles exceptions in the following manner:
 
 * ``StreaqRetry`` exceptions result in retrying the task, sometimes after a delay (see below).
 * ``asyncio.CancelledError`` exceptions result in the task failing if the task was aborted by the user, or being retried if the worker was shut down unexpectedly.
-* ``asyncio.TimeoutError`` exceptions result in the task failing if the task took too long to run.
+* ``TimeoutError`` exceptions result in the task failing if the task took too long to run.
 * Any other ``Exception`` will result in the task failing.
 
 Registering tasks
@@ -41,12 +41,13 @@ We can now register async functions with the worker:
 
 The ``task`` decorator has several optional arguments that can be used to customize behavior:
 
+- ``expire``: time after which to dequeue the task, if None will never be dequeued
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to 3
+- ``name``: use a custom name for the task instead of the function name
 - ``silent``: whether to silence task startup/shutdown logs and task success/failure tracking; defaults to False
-- ``timeout``: amount of time to run the task before raising ``asyncio.TimeoutError``; ``None`` (the default) means never timeout
+- ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
 - ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
-- ``name``: use a custom name for the task instead of the function name
 
 Enqueuing tasks
 ---------------
@@ -164,7 +165,7 @@ Enqueued tasks return a ``Task`` object which can be used to wait for task resul
 .. code-block:: python
 
    TaskStatus.SCHEDULED
-   TaskResult(fn_name='sleeper', enqueue_time=1740763800091, success=True, result=3, start_time=1740763805099, finish_time=1740763808102)
+   TaskResult(fn_name='sleeper', enqueue_time=1740763800091, success=True, result=3, start_time=1740763805099, finish_time=1740763808102, tries=1, worker_id='ca5bd9eb')
    TaskStatus.DONE
 
 The ``TaskResult`` object contains information about the task, such as start/end time. The ``success`` flag will tell you whether the object stored in ``result`` is the result of task execution (if ``True``) or an exception raised during execution (if ``False``).
@@ -306,7 +307,7 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 
 .. code-block:: python
 
-   TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, result=True, start_time=1743469913901, finish_time=1743469913902)
+   TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, result=True, start_time=1743469913901, finish_time=1743469913902, tries=1, worker_id='ca5bd9eb')
 
 This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. With a little work, you can build common pipelining utilities from these building blocks:
 
@@ -340,8 +341,8 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
 .. code-block:: python
 
-   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, result=[0, 2, 4, 6], start_time=1751712228895, finish_time=1751712228919)
-   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, result=[0, 4], start_time=1751712228951, finish_time=1751712228966)
+   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, result=[0, 2, 4, 6], start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb')
+   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, result=[0, 4], start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb')
 
 .. note::
    For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.

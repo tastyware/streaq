@@ -20,7 +20,7 @@ To start, you'll need to create a ``Worker`` object. At worker creation, you can
        http_client: AsyncClient
 
    @asynccontextmanager
-   async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
+   async def lifespan() -> AsyncIterator[WorkerContext]:
        """
        Here, we initialize the worker's dependencies.
        You can also do any startup/shutdown work here
@@ -75,5 +75,5 @@ Let's see what the output looks like:
 
 .. code-block:: python
 
-   TaskInfo(fn_name='fetch', enqueue_time=1751635090933, task_try=None, scheduled=datetime.datetime(2025, 7, 4, 13, 18, 13, 933000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
-   TaskResult(fn_name='fetch', enqueue_time=1751635090933, success=True, result=303557, start_time=1751635094068, finish_time=1751635095130)
+   TaskInfo(fn_name='fetch', enqueue_time=1751635090933, tries=0, scheduled=datetime.datetime(2025, 7, 4, 13, 18, 13, 933000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+   TaskResult(fn_name='fetch', enqueue_time=1751635090933, success=True, result=303557, start_time=1751635094068, finish_time=1751635095130, tries=1, worker_id='ca5bd9eb')

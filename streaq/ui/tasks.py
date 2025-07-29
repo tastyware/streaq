@@ -174,7 +174,7 @@ async def get_task(
         output, truncate_length = str(result.result), 32
         if len(output) > truncate_length:
             output = f"{output[:truncate_length]}…"
-        task_try = result.task_try
+        task_try = result.tries
         worker_id = result.worker_id
         extra = {
             "success": result.success,
@@ -196,7 +196,7 @@ async def get_task(
             schedule = info.scheduled.strftime("%Y-%m-%d %H:%M:%S")
         else:
             schedule = None
-        task_try = info.task_try
+        task_try = info.tries
         extra = {
             "scheduled": schedule,
             "dependencies": len(info.dependencies),

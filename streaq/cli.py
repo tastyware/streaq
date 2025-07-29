@@ -7,7 +7,7 @@ from typing import Annotated, Any, cast
 from typer import Exit, Option, Typer
 from watchfiles import run_process
 
-from streaq import VERSION, logger
+from streaq import VERSION
 from streaq.utils import StreaqError, default_log_config, import_string
 from streaq.worker import Worker
 
@@ -71,14 +71,10 @@ def main(
             raise StreaqError(
                 "web module not installed, try `pip install streaq[web]`"
             ) from e
-
-        sys.path.append(os.getcwd())
-        worker = cast(Worker[Any], import_string(worker_path))
-        logging.config.dictConfig(default_log_config(worker.tz, verbose))
         processes.append(
             Process(
                 target=run_web,
-                args=(host, port, worker),
+                args=(host, port, worker_path),
             )
         )
     if workers > 1:
@@ -107,7 +103,7 @@ def run_worker(path: str, burst: bool, watch: bool, verbose: bool) -> None:
             ".",
             target=_run_worker,
             args=(path, burst, verbose),
-            callback=lambda _: logger.info("changes detected, reloading"),
+            callback=lambda _: print("changes detected, reloading..."),
         )
     else:
         _run_worker(path, burst, verbose)

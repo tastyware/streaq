@@ -10,13 +10,20 @@ local task_id = ARGV[1]
 local task_data = ARGV[2]
 local priority = ARGV[3]
 local score = ARGV[4]
+local expire = ARGV[5]
 
-if not redis.call('set', task_key, task_data, 'nx') then
+local args = {'set', task_key, task_data, 'nx'}
+if expire ~= '0' then
+  table.insert(args, 'px')
+  table.insert(args, expire)
+end
+
+if not redis.call(unpack(args)) then
   return 0
 end
 
 local modified = 0
-for i=5, #ARGV do
+for i=6, #ARGV do
   local dep_id = ARGV[i]
   if redis.call('exists', results_key .. dep_id) ~= 1 then
     modified = modified + 1
@@ -154,4 +161,38 @@ for i=1, #ARGV do
     redis.call('xgroup', 'create', stream, group_name, '0', 'mkstream')
   end
 end
+"""
+
+READ_STREAMS = """
+local stream_key = KEYS[1]
+local group_name = KEYS[2]
+local consumer_name = KEYS[3]
+
+local count = ARGV[1]
+
+local entries = {}
+
+for i=2, #ARGV do
+  local stream = stream_key .. ARGV[i]
+  local res = redis.call(
+    'xreadgroup',
+    'group',
+    group_name,
+    consumer_name,
+    'count',
+    count,
+    'streams',
+    stream,
+    '>'
+  )
+  if res then
+    table.insert(entries, res[1])
+    count = count - #res[1][2]
+    if count <= 0 then
+      break
+    end
+  end
+end
+
+return entries
 """

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -9,15 +8,15 @@ from time import time
 from typing import TYPE_CHECKING, Any, Generator, Generic
 from uuid import UUID, uuid4
 
-from coredis import Redis
+from anyio import fail_after
 from crontab import CronTab
 
 from streaq import logger
-from streaq.constants import REDIS_PREFIX, REDIS_TASK
+from streaq.constants import REDIS_TASK
 from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
 
 
@@ -40,11 +39,9 @@ class StreaqRetry(StreaqError):
 class TaskStatus(str, Enum):
     """
     Enum of possible task statuses:
-
-    Note: PENDING represents a task that has not been enqueued yet (or doesn't exist)
     """
 
-    PENDING = "pending"
+    NOT_FOUND = "missing"
     QUEUED = "queued"
     RUNNING = "running"
     SCHEDULED = "scheduled"
@@ -59,7 +56,7 @@ class TaskInfo:
 
     fn_name: str
     enqueue_time: int
-    task_try: int
+    tries: int
     scheduled: datetime | None
     dependencies: set[str]
     dependents: set[str]
@@ -78,7 +75,7 @@ class TaskResult(Generic[R]):
     result: R | Exception
     start_time: int
     finish_time: int
-    task_try: int
+    tries: int
     worker_id: str
 
 
@@ -152,7 +149,8 @@ class Task(Generic[R]):
         else:
             score = 0
         data = self.serialize(enqueue_time)
-        _priority = self.priority or self.parent.worker.priorities[0]
+        _priority = self.priority or self.parent.worker.priorities[-1]
+        expire = to_ms(self.parent.expire or 0)
         if not await self.parent.worker.publish_task(
             keys=[
                 self.parent.worker.stream_key,
@@ -162,7 +160,7 @@ class Task(Generic[R]):
                 self.parent.worker.dependencies_key,
                 self.parent.worker.results_key,
             ],
-            args=[self.id, data, _priority, score] + self.after,
+            args=[self.id, data, _priority, score, expire] + self.after,
         ):
             logger.debug("Task is unique and already exists, not enqueuing!")
         return self
@@ -193,7 +191,7 @@ class Task(Generic[R]):
         return self._chain().__await__()
 
     def task_key(self, mid: str) -> str:
-        return REDIS_PREFIX + self.queue + mid + self.id
+        return self.parent.worker.prefix + mid + self.id
 
     def serialize(self, enqueue_time: int) -> Any:
         """
@@ -254,18 +252,11 @@ class Task(Generic[R]):
         """
         return await self.parent.worker.info_by_id(self.id)
 
-    @property
-    def redis(self) -> Redis[str]:
-        return self.parent.worker.redis
-
-    @property
-    def queue(self) -> str:
-        return self.parent.worker.queue_name
-
 
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
     fn: AsyncTask[P, R]
+    expire: timedelta | int | None
     max_tries: int | None
     silent: bool
     timeout: timedelta | int | None
@@ -291,9 +282,8 @@ class RegisteredTask(Generic[WD, P, R]):
         Run the task in the local event loop with the given params and return the
         result. This skips enqueuing and result storing in Redis.
         """
-        return await asyncio.wait_for(
-            self.fn(*args, **kwargs), to_seconds(self.timeout)
-        )
+        with fail_after(to_seconds(self.timeout)):
+            return await self.fn(*args, **kwargs)
 
     @property
     def fn_name(self) -> str:
@@ -310,6 +300,7 @@ class RegisteredCron(Generic[WD, R]):
     ttl: timedelta | int | None
     unique: bool
     worker: Worker[WD]
+    expire: timedelta | int | None = None
     _fn_name: str | None = None
 
     def enqueue(self) -> Task[R]:
@@ -329,7 +320,8 @@ class RegisteredCron(Generic[WD, R]):
         Run the task in the local event loop and return the result.
         This skips enqueuing and result storing in Redis.
         """
-        return await asyncio.wait_for(self.fn(), to_seconds(self.timeout))
+        with fail_after(to_seconds(self.timeout)):
+            return await self.fn()
 
     @property
     def fn_name(self) -> str:
