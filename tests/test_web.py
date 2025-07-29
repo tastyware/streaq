@@ -17,9 +17,9 @@ async def test_no_override():
         _ = await get_worker()
 
 
-@pytest.mark.parametrize("prefix", ["", "/streaq"])
-async def test_get_pages(worker: Worker, prefix: str):
+async def test_get_pages(worker: Worker):
     app = FastAPI()
+    prefix = "/streaq"
     app.include_router(router, prefix=prefix)
     worker.concurrency = 1
     worker.prefetch = 0

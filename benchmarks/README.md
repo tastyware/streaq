@@ -27,7 +27,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 1 worker | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | -------- | ---------- | ---------- | ---------- |
-| streaq   | 0.35s     | 7.52s    | 3.62s      | 4.04s      | 4.62s      |
+| streaq   | 0.37s     | 6.83s    | 2.93s      | 3.30s      | 3.97s      |
 | SAQ      | 1.67s     | 9.86s    | 3.46s      | 3.45s      | 3.93s      |
 | taskiq   | 1.68s     | 6.36s    | 3.26s      | 3.38s      | 6.43s      |
 | arq      | 2.31s     | 62.66s   | 28.10s     | 43.33s     | ☠️         |
@@ -39,7 +39,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | ---------- | ---------- | ---------- |
-| streaq   | 0.35s     | 64.24s     | 33.49s     | 17.85s     |
+| streaq   | 0.37s     | 63.43s     | 32.98s     | 17.00s     |
 | SAQ      | 1.69s     | 64.51s     | 33.56s     | 17.74s     |
 | taskiq   | 1.68s     | 67.53s     | 34.42s     | 18.55s     |
 | arq      | 2.27s     | 176.87s    | 169.47s    | ☠️         |
