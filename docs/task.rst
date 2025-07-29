@@ -17,7 +17,7 @@ streaQ handles exceptions in the following manner:
 
 * ``StreaqRetry`` exceptions result in retrying the task, sometimes after a delay (see below).
 * ``asyncio.CancelledError`` exceptions result in the task failing if the task was aborted by the user, or being retried if the worker was shut down unexpectedly.
-* ``asyncio.TimeoutError`` exceptions result in the task failing if the task took too long to run.
+* ``TimeoutError`` exceptions result in the task failing if the task took too long to run.
 * Any other ``Exception`` will result in the task failing.
 
 Registering tasks
@@ -43,7 +43,7 @@ The ``task`` decorator has several optional arguments that can be used to custom
 
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to 3
 - ``silent``: whether to silence task startup/shutdown logs and task success/failure tracking; defaults to False
-- ``timeout``: amount of time to run the task before raising ``asyncio.TimeoutError``; ``None`` (the default) means never timeout
+- ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
 - ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
 - ``name``: use a custom name for the task instead of the function name

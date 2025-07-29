@@ -8,11 +8,11 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from signal import Signals
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
+from anyio import create_task_group, move_on_after
 
 from streaq.constants import REDIS_TASK
 from streaq.task import TaskStatus
@@ -20,6 +20,7 @@ from streaq.utils import StreaqError
 from streaq.worker import Worker
 
 NAME_STR = "Freddy"
+pytestmark = pytest.mark.anyio
 
 
 async def test_worker_redis(redis_url: str):
@@ -33,7 +34,7 @@ class WorkerContext:
 
 
 @asynccontextmanager
-async def deps(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
+async def deps() -> AsyncIterator[WorkerContext]:
     yield WorkerContext(NAME_STR)
 
 
@@ -51,7 +52,7 @@ async def test_lifespan(redis_url: str):
     async with worker:
         res = await foobar.run()
         assert res == NAME_STR
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(TimeoutError):
             await foobar2.run()
 
 
@@ -60,19 +61,18 @@ async def test_health_check(redis_url: str):
         redis_url=redis_url,
         health_crontab="* * * * * * *",
         queue_name=uuid4().hex,
-        handle_signals=False,
     )
-    worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(2)
-    worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
-    redis_health = await worker.redis.get(worker._health_key + ":redis")
-    assert worker_health is not None
-    assert redis_health is not None
-    await worker.close()
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        await asyncio.sleep(2)
+        worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
+        redis_health = await worker.redis.get(worker._health_key + ":redis")
+        assert worker_health is not None
+        assert redis_health is not None
+        tg.cancel_scope.cancel()
 
 
-async def test_queue_size(redis_url: str):
-    worker = Worker(queue_name=uuid4().hex, redis_url=redis_url)
+async def test_queue_size(worker: Worker):
     assert await worker.queue_size() == 0
 
 
@@ -118,14 +118,16 @@ async def test_custom_serializer(worker: Worker):
     async def foobar() -> None:
         pass
 
-    task = await foobar.enqueue()
-    worker.loop.create_task(worker.run_async())
-    assert (await task.result(3)).success
+    async with worker:
+        task = await foobar.enqueue()
+
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        assert (await task.result(3)).success
+        tg.cancel_scope.cancel()
 
 
-async def test_uninitialized_worker(redis_url: str):
-    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
-
+async def test_uninitialized_worker(worker: Worker):
     @worker.task()
     async def foobar() -> None:
         print(worker.context)
@@ -142,11 +144,15 @@ async def test_active_tasks(worker: Worker):
         await asyncio.sleep(3)
 
     n_tasks = 5
-    for _ in range(n_tasks):
-        await foo.enqueue()
-    worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    assert worker.active == n_tasks
+    async with worker:
+        tasks = [foo.enqueue() for _ in range(n_tasks)]
+        await worker.enqueue_many(tasks)
+
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        await asyncio.sleep(1)
+        assert worker.active == n_tasks
+        tg.cancel_scope.cancel()
 
 
 async def test_handle_signal(worker: Worker):
@@ -154,13 +160,14 @@ async def test_handle_signal(worker: Worker):
     async def foo() -> None:
         await asyncio.sleep(3)
 
-    worker._handle_signals = True
-    worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    worker.handle_signal(Signals.SIGINT)
-    await asyncio.sleep(1)
-    task = await foo.enqueue()
-    assert await task.status() == TaskStatus.QUEUED
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        await asyncio.sleep(1)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    async with worker:
+        task = await foo.enqueue()
+        assert await task.status() == TaskStatus.QUEUED
 
 
 async def test_reclaim_backed_up(redis_url: str):
@@ -180,23 +187,20 @@ async def test_reclaim_backed_up(redis_url: str):
     async with worker:
         tasks = [registered.enqueue() for _ in range(4)]
         await worker.enqueue_many(tasks)
-    # run first worker which will pick up all tasks
-    worker.loop.create_task(worker.run_async())
-    await asyncio.sleep(1)
-    # run second worker which will pick up prefetched tasks
-    worker2.loop.create_task(worker2.run_async())
+    async with create_task_group() as tg:
+        # run first worker which will pick up all tasks
+        tg.start_soon(worker.run_async)
+        await asyncio.sleep(1)
+        # run second worker which will pick up prefetched tasks
+        tg.start_soon(worker2.run_async)
 
-    results = await asyncio.gather(*[t.result(8) for t in tasks])
-    assert any(r.worker_id == worker2.id for r in results)
-    await worker.close()
-    await worker2.close()
+        results = await asyncio.gather(*[t.result(8) for t in tasks])
+        assert any(r.worker_id == worker2.id for r in results)
+        tg.cancel_scope.cancel()
 
 
 async def test_reclaim_idle_task(redis_url: str):
-    worker2 = Worker(
-        redis_url=redis_url,
-        queue_name="reclaim",
-    )
+    worker2 = Worker(redis_url=redis_url, queue_name="reclaim")
 
     @worker2.task(timeout=3)
     async def foo() -> None:
@@ -206,43 +210,36 @@ async def test_reclaim_idle_task(redis_url: str):
     async with worker2:
         task = await foo.enqueue()
     # run separate worker which will pick up task
-    worker1 = subprocess.Popen([sys.executable, "tests/failure.py", redis_url])
+    worker = subprocess.Popen([sys.executable, "tests/failure.py", redis_url])
     await asyncio.sleep(1)
     # kill worker abruptly to disallow cleanup
-    os.kill(worker1.pid, signal.SIGKILL)
-    worker1.wait()
+    os.kill(worker.pid, signal.SIGKILL)
+    worker.wait()
 
-    worker2.loop.create_task(worker2.run_async())
-    assert (await task.result(8)).success
-    await worker2.close()
+    async with create_task_group() as tg:
+        tg.start_soon(worker2.run_async)
+        assert (await task.result(8)).success
+        tg.cancel_scope.cancel()
 
 
 async def test_change_cron_schedule(redis_url: str):
     async def foo() -> None:
         pass
 
-    worker1 = Worker(
-        redis_url=redis_url,
-        queue_name=uuid4().hex,
-        handle_signals=False,
-    )
-    foo1 = worker1.cron("0 0 1 1 *")(foo)
-    worker1.loop.create_task(worker1.run_async())
-    await asyncio.sleep(2)
-    await worker1.close()
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+    foo1 = worker.cron("0 0 1 1 *")(foo)
+    with move_on_after(2):
+        await worker.run_async()
     task1 = foo1.enqueue()
     info = await task1.info()
     assert info and foo1.schedule() == info.scheduled
 
-    worker2 = Worker(
-        redis_url=redis_url,
-        queue_name=worker1.queue_name,
-        handle_signals=False,
-    )
+    worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
     foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
-    worker2.loop.create_task(worker2.run_async())
-    await asyncio.sleep(2)
-    await worker2.close()
+    async with create_task_group() as tg:
+        tg.start_soon(worker2.run_async)
+        await asyncio.sleep(2)
+        tg.cancel_scope.cancel()
     task2 = foo2.enqueue()
     info2 = await task2.info()
     assert info2 and foo2.schedule() == info2.scheduled
@@ -253,7 +250,6 @@ async def test_signed_data(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
         queue_name=uuid4().hex,
-        handle_signals=False,
         signing_secret=secrets.token_urlsafe(32),
     )
 
@@ -261,19 +257,19 @@ async def test_signed_data(redis_url: str):
     async def foo() -> str:
         return "bar"
 
-    worker.loop.create_task(worker.run_async())
-    async with worker:
-        task = await foo.enqueue()
-        res = await task.result(3)
-        assert res.success and res.result == "bar"
-    await worker.close()
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        async with worker:
+            task = await foo.enqueue()
+            res = await task.result(3)
+            assert res.success and res.result == "bar"
+        tg.cancel_scope.cancel()
 
 
 async def test_sign_non_binary_data(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
         queue_name=uuid4().hex,
-        handle_signals=False,
         signing_secret=secrets.token_urlsafe(32),
         serializer=json.dumps,
     )
@@ -304,28 +300,26 @@ async def test_corrupt_signed_data(redis_url: str):
         await worker.redis.set(
             task.task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
         )
-        worker.loop.create_task(worker.run_async())
+
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
         res = await task.result(5)
         assert not res.success and isinstance(res.result, StreaqError)
-    await worker.close()
+        tg.cancel_scope.cancel()
 
 
-async def test_enqueue_many(redis_url: str):
-    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
-
+async def test_enqueue_many(worker: Worker):
     @worker.task()
     async def foobar(val: int) -> int:
         await asyncio.sleep(1)
         return val
 
-    tasks = [foobar.enqueue(i) for i in range(10)]
     async with worker:
+        tasks = [foobar.enqueue(i) for i in range(10)]
         await worker.enqueue_many(tasks)
     assert await worker.queue_size() >= len(tasks)
 
 
-async def test_invalid_task_context(redis_url: str):
-    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
-
+async def test_invalid_task_context(worker: Worker):
     with pytest.raises(StreaqError):
         worker.task_context()

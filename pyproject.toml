@@ -88,7 +88,6 @@ Changelog = "https://github.com/tastyware/streaq/releases"
 dev = [
     "enum-tools[sphinx]>=0.12.0",
     "httpx>=0.28.1",
-    "mypy>=1.15.0",
     "pyright>=1.1.392.post0",
     "pytest>=8.3.4",
     "pytest-cov>=6.0.0",
@@ -116,11 +115,3 @@ select = ["E", "F", "I"]
 
 [tool.pyright]
 strict = ["streaq/"]
-
-[tool.mypy]
-strict = true
-warn_unused_ignores = false
-disable_error_code = ["func-returns-value"]
-[[tool.mypy.overrides]]
-module = "crontab"
-ignore_missing_imports = true

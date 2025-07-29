@@ -157,7 +157,6 @@ class Worker(Generic[WD]):
         "deserializer",
         "_cancel_scopes",
         "tz",
-        "aborting_tasks",
         "burst",
         "_handle_signals",
         "_block_new_tasks",
@@ -203,7 +202,7 @@ class Worker(Generic[WD]):
         queue_name: str = DEFAULT_QUEUE_NAME,
         priorities: list[str] | None = None,
         prefetch: int | None = None,
-        lifespan: Callable[[], AbstractAsyncContextManager[WD]] = _lifespan,  # type: ignore
+        lifespan: Callable[[], AbstractAsyncContextManager[WD]] = _lifespan,
         serializer: Callable[[Any], Any] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
@@ -251,8 +250,6 @@ class Worker(Generic[WD]):
         self.deserializer = deserializer
         self._handle_signals = handle_signals
         self.tz = tz
-        #: set of tasks currently scheduled for abortion
-        self.aborting_tasks: set[str] = set()
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
         #: list of middlewares added to the worker
@@ -528,9 +525,12 @@ class Worker(Generic[WD]):
         async with queue:
             while not self._block_new_tasks:
                 # Calculate how many messages to fetch to fill the buffer
-                active_tasks = limiter.borrowed_tokens
-                pending_tasks = queue.statistics().current_buffer_used
-                count = self.concurrency + self.prefetch - active_tasks - pending_tasks
+                count = (
+                    self.concurrency
+                    + self.prefetch
+                    - limiter.borrowed_tokens
+                    - queue.statistics().current_buffer_used
+                )
                 messages: list[StreamMessage] = []
                 pipe = await self.redis.pipeline(transaction=False)
 
@@ -622,7 +622,11 @@ class Worker(Generic[WD]):
                         # this will succeed since we manually compute quantity
                         queue.send_nowait(msg)
                 # wrap things up if we burstin'
-                elif self.burst and active_tasks == 0 and pending_tasks == 0:
+                elif (
+                    self.burst
+                    and limiter.borrowed_tokens == 0
+                    and queue.statistics().current_buffer_used == 0
+                ):
                     self._block_new_tasks = True
                     scope.cancel()
 
@@ -630,15 +634,10 @@ class Worker(Generic[WD]):
         """
         Aborts tasks scheduled for abortion if they're present on this worker.
         """
-        present: set[str] = set()
         for task_id in tasks:
             if task_id in self._cancel_scopes:
                 self._cancel_scopes[task_id].cancel()
-                present.add(task_id)
-        if present:
-            logger.debug(f"aborting {len(present)} tasks in worker {self.id}")
-            self.aborting_tasks.update(present)
-            await self.redis.srem(self._abort_key, present)
+        logger.debug(f"aborting {len(tasks)} tasks in worker {self.id}")
 
     async def schedule_cron_jobs(self) -> None:
         """
@@ -707,7 +706,7 @@ class Worker(Generic[WD]):
         await pipe.execute()
         res = cast(list[str], await command)
         if res:
-            await self.fail_dependencies(res)
+            await self.fail_task_dependents(res)
 
     async def finish_task(
         self,
@@ -729,18 +728,7 @@ class Worker(Generic[WD]):
         """
         Cleanup for a task that executed successfully or will be retried.
         """
-        data = {
-            "f": fn_name,
-            "et": enqueue_time,
-            "s": success,
-            "r": return_value,
-            "st": start_time,
-            "ft": finish_time,
-            "t": tries,
-            "w": self.id,
-        }
         task_id = msg.task_id
-        result = self.serialize(data)
 
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
@@ -754,13 +742,24 @@ class Worker(Generic[WD]):
         if lock_key:
             to_delete.append(lock_key)
         if finish:
+            data = {
+                "f": fn_name,
+                "et": enqueue_time,
+                "s": success,
+                "r": return_value,
+                "st": start_time,
+                "ft": finish_time,
+                "t": tries,
+                "w": self.id,
+            }
+            result = self.serialize(data)
             pipe.publish(self._channel_key + task_id, result)
             if not silent:
                 if success:
                     self.counters["completed"] += 1
                 else:
                     self.counters["failed"] += 1
-            if result and ttl != 0:
+            if ttl != 0:
                 pipe.set(key(REDIS_RESULT), result, ex=ttl)
             to_delete.extend([key(REDIS_RETRY), key(REDIS_TASK)])
             pipe.delete(to_delete)
@@ -804,7 +803,7 @@ class Worker(Generic[WD]):
                     pipe.xadd(stream_key, {"task_id": dep_id})
                 await pipe.execute()
             else:
-                await self.fail_dependencies(res)
+                await self.fail_task_dependents(res)
 
     async def prepare_task(
         self, msg: StreamMessage
@@ -967,13 +966,20 @@ class Worker(Generic[WD]):
         token = self._task_context.set(ctx)
         result: Any = None
         try:
+            if self._block_new_tasks:
+                raise asyncio.CancelledError("Not running task, worker shut down!")
             with CancelScope() as scope:
                 self._cancel_scopes[task_id] = scope
-                if self._block_new_tasks:
-                    scope.cancel()
                 result = await wrapped(*_args, **data["k"])
+            if scope.cancelled_caught:
+                result = asyncio.CancelledError("Task aborted by user!")
+                success = False
+                done = True
+                if not task.silent:
+                    logger.info(f"task {task_id} aborted ⊘")
+                    self.counters["aborted"] += 1
+                    self.counters["failed"] -= 1  # this will get incremented later
         except StreaqRetry as e:
-            result = e
             success = False
             done = False
             delay = to_seconds(e.delay) if e.delay is not None else task_try**2
@@ -986,20 +992,11 @@ class Worker(Generic[WD]):
             result = e
             success = False
             done = True
-        except asyncio.CancelledError as e:
-            if task_id in self.aborting_tasks:
-                self.aborting_tasks.remove(task_id)
-                done = True
-                if not task.silent:
-                    logger.info(f"task {task_id} aborted ⊘")
-                    self.counters["aborted"] += 1
-                    self.counters["failed"] -= 1  # this will get incremented later
-            else:
-                if not task.silent:
-                    logger.info(f"task {task_id} cancelled, will be retried ↻")
-                done = False
-            result = e
+        except asyncio.CancelledError:
+            if not task.silent:
+                logger.info(f"task {task_id} cancelled, will be retried ↻")
             success = False
+            done = False
             raise  # best practice from anyio docs
         except Exception as e:
             result = e
@@ -1030,9 +1027,9 @@ class Worker(Generic[WD]):
                 )
                 self._task_context.reset(token)
 
-    async def fail_dependencies(self, dependencies: list[str]) -> None:
+    async def fail_task_dependents(self, dependents: list[str]) -> None:
         """
-        Fail dependencies for the given task.
+        Fail dependents for the given task.
         """
         now = now_ms()
         failure = {
@@ -1047,9 +1044,9 @@ class Worker(Generic[WD]):
         }
         result = self.serialize(failure)
         pipe = await self.redis.pipeline(transaction=False)
-        self.counters["failed"] += len(dependencies)
+        self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
-        for dep_id in dependencies:
+        for dep_id in dependents:
             logger.info(f"task {dep_id} dependency failed ×")
             to_delete.append(self.prefix + REDIS_TASK + dep_id)
             pipe.set(self.results_key + dep_id, result, ex=300)
@@ -1350,7 +1347,8 @@ class Worker(Generic[WD]):
         return len([v for v in self.registry.values() if not v.silent])
 
     def __str__(self) -> str:
-        counters_str = dict.__repr__(self.counters).replace("'", "")  # type: ignore
+        counters = {k: v for k, v in self.counters.items() if v}
+        counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
 
     def serialize(self, data: Any) -> Any:

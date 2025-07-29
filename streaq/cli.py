@@ -65,9 +65,9 @@ def main(
 ) -> None:
     processes: list[Process] = []
     if web:
-        try:  # pragma: no cover
+        try:
             from streaq.ui import run_web
-        except ModuleNotFoundError as e:
+        except ModuleNotFoundError as e:  # pragma: no cover
             raise StreaqError(
                 "web module not installed, try `pip install streaq[web]`"
             ) from e
