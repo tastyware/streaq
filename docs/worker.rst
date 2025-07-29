@@ -32,15 +32,12 @@ Next, create an async context manager to run at worker creation/teardown. Use th
    from streaq import Worker
 
    @asynccontextmanager
-   async def lifespan(worker: Worker[WorkerContext]) -> AsyncIterator[WorkerContext]:
-       # here we run code if desired before the worker start up
-       await worker.redis.sadd("workers", [worker.id])
-       # here we yield our dependencies as an instance of the class
-       # we created above
+   async def lifespan() -> AsyncIterator[WorkerContext]:
+       # here we run code if desired after worker start up
+       # yield our dependencies as an instance of the class
        async with AsyncClient() as http_client:
            yield Context(http_client)
-       # here we run code if desired after worker shutdown
-       await worker.redis.srem("workers", [worker.id])
+       # here we run code if desired before worker shutdown
 
 Note that ``worker.redis`` here is NOT a ``redis-py`` client, but a `coredis <https://github.com/alisaifee/coredis>`_ client.
 
@@ -93,7 +90,7 @@ Other configuration options
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler and logs
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
 - ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
-- ``idle_timeout``: the amount of time prefetched tasks wait before being requeued if they haven't started yet
+- ``idle_timeout``: the amount of time prefetched tasks wait before being re-enqueued if they haven't started yet
 - ``priorities``: a list of custom priorities for tasks, ordered from lowest to highest
 
 Deploying with Redis Sentinel

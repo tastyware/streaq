@@ -150,6 +150,7 @@ class Task(Generic[R]):
             score = 0
         data = self.serialize(enqueue_time)
         _priority = self.priority or self.parent.worker.priorities[-1]
+        expire = to_ms(self.parent.expire or 0)
         if not await self.parent.worker.publish_task(
             keys=[
                 self.parent.worker.stream_key,
@@ -159,7 +160,7 @@ class Task(Generic[R]):
                 self.parent.worker.dependencies_key,
                 self.parent.worker.results_key,
             ],
-            args=[self.id, data, _priority, score] + self.after,
+            args=[self.id, data, _priority, score, expire] + self.after,
         ):
             logger.debug("Task is unique and already exists, not enqueuing!")
         return self
@@ -255,6 +256,7 @@ class Task(Generic[R]):
 @dataclass
 class RegisteredTask(Generic[WD, P, R]):
     fn: AsyncTask[P, R]
+    expire: timedelta | int | None
     max_tries: int | None
     silent: bool
     timeout: timedelta | int | None
@@ -298,6 +300,7 @@ class RegisteredCron(Generic[WD, R]):
     ttl: timedelta | int | None
     unique: bool
     worker: Worker[WD]
+    expire: timedelta | int | None = None
     _fn_name: str | None = None
 
     def enqueue(self) -> Task[R]:

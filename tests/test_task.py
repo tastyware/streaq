@@ -597,3 +597,19 @@ async def test_abort(worker: Worker, ttl: int, wait: int):
         await asyncio.sleep(wait)
         assert await task.abort(3)
         tg.cancel_scope.cancel()
+
+
+async def test_task_expired(worker: Worker):
+    @worker.task(expire=1)
+    async def foobar() -> None:
+        pass
+
+    async with worker:
+        task = await foobar.enqueue()
+        await asyncio.sleep(1)
+
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        res = await task.result(3)
+        assert not res.success and isinstance(res.result, StreaqError)
+        tg.cancel_scope.cancel()

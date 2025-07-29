@@ -358,11 +358,11 @@ class Worker(Generic[WD]):
         tab: str,
         *,
         max_tries: int | None = 3,
+        name: str | None = None,
         silent: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
-        name: str | None = None,
     ) -> CronDefinition[WD]:
         """
         Registers a task to be run at regular intervals as specified.
@@ -372,12 +372,12 @@ class Worker(Generic[WD]):
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param max_tries:
             number of times to retry the task should it fail during execution
+        :param name: use a custom name for the cron job instead of the function name
         :param silent:
             whether to silence task logs and success/failure tracking; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
-        :param name: use a custom name for the cron job instead of the function name
         """
 
         def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredCron[WD, R]:
@@ -410,24 +410,27 @@ class Worker(Generic[WD]):
     def task(
         self,
         *,
+        expire: timedelta | int | None = None,
         max_tries: int | None = 3,
+        name: str | None = None,
         silent: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
-        name: str | None = None,
     ) -> TaskDefinition[WD]:
         """
         Registers a task with the worker which can later be enqueued by the user.
 
+        :param expire:
+            time after which to dequeue the task, if None will never be dequeued
         :param max_tries:
             number of times to retry the task should it fail during execution
+        :param name: use a custom name for the task instead of the function name
         :param silent:
             whether to silence task logs and success/failure tracking; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
-        :param name: use a custom name for the task instead of the function name
         """
 
         def wrapped(
@@ -439,6 +442,7 @@ class Worker(Generic[WD]):
                 _fn = asyncify(fn, self._limiter)
             task = RegisteredTask(
                 fn=cast(AsyncTask[P, R], _fn),
+                expire=expire,
                 max_tries=max_tries,
                 silent=silent,
                 timeout=timeout,
@@ -842,7 +846,7 @@ class Worker(Generic[WD]):
         if not raw:
             logger.warning(f"task {task_id} expired †")
             return await self.finish_failed_task(
-                msg, StreaqError("Task execution failed!"), task_try
+                msg, StreaqError("Task expired!"), task_try
             )
         if not removed:
             logger.warning(f"task {task_id} reclaimed ↩ from worker {self.id}")
@@ -1064,12 +1068,11 @@ class Worker(Generic[WD]):
         Allows for enqueuing a task that is registered elsewhere without having access
         to the worker it's registered to. This is unsafe because it doesn't check if the
         task is registered with the worker and doesn't enforce types, so it should only
-        be used if you need to separate the task queuing and task execution code for
-        performance reasons.
+        be used if you need to separate the task queuing and task execution code. You
+        also lose the ability to control certain parameters like uniqueness and queue
+        expiration time. Consider using type stubs instead as explained `here <https://streaq.readthedocs.io/en/latest/integrations.html#separating-enqueuing-from-task-definitions>`_.
 
-        :param fn_name:
-            name of the function to run, much match its __qualname__. If you're unsure,
-            check ``Worker.registry``.
+        :param fn_name: name of the function to run
         :param args: positional arguments for the task
         :param kwargs: keyword arguments for the task
 
@@ -1077,6 +1080,7 @@ class Worker(Generic[WD]):
         """
         registered = RegisteredTask(
             fn=_placeholder,
+            expire=None,
             max_tries=None,
             silent=False,
             timeout=None,
@@ -1120,6 +1124,7 @@ class Worker(Generic[WD]):
                 score = 0
             data = task.serialize(enqueue_time)
             _priority = task.priority or self.priorities[-1]
+            expire = to_ms(task.parent.expire or 0)
             self.publish_task(
                 keys=[
                     self.stream_key,
@@ -1129,7 +1134,7 @@ class Worker(Generic[WD]):
                     self.dependencies_key,
                     self.results_key,
                 ],
-                args=[task.id, data, _priority, score] + task.after,
+                args=[task.id, data, _priority, score, expire] + task.after,
                 client=pipe,
             )
         await pipe.execute()

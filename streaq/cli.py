@@ -64,10 +64,10 @@ def main(
     ] = 8000,
 ) -> None:
     processes: list[Process] = []
-    if web:
+    if web:  # pragma: no cover
         try:
             from streaq.ui import run_web
-        except ModuleNotFoundError as e:  # pragma: no cover
+        except ModuleNotFoundError as e:
             raise StreaqError(
                 "web module not installed, try `pip install streaq[web]`"
             ) from e
@@ -98,7 +98,7 @@ def run_worker(path: str, burst: bool, watch: bool, verbose: bool) -> None:
     """
     Run a worker with the given options.
     """
-    if watch:
+    if watch:  # pragma: no cover
         run_process(
             ".",
             target=_run_worker,

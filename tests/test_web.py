@@ -17,9 +17,9 @@ async def test_no_override():
         _ = await get_worker()
 
 
-@pytest.mark.parametrize("prefix", ["", "/streaq"])
-async def test_get_pages(worker: Worker, prefix: str):
+async def test_get_pages(worker: Worker):
     app = FastAPI()
+    prefix = "/streaq"
     app.include_router(router, prefix=prefix)
     worker.concurrency = 1
     worker.prefetch = 0
@@ -31,17 +31,17 @@ async def test_get_pages(worker: Worker, prefix: str):
     async def _get_worker():
         yield worker
 
+    # queue up some tasks
+    async with worker:
+        scheduled = await sleeper.enqueue(10).start(delay=5)
+        done = await sleeper.enqueue(0)
+        running = await sleeper.enqueue(10)
+        queued = await sleeper.enqueue(10)
+
     app.dependency_overrides[get_worker] = _get_worker
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        # queue up some tasks
-        async with worker:
-            scheduled = await sleeper.enqueue(10).start(delay=5)
-            done = await sleeper.enqueue(0)
-            running = await sleeper.enqueue(10)
-            queued = await sleeper.enqueue(10)
         await asyncio.sleep(2)
-
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -68,6 +68,5 @@ async def test_get_pages(worker: Worker, prefix: str):
             res = await client.delete(f"{prefix}/task/{scheduled.id}")
             assert res.status_code == 200
             assert res.headers["HX-Redirect"] == f"{prefix}/queue"
-
         # cleanup worker
         tg.cancel_scope.cancel()

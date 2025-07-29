@@ -38,11 +38,4 @@ If you want to build the documentation (usually not necessary):
 Windows
 -------
 
-If you want to install from source on Windows, you can't use the Makefile, so just run the commands individually. For example:
-
-::
-
-   $ git clone https://github.com/tastyware/streaq.git
-   $ cd streaq
-   $ uv sync
-   $ uv pip install -e .
+Use on Windows is not recommended as you lose access to signal handling, uvloop, and Make. Consider using WSL instead.

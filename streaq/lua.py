@@ -10,13 +10,20 @@ local task_id = ARGV[1]
 local task_data = ARGV[2]
 local priority = ARGV[3]
 local score = ARGV[4]
+local expire = ARGV[5]
 
-if not redis.call('set', task_key, task_data, 'nx') then
+local args = {'set', task_key, task_data, 'nx'}
+if expire ~= '0' then
+  table.insert(args, 'px')
+  table.insert(args, expire)
+end
+
+if not redis.call(unpack(args)) then
   return 0
 end
 
 local modified = 0
-for i=5, #ARGV do
+for i=6, #ARGV do
   local dep_id = ARGV[i]
   if redis.call('exists', results_key .. dep_id) ~= 1 then
     modified = modified + 1
