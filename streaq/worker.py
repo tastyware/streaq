@@ -500,6 +500,7 @@ class Worker(Generic[WD]):
                     for _ in range(self.concurrency):
                         tg.start_soon(self.consumer, receive.clone(), limiter)
             finally:
+                self.redis.connection_pool.disconnect()
                 run_time = now_ms() - self._start_time
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
 
