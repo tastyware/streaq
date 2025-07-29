@@ -211,19 +211,19 @@ class Worker(Generic[WD]):
         signing_secret: str | None = None,
         idle_timeout: timedelta | int = 300,
     ):
-        #: Redis connection
         redis_kwargs = redis_kwargs or {}
         if redis_kwargs.pop("decode_responses", None) is not None:
             logger.warning("decode_responses ignored in redis_kwargs")
         if redis_sentinel_nodes:
-            redis_kwargs["socket_timeout"] = redis_kwargs.get("socket_timeout", 2.0)
             self._sentinel = Sentinel(
                 redis_sentinel_nodes,
                 decode_responses=True,
                 **redis_kwargs,
             )
+            #: Redis client for internal use.
             self.redis = self._sentinel.primary_for(redis_sentinel_master)
         else:
+            #: Redis client for internal use.
             self.redis = Redis.from_url(
                 redis_url, decode_responses=True, **redis_kwargs
             )
