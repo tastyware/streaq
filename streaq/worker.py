@@ -146,7 +146,6 @@ class Worker(Generic[WD]):
         "queue_name",
         "_group_name",
         "prefetch",
-        "_limit_pending",
         "counters",
         "_worker_context",
         "registry",
@@ -258,7 +257,6 @@ class Worker(Generic[WD]):
         # internal objects
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._limiter = CapacityLimiter(self.sync_concurrency)
-        self._limit_pending = CapacityLimiter(self.concurrency + self.prefetch)
         self._block_new_tasks = False
         self.lifespan = lifespan
         self._stack: list[AbstractAsyncContextManager[WD]] = []
@@ -638,9 +636,12 @@ class Worker(Generic[WD]):
         Aborts tasks scheduled for abortion if they're present on this worker.
         """
         for task_id in tasks:
-            if task_id in self._cancel_scopes:
+            if (
+                task_id in self._cancel_scopes
+                and not self._cancel_scopes[task_id].cancel_called
+            ):
                 self._cancel_scopes[task_id].cancel()
-        logger.debug(f"aborting {len(tasks)} tasks in worker {self.id}")
+                logger.debug(f"aborting task {task_id} in worker {self.id}")
 
     async def schedule_cron_jobs(self) -> None:
         """
@@ -1179,8 +1180,6 @@ class Worker(Generic[WD]):
                     f"received signal {signum.name}, shutting down worker {self.id}"
                 )
                 self._block_new_tasks = True
-                for cs in self._cancel_scopes.values():
-                    cs.cancel()
                 scope.cancel()
                 return
 
