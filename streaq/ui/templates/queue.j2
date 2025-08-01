@@ -87,7 +87,17 @@
           <form hx-patch="{{tasks_filter_url}}" hx-trigger="change" hx-target="#tasks">
             <div class="row mb-3" style="max-height: 100%">
               <div class="col-8">
-                <h3 class="card-title">streaQ</h3>
+                <div class="row">
+                  <h3 class="card-title">streaQ</h3>
+                </div>
+                <div class="row">
+                  <div class="col-auto">
+                    <select name="sort" class="form-select">
+                      <option value="asc">Ascending</option>
+                      <option selected value="desc">Descending</option>
+                    </select>
+                  </div>
+                </div>
               </div>
               <div class="col-2">
                 <label for="function">Function</label>

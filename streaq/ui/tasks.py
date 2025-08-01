@@ -36,7 +36,9 @@ class TaskData(BaseModel):
 
 
 @alru_cache(ttl=1)
-async def _get_context(worker: Worker[Any], task_url: str) -> dict[str, Any]:
+async def _get_context(
+    worker: Worker[Any], task_url: str, descending: bool
+) -> dict[str, Any]:
     pipe = await worker.redis.pipeline(transaction=False)
     delayed = [
         pipe.zrange(worker.queue_key + priority, 0, -1)
@@ -99,7 +101,7 @@ async def _get_context(worker: Worker[Any], task_url: str) -> dict[str, Any]:
                 url=task_url.format(task_id=task_id),
             )
         )
-    tasks.sort(key=lambda td: td.sort_time)
+    tasks.sort(key=lambda td: td.sort_time, reverse=descending)
     return {
         "running": len(running),
         "queued": len(stream) - len(running),
@@ -116,11 +118,13 @@ async def get_context(
     worker: Worker[Any],
     functions: list[str] | None = None,
     statuses: list[TaskStatus] | None = None,
+    sort: str = "desc",
 ) -> dict[str, Any]:
     task_url = request.url_for("get_task", task_id="{task_id}").path
     tasks_filter_url = request.url_for("filter_tasks").path
 
-    context = await _get_context(worker, task_url)
+    descending = sort == "desc"
+    context = await _get_context(worker, task_url, descending)
     context["tasks_filter_url"] = tasks_filter_url
 
     if functions:
@@ -128,6 +132,7 @@ async def get_context(
     if statuses:
         context["tasks"] = [t for t in context["tasks"] if t.status in statuses]
 
+    context["tasks"] = context["tasks"][:100]
     return context
 
 
@@ -150,10 +155,11 @@ async def get_tasks(
 async def filter_tasks(
     request: Request,
     worker: Annotated[Worker[Any], Depends(get_worker)],
+    sort: Annotated[str, Form()],
     functions: Annotated[list[str] | None, Form()] = None,
     statuses: Annotated[list[TaskStatus] | None, Form()] = None,
 ) -> Any:
-    context = await get_context(request, worker, functions, statuses)
+    context = await get_context(request, worker, functions, statuses, sort)
     return templates.TemplateResponse(request, "table.j2", context=context)
 
 
@@ -229,7 +235,7 @@ async def get_task(
             "status": status.value,
             "task_id": task_id,
             "task_abort_url": request.url_for("abort_task", task_id=task_id).path,
-            "try_count": task_try,
+            "task_try": task_try,
             "worker_id": worker_id,
             **extra,
         },
