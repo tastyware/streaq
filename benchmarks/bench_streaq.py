@@ -17,8 +17,7 @@ async def sleeper(time: int) -> None:
 
 async def main(time: int):
     tasks = [sleeper.enqueue(time) for _ in range(N_TASKS)]
-    async with worker:
-        await worker.enqueue_many(tasks)
+    await worker.enqueue_many(tasks)
 
 
 def run(time: int = 0):
