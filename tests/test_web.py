@@ -55,6 +55,7 @@ async def test_get_pages(worker: Worker):
                 data={
                     "functions": ["redis_health_check"],
                     "statuses": ["queued", "running", "done"],
+                    "sort": "desc",
                 },
             )
             assert res.status_code == 200
