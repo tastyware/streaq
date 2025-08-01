@@ -30,6 +30,14 @@ async def test_result_timeout(worker: Worker):
         tg.cancel_scope.cancel()
 
 
+async def test_run_local(worker: Worker):
+    @worker.task(timeout=3)
+    async def foobar() -> bool:
+        return True
+
+    assert await foobar.run()
+
+
 async def test_task_timeout(worker: Worker):
     @worker.task(timeout=1)
     async def foobar() -> None:
@@ -359,7 +367,7 @@ async def test_chained_failed_dependencies(worker: Worker):
 
 
 async def test_task_priorities(redis_url: str):
-    worker = Worker(
+    worker = await Worker(
         redis_url=redis_url,
         queue_name=uuid4().hex,
         concurrency=4,
@@ -370,10 +378,9 @@ async def test_task_priorities(redis_url: str):
     async def foobar() -> None:
         await asyncio.sleep(1)
 
-    async with worker:
-        low = [foobar.enqueue().start(priority="low") for _ in range(4)]
-        high = [foobar.enqueue().start(priority="high") for _ in range(4)]
-        await worker.enqueue_many(low + high)
+    low = [foobar.enqueue().start(priority="low") for _ in range(4)]
+    high = [foobar.enqueue().start(priority="high") for _ in range(4)]
+    await worker.enqueue_many(low + high)
 
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)

@@ -134,7 +134,7 @@ class Task(Generic[R]):
         """
         This is called when the task is awaited.
         """
-        if not self.parent.worker._stack:  # type: ignore
+        if not self.parent.worker._initialized:  # type: ignore
             raise StreaqError(
                 "Worker did not initialize correctly, are you using the async context "
                 "manager?"

@@ -23,8 +23,7 @@ NAME_STR = "Freddy"
 pytestmark = pytest.mark.anyio
 
 
-async def test_worker_redis(redis_url: str):
-    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+async def test_worker_redis(worker: Worker):
     await worker.redis.ping()
 
 
@@ -39,21 +38,19 @@ async def deps() -> AsyncIterator[WorkerContext]:
 
 
 async def test_lifespan(redis_url: str):
-    worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
+    worker = await Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> str:
         return worker.context.name
 
-    @worker.task(timeout=1)
-    async def foobar2() -> None:
-        await asyncio.sleep(3)
-
-    async with worker:
-        res = await foobar.run()
-        assert res == NAME_STR
-        with pytest.raises(TimeoutError):
-            await foobar2.run()
+    task = await foobar.enqueue()
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        await asyncio.sleep(1)
+        res = await task.result(3)
+        assert res.success and res.result == NAME_STR
+        tg.cancel_scope.cancel()
 
 
 async def test_health_check(redis_url: str):
@@ -81,19 +78,20 @@ def raise_error(*arg, **kwargs) -> Any:
 
 
 async def test_bad_serializer(redis_url: str):
-    worker = Worker(redis_url=redis_url, serializer=raise_error, queue_name=uuid4().hex)
+    worker = await Worker(
+        redis_url=redis_url, serializer=raise_error, queue_name=uuid4().hex
+    )
 
     @worker.task()
     async def foobar() -> None:
         print("This can't print!")
 
-    async with worker:
-        with pytest.raises(StreaqError):
-            await foobar.enqueue()
+    with pytest.raises(StreaqError):
+        await foobar.enqueue()
 
 
 async def test_bad_deserializer(redis_url: str):
-    worker = Worker(
+    worker = await Worker(
         redis_url=redis_url, deserializer=raise_error, queue_name=uuid4().hex
     )
 
@@ -102,9 +100,7 @@ async def test_bad_deserializer(redis_url: str):
         print("This can't print!")
 
     worker.burst = True
-    async with worker:
-        task = await foobar.enqueue()
-
+    task = await foobar.enqueue()
     await worker.run_async()
     with pytest.raises(StreaqError):
         await task.result(3)

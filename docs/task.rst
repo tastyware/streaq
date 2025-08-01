@@ -80,6 +80,13 @@ Tasks can depend on other tasks, meaning they won't be enqueued until their depe
        task2 = await sleeper.enqueue(2).start(after=task1.id)
        task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
+You're not required to use the async context manager to enqueue tasks. You can also do this:
+
+.. code-block:: python
+
+   await worker.initialize()
+   task = await sleeper.enqueue(1)
+
 Task priorities
 ---------------
 
@@ -146,6 +153,8 @@ Sometimes, you may wish to run a task's underlying function directly and skip en
 .. code-block:: python
 
    await sleeper.run(3)
+
+Note that tasks that require access to ``Worker.task_context`` or ``Worker.context`` will fail when run this way as context is initialized upon worker startup.
 
 Task status & results
 ---------------------

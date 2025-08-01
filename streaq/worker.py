@@ -9,8 +9,7 @@ from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
-from types import TracebackType
-from typing import Any, AsyncIterator, Callable, Generic, Type, cast
+from typing import Any, AsyncIterator, Callable, Generator, Generic, cast
 from uuid import uuid4
 
 from anyio import (
@@ -160,7 +159,7 @@ class Worker(Generic[WD]):
         "_handle_signals",
         "_block_new_tasks",
         "lifespan",
-        "_stack",
+        "_initialized",
         "queue_key",
         "stream_key",
         "dependents_key",
@@ -171,7 +170,7 @@ class Worker(Generic[WD]):
         "_channel_key",
         "_timeout_key",
         "idle_timeout",
-        "_start_time",
+        "_running",
         "prefix",
         "sync_concurrency",
         "_limiter",
@@ -229,7 +228,6 @@ class Worker(Generic[WD]):
         self.queue_name = queue_name
         self.priorities = priorities or ["normal"]
         self.priorities.reverse()
-        self._group_name = REDIS_GROUP
         self.prefetch = prefetch or concurrency
         #: mapping of type of task -> number of tasks of that type
         #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
@@ -246,7 +244,6 @@ class Worker(Generic[WD]):
         self.id = uuid4().hex[:8]
         self.serializer = serializer
         self.deserializer = deserializer
-        self._handle_signals = handle_signals
         self.tz = tz
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
@@ -255,13 +252,15 @@ class Worker(Generic[WD]):
         self.signing_secret = signing_secret.encode() if signing_secret else None
         self.sync_concurrency = sync_concurrency or concurrency
         # internal objects
+        self._group_name = REDIS_GROUP
+        self._handle_signals = handle_signals
+        self._running = False
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._limiter = CapacityLimiter(self.sync_concurrency)
         self._block_new_tasks = False
-        self.lifespan = lifespan
-        self._stack: list[AbstractAsyncContextManager[WD]] = []
+        self.lifespan = lifespan()
+        self._initialized = False
         self.idle_timeout = to_ms(idle_timeout)
-        self._start_time = now_ms()
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
         # precalculate Redis prefixes
@@ -307,6 +306,39 @@ class Worker(Generic[WD]):
             ttl = int(self._delay_for(self._health_tab)) + 5
             await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
+    async def __aenter__(self) -> Worker[WD]:
+        if not self._initialized:
+            await self.initialize()
+        return self
+
+    async def __aexit__(self, *args: Any):
+        pass
+
+    def __await__(self) -> Generator[Any, None, Worker[WD]]:
+        return self.__aenter__().__await__()
+
+    def __len__(self) -> int:
+        return len([v for v in self.registry.values() if not v.silent])
+
+    def __str__(self) -> str:
+        counters = {k: v for k, v in self.counters.items() if v}
+        counters_str = repr(counters).replace("'", "")
+        return f"worker {self.id} {counters_str}"
+
+    async def initialize(self) -> None:
+        """
+        Initialize the worker. Can be used in lieu of the async context manager.
+        """
+        # register lua scripts
+        self.create_groups = self.redis.register_script(CREATE_GROUPS)
+        self.publish_task = self.redis.register_script(PUBLISH_TASK)
+        self.publish_delayed_tasks = self.redis.register_script(PUBLISH_DELAYED_TASKS)
+        self.fail_dependents = self.redis.register_script(FAIL_DEPENDENTS)
+        self.update_dependents = self.redis.register_script(UPDATE_DEPENDENTS)
+        self.reclaim_idle_tasks = self.redis.register_script(RECLAIM_IDLE_TASKS)
+        self.read_streams = self.redis.register_script(READ_STREAMS)
+        self._initialized = True
+
     def task_context(self) -> TaskContext:
         """
         Fetch task information for the currently running task.
@@ -324,11 +356,12 @@ class Worker(Generic[WD]):
     def context(self) -> WD:
         """
         Worker dependencies initialized with the async context manager.
+        This can only be called from within a running task or a middleware.
         """
-        if not self._stack:
+        if not self._running:
             raise StreaqError(
-                "Worker did not initialize correctly, are you using the "
-                "async context manager?"
+                "Worker.context can only be accessed within a running task or a "
+                "middleware!"
             )
         return self._worker_context
 
@@ -474,16 +507,21 @@ class Worker(Generic[WD]):
     async def run_async(self) -> None:
         """
         Async function to run the worker, finally closes worker connections.
-        Contains main loop for worker tasks, also handles scheduling and abortion.
+        Groups together and runs worker tasks.
         """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
-        async with self:
-            # create consumer group if it doesn't exist
-            await self.create_groups(
-                keys=[self.stream_key, self._group_name],
-                args=self.priorities,  # type: ignore
-            )
-            # run loops
+        start_time = now_ms()
+        await self.initialize()
+        # create consumer group if it doesn't exist
+        await self.create_groups(
+            keys=[self.stream_key, self._group_name],
+            args=self.priorities,  # type: ignore
+        )
+        # run user-defined initialization code
+        async with self.lifespan as context:
+            self._worker_context = context
+            self._running = True
+            # start tasks
             try:
                 send, receive = create_memory_object_stream[StreamMessage](
                     max_buffer_size=self.prefetch + self.concurrency
@@ -497,7 +535,7 @@ class Worker(Generic[WD]):
                     for _ in range(self.concurrency):
                         tg.start_soon(self.consumer, receive.clone(), limiter)
             finally:
-                run_time = now_ms() - self._start_time
+                run_time = now_ms() - start_time
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
 
     async def consumer(
@@ -1106,7 +1144,7 @@ class Worker(Generic[WD]):
                 await worker.enqueue_many(tasks)
 
         """
-        if not self._stack:
+        if not self._initialized:
             raise StreaqError(
                 "Worker did not initialize correctly, are you using the async context "
                 "manager?"
@@ -1321,38 +1359,6 @@ class Worker(Generic[WD]):
             dependencies=dependencies,
             dependents=dependents,
         )
-
-    async def __aenter__(self) -> Worker[WD]:
-        # register lua scripts
-        self.create_groups = self.redis.register_script(CREATE_GROUPS)
-        self.publish_task = self.redis.register_script(PUBLISH_TASK)
-        self.publish_delayed_tasks = self.redis.register_script(PUBLISH_DELAYED_TASKS)
-        self.fail_dependents = self.redis.register_script(FAIL_DEPENDENTS)
-        self.update_dependents = self.redis.register_script(UPDATE_DEPENDENTS)
-        self.reclaim_idle_tasks = self.redis.register_script(RECLAIM_IDLE_TASKS)
-        self.read_streams = self.redis.register_script(READ_STREAMS)
-        # user-defined deps
-        lifespan = self.lifespan()
-        self._worker_context = await lifespan.__aenter__()
-        self._stack.append(lifespan)
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: Type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        lifespan = self._stack.pop()
-        await lifespan.__aexit__(exc_type, exc_value, traceback)
-
-    def __len__(self) -> int:
-        return len([v for v in self.registry.values() if not v.silent])
-
-    def __str__(self) -> str:
-        counters = {k: v for k, v in self.counters.items() if v}
-        counters_str = repr(counters).replace("'", "")
-        return f"worker {self.id} {counters_str}"
 
     def serialize(self, data: Any) -> Any:
         """
