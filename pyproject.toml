@@ -55,7 +55,7 @@ dependencies = [
     "coredis>=5.0.1",
     "crontab>=1.0.5",
     "typer>=0.15.2",
-    "uvloop>=0.21.0",
+    "uvloop>=0.21.0; sys_platform != 'win32'",
     "watchfiles>=1.1.0",
 ]
 dynamic = ["version"]
