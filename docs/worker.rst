@@ -44,6 +44,7 @@ Now, tasks created for the worker will have access to the dependencies like so:
 .. code-block:: python
 
    worker = Worker(lifespan=lifespan)
+
    @worker.task()
    async def fetch(url: str) -> int:
       res = await worker.context.http_client.get(url)

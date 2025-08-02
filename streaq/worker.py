@@ -9,8 +9,9 @@ from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Any, AsyncIterator, Callable, Generator, Generic, cast
+from typing import Any, AsyncIterator, Callable, Generic, cast
 from uuid import uuid4
+from warnings import warn
 
 from anyio import (
     CancelScope,
@@ -24,7 +25,6 @@ from anyio import (
 )
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
-from coredis.commands import Script
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
@@ -130,13 +130,6 @@ class Worker(Generic[WD]):
     :param idle_timeout: the amount of time prefetched tasks wait before being requeued
     """
 
-    create_groups: Script[str]
-    publish_task: Script[str]
-    publish_delayed_tasks: Script[str]
-    fail_dependents: Script[str]
-    update_dependents: Script[str]
-    reclaim_idle_tasks: Script[str]
-    read_streams: Script[str]
     _worker_context: WD
 
     __slots__ = (
@@ -159,7 +152,6 @@ class Worker(Generic[WD]):
         "_handle_signals",
         "_block_new_tasks",
         "lifespan",
-        "_initialized",
         "queue_key",
         "stream_key",
         "dependents_key",
@@ -224,6 +216,15 @@ class Worker(Generic[WD]):
             self.redis = Redis.from_url(
                 redis_url, decode_responses=True, **redis_kwargs
             )
+        # register lua scripts
+        self.create_groups = self.redis.register_script(CREATE_GROUPS)
+        self.publish_task = self.redis.register_script(PUBLISH_TASK)
+        self.publish_delayed_tasks = self.redis.register_script(PUBLISH_DELAYED_TASKS)
+        self.fail_dependents = self.redis.register_script(FAIL_DEPENDENTS)
+        self.update_dependents = self.redis.register_script(UPDATE_DEPENDENTS)
+        self.reclaim_idle_tasks = self.redis.register_script(RECLAIM_IDLE_TASKS)
+        self.read_streams = self.redis.register_script(READ_STREAMS)
+        # user-facing properties
         self.concurrency = concurrency
         self.queue_name = queue_name
         self.priorities = priorities or ["normal"]
@@ -259,7 +260,6 @@ class Worker(Generic[WD]):
         self._limiter = CapacityLimiter(self.sync_concurrency)
         self._block_new_tasks = False
         self.lifespan = lifespan()
-        self._initialized = False
         self.idle_timeout = to_ms(idle_timeout)
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
@@ -306,17 +306,6 @@ class Worker(Generic[WD]):
             ttl = int(self._delay_for(self._health_tab)) + 5
             await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
-    async def __aenter__(self) -> Worker[WD]:
-        if not self._initialized:
-            await self.initialize()
-        return self
-
-    async def __aexit__(self, *args: Any):
-        pass
-
-    def __await__(self) -> Generator[Any, None, Worker[WD]]:
-        return self.__aenter__().__await__()
-
     def __len__(self) -> int:
         return len([v for v in self.registry.values() if not v.silent])
 
@@ -324,20 +313,6 @@ class Worker(Generic[WD]):
         counters = {k: v for k, v in self.counters.items() if v}
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
-
-    async def initialize(self) -> None:
-        """
-        Initialize the worker. Can be used in lieu of the async context manager.
-        """
-        # register lua scripts
-        self.create_groups = self.redis.register_script(CREATE_GROUPS)
-        self.publish_task = self.redis.register_script(PUBLISH_TASK)
-        self.publish_delayed_tasks = self.redis.register_script(PUBLISH_DELAYED_TASKS)
-        self.fail_dependents = self.redis.register_script(FAIL_DEPENDENTS)
-        self.update_dependents = self.redis.register_script(UPDATE_DEPENDENTS)
-        self.reclaim_idle_tasks = self.redis.register_script(RECLAIM_IDLE_TASKS)
-        self.read_streams = self.redis.register_script(READ_STREAMS)
-        self._initialized = True
 
     def task_context(self) -> TaskContext:
         """
@@ -511,7 +486,6 @@ class Worker(Generic[WD]):
         """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
         start_time = now_ms()
-        await self.initialize()
         # create consumer group if it doesn't exist
         await self.create_groups(
             keys=[self.stream_key, self._group_name],
@@ -1144,11 +1118,6 @@ class Worker(Generic[WD]):
                 await worker.enqueue_many(tasks)
 
         """
-        if not self._initialized:
-            raise StreaqError(
-                "Worker did not initialize correctly, are you using the async context "
-                "manager?"
-            )
         enqueue_time = now_ms()
         pipe = await self.redis.pipeline(transaction=False)
         for task in tasks:
@@ -1393,3 +1362,14 @@ class Worker(Generic[WD]):
             return self.deserializer(data)
         except Exception as e:
             raise StreaqError(f"Failed to deserialize data: {data}") from e
+
+    async def __aenter__(self) -> Worker[WD]:
+        warn(
+            "Using the async context manager no longer does anything! This function "
+            "will be removed in streaQ v6.",
+            category=DeprecationWarning,
+        )
+        return self
+
+    async def __aexit__(self, *args: Any):
+        pass

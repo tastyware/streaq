@@ -134,11 +134,6 @@ class Task(Generic[R]):
         """
         This is called when the task is awaited.
         """
-        if not self.parent.worker._initialized:  # type: ignore
-            raise StreaqError(
-                "Worker did not initialize correctly, are you using the async context "
-                "manager?"
-            )
         if self._after:
             self.after.append(self._after.id)
         enqueue_time = now_ms()

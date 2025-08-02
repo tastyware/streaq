@@ -17,12 +17,11 @@ async def cronjob() -> None:
 
 
 async def main() -> None:
-    async with worker:
-        await sleeper.enqueue(3)
-        # enqueue returns a task object that can be used to get results/info
-        task = await sleeper.enqueue(1).start(delay=3)
-        print(await task.info())
-        print(await task.result(timeout=5))
+    await sleeper.enqueue(3)
+    # enqueue returns a task object that can be used to get results/info
+    task = await sleeper.enqueue(1).start(delay=3)
+    print(await task.info())
+    print(await task.result(timeout=5))
 
 
 if __name__ == "__main__":

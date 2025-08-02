@@ -14,7 +14,7 @@ pytestmark = pytest.mark.anyio
 
 async def test_no_override():
     with pytest.raises(HTTPException):
-        _ = await get_worker()
+        _ = get_worker()
 
 
 async def test_get_pages(worker: Worker):
@@ -32,11 +32,10 @@ async def test_get_pages(worker: Worker):
         yield worker
 
     # queue up some tasks
-    async with worker:
-        scheduled = await sleeper.enqueue(10).start(delay=5)
-        done = await sleeper.enqueue(0)
-        running = await sleeper.enqueue(10)
-        queued = await sleeper.enqueue(10)
+    scheduled = await sleeper.enqueue(10).start(delay=5)
+    done = await sleeper.enqueue(0)
+    running = await sleeper.enqueue(10)
+    queued = await sleeper.enqueue(10)
 
     app.dependency_overrides[get_worker] = _get_worker
     async with create_task_group() as tg:

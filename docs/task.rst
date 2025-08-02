@@ -56,10 +56,9 @@ Once registered, tasks can then be queued up for execution by worker processes, 
 
 .. code-block:: python
 
-   async with worker:  # required to enqueue tasks
-       # these two are equivalent
-       await sleeper.enqueue(5)
-       await sleeper.enqueue(5).start()
+   # these two are equivalent
+   await sleeper.enqueue(5)
+   await sleeper.enqueue(5).start()
 
 We can also defer task execution to a later time:
 
@@ -67,25 +66,16 @@ We can also defer task execution to a later time:
 
    from datetime import datetime
 
-   async with worker:
-       await sleeper.enqueue(3).start(delay=10)  # start after 10 seconds
-       await sleeper.enqueue(3).start(schedule=datetime(...))  # start at a specific time
+   await sleeper.enqueue(3).start(delay=10)  # start after 10 seconds
+   await sleeper.enqueue(3).start(schedule=datetime(...))  # start at a specific time
 
 Tasks can depend on other tasks, meaning they won't be enqueued until their dependencies have finished successfully. If the dependency fails, the dependent task will not be enqueued.
 
 .. code-block:: python
 
-   async with worker:
-       task1 = await sleeper.enqueue(1)
-       task2 = await sleeper.enqueue(2).start(after=task1.id)
-       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
-
-You're not required to use the async context manager to enqueue tasks. You can also do this:
-
-.. code-block:: python
-
-   await worker.initialize()
-   task = await sleeper.enqueue(1)
+   task1 = await sleeper.enqueue(1)
+   task2 = await sleeper.enqueue(2).start(after=task1.id)
+   task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
 Task priorities
 ---------------
@@ -99,8 +89,7 @@ By passing the ``priorities`` argument on worker creation, you can create an arb
    # this list should be ordered from lowest to highest
    worker = Worker(priorities=["low", "high"])
 
-   async with worker:
-       await sleeper.enqueue(3).start(priority="low")
+   await sleeper.enqueue(3).start(priority="low")
 
 Here's an example that demonstrates how priorities work. Note that the low priority task is enqueued first, but the high priority task is executed first. (Make sure to run this *before* starting the worker!)
 
@@ -116,22 +105,8 @@ Here's an example that demonstrates how priorities work. Note that the low prior
    async def high() -> None:
        print("High priority task")
 
-   async with worker:
-       await low.enqueue().start(priority="low")
-       await high.enqueue().start(priority="high")
-
-To organize your priorities efficiently, consider using an enum:
-
-.. code-block:: python
-
-   from enum import Enum
-
-   class TaskPriority(str, Enum):
-       LOW = "low"
-       MEDIUM = "medium"
-       HIGH = "high"
-
-   worker = Worker(priorities=[p.value for p in TaskPriority])
+   await low.enqueue().start(priority="low")
+   await high.enqueue().start(priority="high")
 
 Enqueuing by batch
 ------------------
@@ -140,10 +115,9 @@ For most cases, the above method of enqueuing tasks is sufficient. However, stre
 
 .. code-block:: python
 
-   async with worker:
-       # importantly, we're not using `await` here
-       tasks = [sleeper.enqueue(i) for i in range(10)]
-       await worker.enqueue_many(tasks)
+   # importantly, we're not using `await` here
+   tasks = [sleeper.enqueue(i) for i in range(10)]
+   await worker.enqueue_many(tasks)
 
 Running tasks locally
 ---------------------
@@ -165,11 +139,10 @@ Enqueued tasks return a ``Task`` object which can be used to wait for task resul
 
    from datetime import timedelta
 
-   async with worker:
-       task = await sleeper.enqueue(3).start(delay=timedelta(seconds=5))
-       print(await task.status())
-       print(await task.result())
-       print(await task.status())
+   task = await sleeper.enqueue(3).start(delay=timedelta(seconds=5))
+   print(await task.status())
+   print(await task.result())
+   print(await task.status())
 
 .. code-block:: python
 
@@ -217,9 +190,8 @@ Tasks that are running or enqueued can be aborted manually:
 
 .. code-block:: python
 
-   async with worker:
-       task = await sleeper.enqueue(3)
-       await task.abort()
+   task = await sleeper.enqueue(3)
+   await task.abort()
 
 Here, the result of the ``abort`` call will be a boolean representing whether the task was successfully cancelled.
 
@@ -255,9 +227,9 @@ Note that if the task waiting for its completion is cancelled, the thread will s
        time.sleep(seconds)
        return seconds
 
-   async with worker:
-      task = await sync_sleep.enqueue(1)
-      print(await task.result(3))
+   # here we use await, the wrapper does the magic for us!
+   task = await sync_sleep.enqueue(1)
+   print(await task.result(3))
 
 Task dependency graph
 ---------------------
@@ -268,10 +240,9 @@ Dependencies can be specified using the ``after`` parameter of the ``Task.start`
 
 .. code-block:: python
 
-   async with worker:
-       task1 = await sleeper.enqueue(1)
-       task2 = await sleeper.enqueue(2).start(after=task1.id)
-       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
+   task1 = await sleeper.enqueue(1)
+   task2 = await sleeper.enqueue(2).start(after=task1.id)
+   task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
 And the dependency failing will cause dependent tasks to fail as well:
 
@@ -285,10 +256,9 @@ And the dependency failing will cause dependent tasks to fail as well:
     async def do_nothing() -> None:
         pass
 
-    async with worker:
-        task = await foobar.enqueue().start()
-        dep = await do_nothing.enqueue().start(after=task.id)
-        print(await dep.result(3))
+    task = await foobar.enqueue().start()
+    dep = await do_nothing.enqueue().start(after=task.id)
+    print(await dep.result(3))
 
 Task pipelining
 ---------------
@@ -341,12 +311,11 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        results = await asyncio.gather(*[t.result(5) for t in tasks])
        return [data[i] for i in range(len(data)) if results[i].result]
 
-   async with worker:
-       data = [0, 1, 2, 3]
-       t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
-       print(await t1.result())
-       t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
-       print(await t2.result())
+   data = [0, 1, 2, 3]
+   t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
+   print(await t1.result())
+   t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
+   print(await t2.result())
 
 .. code-block:: python
 

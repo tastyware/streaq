@@ -55,15 +55,14 @@ async def cronjob() -> None:
     print("Nobody respects the spammish repetition!")
 ```
 
-Finally, use the worker's async context manager to queue up tasks:
+Finally, let's queue up some tasks:
 
 ```python
-async with worker:
-    await sleeper.enqueue(3)
-    # enqueue returns a task object that can be used to get results/info
-    task = await sleeper.enqueue(1).start(delay=3)
-    print(await task.info())
-    print(await task.result(timeout=5))
+await sleeper.enqueue(3)
+# enqueue returns a task object that can be used to get results/info
+task = await sleeper.enqueue(1).start(delay=3)
+print(await task.info())
+print(await task.result(timeout=5))
 ```
 
 Putting this all together gives us [example.py](https://github.com/tastyware/streaq/blob/master/example.py). Let's spin up a worker:

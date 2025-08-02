@@ -40,16 +40,15 @@ You can then register async tasks with the worker like this:
        res = await worker.context.http_client.get(url)
        return len(res.text)
 
-Finally, use the worker's async context manager to queue up tasks:
+Finally, let's queue up some tasks:
 
 .. code-block:: python
 
-   async with worker:
-       await fetch.enqueue("https://tastyware.dev/")
-       # enqueue returns a task object that can be used to get results/info
-       task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
-       print(await task.info())
-       print(await task.result(timeout=5))
+    await fetch.enqueue("https://tastyware.dev/")
+    # enqueue returns a task object that can be used to get results/info
+    task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
+    print(await task.info())
+    print(await task.result(timeout=5))
 
 Put this all together in a script and spin up a worker:
 

@@ -38,7 +38,7 @@ async def deps() -> AsyncIterator[WorkerContext]:
 
 
 async def test_lifespan(redis_url: str):
-    worker = await Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
+    worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> str:
@@ -78,9 +78,7 @@ def raise_error(*arg, **kwargs) -> Any:
 
 
 async def test_bad_serializer(redis_url: str):
-    worker = await Worker(
-        redis_url=redis_url, serializer=raise_error, queue_name=uuid4().hex
-    )
+    worker = Worker(redis_url=redis_url, serializer=raise_error, queue_name=uuid4().hex)
 
     @worker.task()
     async def foobar() -> None:
@@ -91,7 +89,7 @@ async def test_bad_serializer(redis_url: str):
 
 
 async def test_bad_deserializer(redis_url: str):
-    worker = await Worker(
+    worker = Worker(
         redis_url=redis_url, deserializer=raise_error, queue_name=uuid4().hex
     )
 
@@ -114,9 +112,7 @@ async def test_custom_serializer(worker: Worker):
     async def foobar() -> None:
         pass
 
-    async with worker:
-        task = await foobar.enqueue()
-
+    task = await foobar.enqueue()
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         assert (await task.result(3)).success
@@ -130,8 +126,6 @@ async def test_uninitialized_worker(worker: Worker):
 
     with pytest.raises(StreaqError):
         await foobar.run()
-    with pytest.raises(StreaqError):
-        await foobar.enqueue()
 
 
 async def test_active_tasks(worker: Worker):
@@ -140,10 +134,8 @@ async def test_active_tasks(worker: Worker):
         await asyncio.sleep(3)
 
     n_tasks = 5
-    async with worker:
-        tasks = [foo.enqueue() for _ in range(n_tasks)]
-        await worker.enqueue_many(tasks)
-
+    tasks = [foo.enqueue() for _ in range(n_tasks)]
+    await worker.enqueue_many(tasks)
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         await asyncio.sleep(1)
@@ -161,9 +153,8 @@ async def test_handle_signal(worker: Worker):
         await asyncio.sleep(1)
         os.kill(os.getpid(), signal.SIGINT)
 
-    async with worker:
-        task = await foo.enqueue()
-        assert await task.status() == TaskStatus.QUEUED
+    task = await foo.enqueue()
+    assert await task.status() == TaskStatus.QUEUED
 
 
 async def test_reclaim_backed_up(redis_url: str):
@@ -180,9 +171,8 @@ async def test_reclaim_backed_up(redis_url: str):
     worker2.task()(foo)
 
     # enqueue tasks
-    async with worker:
-        tasks = [registered.enqueue() for _ in range(4)]
-        await worker.enqueue_many(tasks)
+    tasks = [registered.enqueue() for _ in range(4)]
+    await worker.enqueue_many(tasks)
     async with create_task_group() as tg:
         # run first worker which will pick up all tasks
         tg.start_soon(worker.run_async)
@@ -203,8 +193,7 @@ async def test_reclaim_idle_task(redis_url: str):
         await asyncio.sleep(2)
 
     # enqueue task
-    async with worker2:
-        task = await foo.enqueue()
+    task = await foo.enqueue()
     # run separate worker which will pick up task
     worker = subprocess.Popen([sys.executable, "tests/failure.py", redis_url])
     await asyncio.sleep(1)
@@ -255,10 +244,9 @@ async def test_signed_data(redis_url: str):
 
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        async with worker:
-            task = await foo.enqueue()
-            res = await task.result(3)
-            assert res.success and res.result == "bar"
+        task = await foo.enqueue()
+        res = await task.result(3)
+        assert res.success and res.result == "bar"
         tg.cancel_scope.cancel()
 
 
@@ -274,9 +262,8 @@ async def test_sign_non_binary_data(redis_url: str):
     async def foo() -> str:
         return "bar"
 
-    async with worker:
-        with pytest.raises(StreaqError):
-            await foo.enqueue()
+    with pytest.raises(StreaqError):
+        await foo.enqueue()
 
 
 async def test_corrupt_signed_data(redis_url: str):
@@ -291,11 +278,10 @@ async def test_corrupt_signed_data(redis_url: str):
     async def foo() -> str:
         return "bar"
 
-    async with worker:
-        task = await foo.enqueue()
-        await worker.redis.set(
-            task.task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
-        )
+    task = await foo.enqueue()
+    await worker.redis.set(
+        task.task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
+    )
 
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
@@ -310,9 +296,8 @@ async def test_enqueue_many(worker: Worker):
         await asyncio.sleep(1)
         return val
 
-    async with worker:
-        tasks = [foobar.enqueue(i) for i in range(10)]
-        await worker.enqueue_many(tasks)
+    tasks = [foobar.enqueue(i) for i in range(10)]
+    await worker.enqueue_many(tasks)
     assert await worker.queue_size() >= len(tasks)
 
 
