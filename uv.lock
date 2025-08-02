@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -1669,7 +1669,7 @@ dependencies = [
     { name = "coredis" },
     { name = "crontab" },
     { name = "typer" },
-    { name = "uvloop" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
     { name = "watchfiles" },
 ]
 
@@ -1716,7 +1716,7 @@ requires-dist = [
     { name = "taskiq-redis", marker = "extra == 'benchmark'", specifier = "==1.1.0" },
     { name = "typer", specifier = ">=0.15.2" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34.2" },
-    { name = "uvloop", specifier = ">=0.21.0" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21.0" },
     { name = "watchfiles", specifier = ">=1.1.0" },
 ]
 provides-extras = ["benchmark", "web"]

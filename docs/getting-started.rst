@@ -1,7 +1,7 @@
 Getting started
 ===============
 
-To start, you'll need to create a ``Worker`` object. At worker creation, you can provide an async context manager "lifespan" which will initialize any global dependencies you want tasks to have access to in your tasks:
+To start, you'll need to create a ``Worker`` object. At worker creation, you can provide an async context manager "lifespan" which will initialize any global dependencies you want to have access to in your tasks:
 
 .. code-block:: python
 
