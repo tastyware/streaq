@@ -307,6 +307,15 @@ class Worker(Generic[C]):
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
 
+    async def __aenter__(self) -> Worker[C]:
+        """
+        Coredis will likely require an async context manager in the future!
+        """
+        return self
+
+    async def __aexit__(self, *args: Any):
+        pass
+
     def task_context(self) -> TaskContext:
         """
         Fetch task information for the currently running task.
@@ -520,10 +529,11 @@ class Worker(Generic[C]):
     async def renew_idle_timeouts(self) -> None:
         """
         Periodically renew idle timeout for running tasks. This allows the queue to
-        be resilient to shutdowns.
+        be resilient to sudden shutdowns.
         """
+        timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
         while True:
-            await sleep(self.idle_timeout / 1000 * 0.9)  # 10% buffer
+            await sleep(timeout)
             pipe = await self.redis.pipeline(transaction=True)
             for priority, tasks in self._running_tasks.items():
                 if tasks:
@@ -1339,9 +1349,3 @@ class Worker(Generic[C]):
             return self.deserializer(data)
         except Exception as e:
             raise StreaqError(f"Failed to deserialize data: {data}") from e
-
-    async def __aenter__(self) -> Worker[C]:
-        return self
-
-    async def __aexit__(self, *args: Any):
-        pass

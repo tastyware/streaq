@@ -8,9 +8,9 @@ from streaq import Worker
 
 @pytest.mark.anyio
 async def test_reclaim_idle_task(redis_url: str):
-    worker1 = Worker(redis_url=redis_url, queue_name="reclaim")
+    worker1 = Worker(redis_url=redis_url, queue_name="reclaim", idle_timeout=3)
 
-    @worker1.task(timeout=3)
+    @worker1.task()
     async def foo() -> None:
         await sleep(2)
 

@@ -11,10 +11,11 @@ local priority = ARGV[3]
 local score = ARGV[4]
 local expire = ARGV[5]
 
-local args = {'set', task_key, task_data, 'nx'}
+local args
 if expire ~= '0' then
-  table.insert(args, 'px')
-  table.insert(args, expire)
+  args = {'set', task_key, task_data, 'nx', 'px', expire}
+else
+  args = {'set', task_key, task_data, 'nx'}
 end
 
 if not redis.call(unpack(args)) then return 0 end

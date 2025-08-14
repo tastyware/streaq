@@ -151,6 +151,28 @@ async def test_task_retry_with_delay(worker: Worker):
         tg.cancel_scope.cancel()
 
 
+async def test_task_retry_with_schedule(worker: Worker):
+    @worker.task()
+    async def foobar() -> int:
+        ctx = worker.task_context()
+        if ctx.tries == 1:
+            raise StreaqRetry(
+                "Retrying!", schedule=datetime.now() + timedelta(seconds=3)
+            )
+        return ctx.tries
+
+    task = await foobar.enqueue()
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        with pytest.raises(TimeoutError):
+            await task.result(3)
+        res = await task.result(1)
+        assert res is not None
+        assert res.success
+        assert res.result == 2
+        tg.cancel_scope.cancel()
+
+
 async def test_task_failure(worker: Worker):
     @worker.task()
     async def foobar() -> None:

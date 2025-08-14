@@ -160,12 +160,12 @@ async def test_handle_signal(worker: Worker):
 async def test_reclaim_backed_up(redis_url: str):
     queue_name = uuid4().hex
     worker = Worker(
-        concurrency=2, redis_url=redis_url, queue_name=queue_name, idle_timeout=2
+        concurrency=2, redis_url=redis_url, queue_name=queue_name, idle_timeout=1
     )
-    worker2 = Worker(redis_url=redis_url, queue_name=queue_name)
+    worker2 = Worker(redis_url=redis_url, queue_name=queue_name, idle_timeout=1)
 
     async def foo() -> None:
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
     registered = worker.task()(foo)
     worker2.task()(foo)
@@ -186,7 +186,7 @@ async def test_reclaim_backed_up(redis_url: str):
 
 
 async def test_reclaim_idle_task(redis_url: str):
-    worker2 = Worker(redis_url=redis_url, queue_name="reclaim")
+    worker2 = Worker(redis_url=redis_url, queue_name="reclaim", idle_timeout=3)
 
     @worker2.task(timeout=3)
     async def foo() -> None:

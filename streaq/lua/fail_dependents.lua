@@ -2,24 +2,30 @@ local dependents_key = KEYS[1]
 local dependencies_key = KEYS[2]
 local task_id = KEYS[3]
 
--- traverse DAG and fail all dependents of failed task
-local function traverse(tid, failed)
-  if not failed[tid] then
-    failed[tid] = true
-    for _, dep_id in ipairs(redis.call('smembers', dependents_key .. tid)) do
-      traverse(dep_id, failed)
+local visited = {}
+local failed = {}
+local stack = { task_id }
+
+-- iterative DFS to traverse DAG
+while #stack > 0 do
+  -- pop off last element
+  local tid = stack[#stack]
+  stack[#stack] = nil
+  if not visited[tid] then
+    visited[tid] = true
+    -- push dependents onto the stack
+    local deps = redis.call('smembers', dependents_key .. tid)
+    for _, dep_id in ipairs(deps) do
+      stack[#stack + 1] = dep_id
       redis.call('srem', dependencies_key .. dep_id, tid)
     end
-  redis.call('del', dependents_key .. tid)
+    -- remove dependents set
+    redis.call('del', dependents_key .. tid)
+    -- add to failed list
+    if tid ~= task_id then
+      failed[#failed + 1] = tid
+    end
   end
-end
-
-local visited = {}
-traverse(task_id, visited)
-local failed = {}
--- mark visited nodes, traverse with DFS
-for tid, _ in pairs(visited) do
-  if tid ~= task_id then table.insert(failed, tid) end
 end
 
 return failed
