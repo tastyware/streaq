@@ -7,7 +7,6 @@ tmp.py
 
 # C extensions
 *.so
-*.lua
 
 # Distribution / packaging
 .Python

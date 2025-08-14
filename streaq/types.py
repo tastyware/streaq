@@ -19,11 +19,11 @@ from typing import (
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.task import RegisteredCron, RegisteredTask
 
+C = TypeVar("C", bound=Optional[object])
 P = ParamSpec("P")
 POther = ParamSpec("POther")
 R = TypeVar("R", bound=Optional[object])
 ROther = TypeVar("ROther", bound=Optional[object])
-WD = TypeVar("WD", bound=Optional[object])
 
 
 @dataclass
@@ -62,17 +62,17 @@ AsyncTask: TypeAlias = Callable[P, TypedCoroutine[R]]
 SyncTask: TypeAlias = Callable[P, R]
 
 
-class CronDefinition(Protocol, Generic[WD]):
+class CronDefinition(Protocol, Generic[C]):
     @overload
-    def __call__(self, fn: AsyncCron[R]) -> RegisteredCron[WD, R]: ...
+    def __call__(self, fn: AsyncCron[R]) -> RegisteredCron[C, R]: ...
 
     @overload
-    def __call__(self, fn: SyncCron[R]) -> RegisteredCron[WD, R]: ...  # type: ignore
+    def __call__(self, fn: SyncCron[R]) -> RegisteredCron[C, R]: ...  # type: ignore
 
 
-class TaskDefinition(Protocol, Generic[WD]):
+class TaskDefinition(Protocol, Generic[C]):
     @overload
-    def __call__(self, fn: AsyncTask[P, R]) -> RegisteredTask[WD, P, R]: ...
+    def __call__(self, fn: AsyncTask[P, R]) -> RegisteredTask[C, P, R]: ...
 
     @overload
-    def __call__(self, fn: SyncTask[P, R]) -> RegisteredTask[WD, P, R]: ...  # type: ignore
+    def __call__(self, fn: SyncTask[P, R]) -> RegisteredTask[C, P, R]: ...  # type: ignore

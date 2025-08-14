@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "streaq/__init__.py"
 
-[tool.hatch.build.targets.sdist]
-exclude = ["benchmarks"]
-
 [tool.hatch.build.targets.wheel]
-exclude = ["benchmarks"]
+include = ["streaq/**/*"]
+
+[tool.hatch.build.targets.sdist]
+include = ["streaq/**/*"]
 
 [project]
 name = "streaq"
@@ -44,6 +44,7 @@ classifiers = [
     "Topic :: System :: Distributed Computing",
     "Topic :: System :: Monitoring",
     "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
 ]
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -97,12 +98,6 @@ dev = [
     "sphinx-immaterial>=0.13.5",
     "testcontainers[redis]>=4.9.1",
 ]
-
-[tool.setuptools.package-data]
-"streaq" = ["py.typed"]
-
-[tool.setuptools.packages.find]
-where = ["streaq"]
 
 [tool.pytest.ini_options]
 testpaths = "tests"
