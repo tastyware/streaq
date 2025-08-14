@@ -7,9 +7,11 @@ path = "streaq/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 include = ["streaq/**/*"]
+exclude = ["**/__pycache__/**"]
 
 [tool.hatch.build.targets.sdist]
 include = ["streaq/**/*"]
+exclude = ["**/__pycache__/**"]
 
 [project]
 name = "streaq"
