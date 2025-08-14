@@ -25,7 +25,7 @@ from anyio import (
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
 from coredis.commands import Script
-from coredis.response.types import StreamEntry
+from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
 from crontab import CronTab
@@ -526,9 +526,10 @@ class Worker(Generic[C]):
             await sleep(self.idle_timeout / 1000 * 0.9)  # 10% buffer
             pipe = await self.redis.pipeline(transaction=True)
             for priority, tasks in self._running_tasks.items():
-                pipe.xclaim(
-                    self.stream_key + priority, self._group_name, self.id, 0, tasks
-                )
+                if tasks:
+                    pipe.xclaim(
+                        self.stream_key + priority, self._group_name, self.id, 0, tasks
+                    )
             await pipe.execute()
 
     async def producer(
@@ -560,17 +561,9 @@ class Worker(Generic[C]):
                         keys=[self.stream_key, self._group_name, self.id],
                         args=[count, self.idle_timeout, *self.priorities],
                     )
-                    if res:
-                        res = cast(list[tuple[str, list[tuple[str, list[str]]]]], res)
-                        merged: dict[str, list[str]] = defaultdict(list)
-                        for key, field_entries in res:
-                            merged[key].extend(
-                                StreamEntry(eid, {fields[0]: fields[1]})
-                                for eid, fields in field_entries
-                            )
-                        entries = {k: tuple(v) for k, v in merged.items()}
+                    entries = MultiStreamRangeCallback[str]()(res)
                     # blocking second if nothing fetched
-                    else:
+                    if not entries:
                         entries = await self.redis.xreadgroup(
                             self._group_name,
                             self.id,
@@ -897,14 +890,6 @@ class Worker(Generic[C]):
         )
         after = data.get("A")
         pipe = await self.redis.pipeline(transaction=True)
-        active = pipe.xclaim(
-            self.stream_key + msg.priority,
-            self._group_name,
-            self.id,
-            0,
-            [msg.message_id],
-            justid=True,
-        )
         if task.unique:
             lock_key = self.prefix + REDIS_UNIQUE + task.fn_name
             locked = pipe.set(lock_key, task_id, condition=PureToken.NX, pxat=timeout)
@@ -914,10 +899,6 @@ class Worker(Generic[C]):
         if after:
             previous = pipe.get(self.prefix + REDIS_PREVIOUS + after)
         await pipe.execute()
-        if not await active:
-            logger.warning(f"task {task_id} reclaimed ↩ from worker {self.id}")
-            self.counters["relinquished"] += 1
-            return None
         if task.unique and not await locked:  # type: ignore
             if not task.silent:
                 logger.warning(f"unique task {task_id} clashed ↯ with running task")
@@ -973,6 +954,7 @@ class Worker(Generic[C]):
                 raise asyncio.CancelledError("Not running task, worker shut down!")
             with CancelScope() as scope:
                 self._cancel_scopes[task_id] = scope
+                self._running_tasks[msg.priority].add(msg.message_id)
                 result = await wrapped(*_args, **data["k"])
             if scope.cancelled_caught:
                 result = asyncio.CancelledError("Task aborted by user!")
@@ -1019,6 +1001,7 @@ class Worker(Generic[C]):
             with CancelScope(shield=True):
                 finish_time = now_ms()
                 self._cancel_scopes.pop(task_id, None)
+                self._running_tasks[msg.priority].remove(msg.message_id)
                 await self.finish_task(
                     msg,
                     finish=done,
