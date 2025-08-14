@@ -13,7 +13,7 @@ from crontab import CronTab
 
 from streaq import logger
 from streaq.constants import REDIS_TASK
-from streaq.types import WD, AsyncCron, AsyncTask, P, POther, R, ROther
+from streaq.types import AsyncCron, AsyncTask, C, P, POther, R, ROther
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -31,9 +31,15 @@ class StreaqRetry(StreaqError):
         square of the number of attempts in seconds
     """
 
-    def __init__(self, msg: str, delay: timedelta | int | None = None):
+    def __init__(
+        self,
+        msg: str,
+        delay: timedelta | int | None = None,
+        schedule: datetime | None = None,
+    ):
         super().__init__(msg)
         self.delay = delay
+        self.schedule = schedule
 
 
 class TaskStatus(str, Enum):
@@ -161,7 +167,7 @@ class Task(Generic[R]):
         return self
 
     def then(
-        self, task: RegisteredTask[WD, POther, ROther], **kwargs: Any
+        self, task: RegisteredTask[C, POther, ROther], **kwargs: Any
     ) -> Task[ROther]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments will
@@ -249,7 +255,7 @@ class Task(Generic[R]):
 
 
 @dataclass
-class RegisteredTask(Generic[WD, P, R]):
+class RegisteredTask(Generic[C, P, R]):
     fn: AsyncTask[P, R]
     expire: timedelta | int | None
     max_tries: int | None
@@ -257,7 +263,7 @@ class RegisteredTask(Generic[WD, P, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
-    worker: Worker[WD]
+    worker: Worker[C]
     _fn_name: str | None = None
 
     def enqueue(
@@ -286,7 +292,7 @@ class RegisteredTask(Generic[WD, P, R]):
 
 
 @dataclass
-class RegisteredCron(Generic[WD, R]):
+class RegisteredCron(Generic[C, R]):
     fn: AsyncCron[R]
     crontab: CronTab
     max_tries: int | None
@@ -294,7 +300,7 @@ class RegisteredCron(Generic[WD, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
-    worker: Worker[WD]
+    worker: Worker[C]
     expire: timedelta | int | None = None
     _fn_name: str | None = None
 

@@ -6,7 +6,7 @@ Task execution
 
 streaQ preserves arq's task execution model, called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will be cancelled immediately and will remain in the queue to be run again when the worker starts up again (or gets run by another worker which is still running).
 
-In the case of a catastrophic failure (that is, the worker shuts down abruptly without doing cleanup), tasks can usually still be retried as long as you set a ``timeout`` when registering the task.
+In the case of a catastrophic failure (that is, the worker shuts down abruptly without doing cleanup), tasks can still be retried, as workers will refresh timeouts for running tasks every ``Worker.idle_timeout`` seconds.
 
 All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice.
 
@@ -181,7 +181,7 @@ streaQ provides a special exception that you can raise manually inside of your t
            raise StreaqRetry("Retrying!")
        return True
 
-By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` parameter to the ``StreaqRetry`` exception.
+By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` or ``schedule`` parameters to the ``StreaqRetry`` exception.
 
 Cancelling tasks
 ----------------
