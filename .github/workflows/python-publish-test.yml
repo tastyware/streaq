@@ -21,4 +21,4 @@ jobs:
     - name: Build package
       run: uv build
     - name: Publish to TestPyPI
-      run: uv publish --index testpypi
+      run: uv publish --publish-url https://test.pypi.org/legacy/
