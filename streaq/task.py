@@ -25,19 +25,19 @@ class StreaqRetry(StreaqError):
     An exception you can manually raise in your tasks to make sure the task
     is retried.
 
-    :param msg: error message to show
     :param delay:
-        amount of time to wait before retrying the task; if none, will be the
-        square of the number of attempts in seconds
+        amount of time to wait before retrying the task; if None and schedule
+        is not passed either, will be the number of tries squared, in seconds
+    :param schedule: specific datetime to retry the task at
     """
 
     def __init__(
         self,
-        msg: str,
+        *args: Any,
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
     ):
-        super().__init__(msg)
+        super().__init__(*args)
         self.delay = delay
         self.schedule = schedule
 
