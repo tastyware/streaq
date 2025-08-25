@@ -89,7 +89,7 @@ Other configuration options
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler and logs
 - ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
 - ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
-- ``idle_timeout``: the amount of time prefetched tasks wait before being re-enqueued if they haven't started yet
+- ``idle_timeout``: the amount of time to wait before re-enqueuing idle tasks (either prefetched tasks that don't run, or running tasks that become unresponsive)
 - ``priorities``: a list of custom priorities for tasks, ordered from lowest to highest
 
 Deploying with Redis Sentinel

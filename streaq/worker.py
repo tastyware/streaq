@@ -902,28 +902,35 @@ class Worker(Generic[C]):
         pipe = await self.redis.pipeline(transaction=True)
         if task.unique:
             lock_key = self.prefix + REDIS_UNIQUE + task.fn_name
-            locked = pipe.set(lock_key, task_id, condition=PureToken.NX, pxat=timeout)
+            locked = pipe.set(
+                lock_key, task_id, get=True, condition=PureToken.NX, pxat=timeout
+            )
         else:
             lock_key = None
         pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
         if after:
             previous = pipe.get(self.prefix + REDIS_PREVIOUS + after)
         await pipe.execute()
-        if task.unique and not await locked:  # type: ignore
-            if not task.silent:
-                logger.warning(f"unique task {task_id} clashed ↯ with running task")
-            return await self.finish_failed_task(
-                msg,
-                StreaqError(
-                    "Task is unique and another instance of the same task is "
-                    "already running!"
-                ),
-                task_try,
-                enqueue_time=data["t"],
-                fn_name=data["f"],
-                silent=task.silent,
-                ttl=task.ttl,
-            )
+        if task.unique:
+            existing = cast(str | None, await locked)  # type: ignore
+            # allow retries of the same task but not new ones
+            if existing and existing != task_id:
+                if not task.silent:
+                    logger.warning(
+                        f"unique task {task_id} clashed ↯ with running task {existing}"
+                    )
+                return await self.finish_failed_task(
+                    msg,
+                    StreaqError(
+                        "Task is unique and another instance of the same task is "
+                        "already running!"
+                    ),
+                    task_try,
+                    enqueue_time=data["t"],
+                    fn_name=data["f"],
+                    silent=task.silent,
+                    ttl=task.ttl,
+                )
 
         _args = data["a"] if not after else self.deserialize(await previous)  # type: ignore
         return task, data, task_try, _args, lock_key
