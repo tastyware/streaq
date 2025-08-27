@@ -26,7 +26,7 @@ To start, you'll need to create a ``Worker`` object. At worker creation, you can
        You can also do any startup/shutdown work here
        """
        async with AsyncClient() as http_client:
-           yield Context(http_client)
+           yield WorkerContext(http_client)
 
    worker = Worker(redis_url="redis://localhost:6379", lifespan=lifespan)
 
