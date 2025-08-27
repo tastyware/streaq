@@ -66,13 +66,12 @@ Let's see what the output looks like:
 
 .. code-block::
 
-   [INFO] 13:18:07: starting worker ca5bd9eb for 2 functions
-   [INFO] 13:18:10: task 1ab9543aae374bd89713ca00f5c566f9 → worker ca5bd9eb
-   [INFO] 13:18:10: task 1ab9543aae374bd89713ca00f5c566f9 ← 15
-   [INFO] 13:18:14: task cac277a9e3034704a36e67099c1d6f07 → worker ca5bd9eb
-   [INFO] 13:18:15: task cac277a9e3034704a36e67099c1d6f07 ← 303557
+   [INFO] 07:19:48: task fetch ○ 45d7ff032e6d42239e9f479a2fc4b70e → worker 12195ce1
+   [INFO] 07:19:48: task fetch ● 45d7ff032e6d42239e9f479a2fc4b70e ← 15
+   [INFO] 07:19:51: task fetch ○ 65e687f9ba644a1fbe23096fa246dfe1 → worker 12195ce1
+   [INFO] 07:19:52: task fetch ● 65e687f9ba644a1fbe23096fa246dfe1 ← 303659
 
 .. code-block:: python
 
-   TaskInfo(fn_name='fetch', enqueue_time=1751635090933, tries=0, scheduled=datetime.datetime(2025, 7, 4, 13, 18, 13, 933000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
-   TaskResult(fn_name='fetch', enqueue_time=1751635090933, success=True, result=303557, start_time=1751635094068, finish_time=1751635095130, tries=1, worker_id='ca5bd9eb')
+   TaskInfo(fn_name='fetch', enqueue_time=1756365588232, tries=0, scheduled=datetime.datetime(2025, 8, 28, 7, 19, 51, 232000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+   TaskResult(fn_name='fetch', enqueue_time=1756365588232, success=True, result=303659, start_time=1756365591327, finish_time=1756365592081, tries=1, worker_id='12195ce1')
