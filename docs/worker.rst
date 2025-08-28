@@ -36,7 +36,7 @@ Next, create an async context manager to run at worker creation/teardown. Use th
        # here we run code if desired after worker start up
        # yield our dependencies as an instance of the class
        async with AsyncClient() as http_client:
-           yield Context(http_client)
+           yield WorkerContext(http_client)
        # here we run code if desired before worker shutdown
 
 Now, tasks created for the worker will have access to the dependencies like so:

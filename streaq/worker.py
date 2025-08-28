@@ -405,11 +405,10 @@ class Worker(Generic[C]):
             )
             if task.fn_name in self.registry:
                 raise StreaqError(
-                    f"A task named {task.fn_name!r} has already been registered!"
+                    f"A task named {task.fn_name} has already been registered!"
                 )
             self.cron_jobs[task.fn_name] = task
             self.registry[task.fn_name] = task
-            logger.debug(f"cron job {task.fn_name} registered in worker {self.id}")
             return task
 
         return wrapped  # type: ignore
@@ -460,10 +459,9 @@ class Worker(Generic[C]):
             )
             if task.fn_name in self.registry:
                 raise StreaqError(
-                    f"A task named {task.fn_name!r} has already been registered!"
+                    f"A task named {task.fn_name} has already been registered!"
                 )
             self.registry[task.fn_name] = task
-            logger.debug(f"task {task.fn_name} registered in worker {self.id}")
             return task
 
         return wrapped  # type: ignore
@@ -637,7 +635,9 @@ class Worker(Generic[C]):
                 and not self._cancel_scopes[task_id].cancel_called
             ):
                 self._cancel_scopes[task_id].cancel()
-                logger.debug(f"aborting task {task_id} in worker {self.id}")
+                logger.debug(
+                    f"task ⊘ {task_id} marked for abortion in worker {self.id}"
+                )
 
     async def schedule_cron_jobs(self) -> None:
         """
@@ -767,7 +767,7 @@ class Worker(Generic[C]):
                 if len(output) > truncate_length:
                     output = f"{output[:truncate_length]}…"
                 if not silent:
-                    logger.info(f"task {task_id} ← {output}")
+                    logger.info(f"task {fn_name} ■ {task_id} ← {output}")
                 if triggers:
                     args = self.serialize(to_tuple(return_value))
                     pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
@@ -841,26 +841,26 @@ class Worker(Generic[C]):
         await pipe.execute()
         raw, task_try, abort, active = await asyncio.gather(*commands)
         if not raw:
-            logger.warning(f"task {task_id} expired †")
+            logger.warning(f"task † {task_id} expired")
             return await self.finish_failed_task(
                 msg, StreaqError("Task expired!"), task_try
             )
         if not active:
-            logger.warning(f"task {task_id} reclaimed ↩ from worker {self.id}")
+            logger.warning(f"task ↩ {task_id} reclaimed from worker {self.id}")
             self.counters["relinquished"] += 1
             return None
 
         try:
             data = self.deserialize(raw)
         except StreaqError as e:
-            logger.exception(f"Failed to deserialize task {task_id}!")
+            logger.error(f"task ☒ {task_id} failed to deserialize")
             return await self.finish_failed_task(msg, e, task_try)
 
         if (fn_name := data["f"]) not in self.registry:
-            logger.error(f"Missing function {fn_name}, can't execute task {task_id}!")
+            logger.error(f"task {fn_name} ⊘ {task_id} aborted, missing function")
             return await self.finish_failed_task(
                 msg,
-                StreaqError("Nonexistent function!"),
+                StreaqError(f"Missing function {fn_name}!"),
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=data["f"],
@@ -869,27 +869,27 @@ class Worker(Generic[C]):
 
         if abort:
             if not task.silent:
-                logger.info(f"task {task_id} aborted ⊘ prior to run")
+                logger.info(f"task {fn_name} ⊘ {task_id} aborted prior to run")
             return await self.finish_failed_task(
                 msg,
                 asyncio.CancelledError("Task aborted prior to run!"),
                 task_try,
                 enqueue_time=data["t"],
-                fn_name=data["f"],
+                fn_name=fn_name,
                 silent=task.silent,
                 ttl=task.ttl,
             )
         if task.max_tries and task_try > task.max_tries:
             if not task.silent:
                 logger.warning(
-                    f"task {task_id} failed × after {task.max_tries} retries"
+                    f"task {fn_name} × {task_id} failed after {task.max_tries} retries"
                 )
             return await self.finish_failed_task(
                 msg,
-                StreaqError(f"Max retry attempts reached for task {task_id}!"),
+                StreaqError("Max retry attempts reached for task!"),
                 task_try,
                 enqueue_time=data["t"],
-                fn_name=data["f"],
+                fn_name=fn_name,
                 silent=task.silent,
                 ttl=task.ttl,
             )
@@ -901,7 +901,7 @@ class Worker(Generic[C]):
         after = data.get("A")
         pipe = await self.redis.pipeline(transaction=True)
         if task.unique:
-            lock_key = self.prefix + REDIS_UNIQUE + task.fn_name
+            lock_key = self.prefix + REDIS_UNIQUE + fn_name
             locked = pipe.set(
                 lock_key, task_id, get=True, condition=PureToken.NX, pxat=timeout
             )
@@ -917,7 +917,8 @@ class Worker(Generic[C]):
             if existing and existing != task_id:
                 if not task.silent:
                     logger.warning(
-                        f"unique task {task_id} clashed ↯ with running task {existing}"
+                        f"task {fn_name} ↯ {task_id} clashed with unique task "
+                        f"{existing}"
                     )
                 return await self.finish_failed_task(
                     msg,
@@ -927,7 +928,7 @@ class Worker(Generic[C]):
                     ),
                     task_try,
                     enqueue_time=data["t"],
-                    fn_name=data["f"],
+                    fn_name=fn_name,
                     silent=task.silent,
                     ttl=task.ttl,
                 )
@@ -959,7 +960,7 @@ class Worker(Generic[C]):
                 return await task.fn(*args, **kwargs)
 
         if not task.silent:
-            logger.info(f"task {task_id} → worker {self.id}")
+            logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
 
         wrapped = _fn
         for middleware in reversed(self.middlewares):
@@ -978,7 +979,7 @@ class Worker(Generic[C]):
                 success = False
                 done = True
                 if not task.silent:
-                    logger.info(f"task {task_id} aborted ⊘")
+                    logger.info(f"task {task.fn_name} ⊘ {task_id} aborted")
                     self.counters["aborted"] += 1
                     self.counters["failed"] -= 1  # this will get incremented later
         except StreaqRetry as e:
@@ -988,22 +989,26 @@ class Worker(Generic[C]):
                 schedule = datetime_ms(e.schedule)
                 if not task.silent:
                     logger.exception(f"Retrying task {task_id}!")
-                    logger.info(f"retrying ↻ task {task_id} at {schedule}")
+                    logger.info(
+                        f"task {task.fn_name} ↻ {task_id} retrying at {schedule}"
+                    )
             else:
                 delay = to_ms(e.delay) if e.delay is not None else task_try**2 * 1000
                 schedule = now_ms() + delay
                 if not task.silent:
                     logger.exception(f"Retrying task {task_id}!")
-                    logger.info(f"retrying ↻ task {task_id} in {delay}s")
+                    logger.info(f"task {task.fn_name} ↻ {task_id} retrying in {delay}s")
         except TimeoutError as e:
             if not task.silent:
-                logger.error(f"task {task_id} timed out …")
+                logger.error(f"task {task.fn_name} … {task_id} timed out")
             result = e
             success = False
             done = True
         except asyncio.CancelledError:
             if not task.silent:
-                logger.info(f"task {task_id} cancelled, will be retried ↻")
+                logger.info(
+                    f"task {task.fn_name} ↻ {task_id} cancelled, will be retried"
+                )
             success = False
             done = False
             raise  # best practice from anyio docs
@@ -1012,8 +1017,8 @@ class Worker(Generic[C]):
             success = False
             done = True
             if not task.silent:
-                logger.info(f"task {task_id} failed ×")
                 logger.exception(f"Task {task_id} failed!")
+                logger.info(f"task {task.fn_name} × {task_id} failed")
         finally:
             with CancelScope(shield=True):
                 finish_time = now_ms()
@@ -1057,7 +1062,7 @@ class Worker(Generic[C]):
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
         for dep_id in dependents:
-            logger.info(f"task {dep_id} dependency failed ×")
+            logger.info(f"task dependent × {dep_id} failed")
             to_delete.append(self.prefix + REDIS_TASK + dep_id)
             pipe.set(self.results_key + dep_id, result, ex=300)
             pipe.publish(self._channel_key + dep_id, result)

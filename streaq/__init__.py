@@ -2,7 +2,7 @@ import logging
 
 import coredis
 
-VERSION = "5.2.1"
+VERSION = "5.2.2"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)

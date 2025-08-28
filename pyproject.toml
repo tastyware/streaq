@@ -54,10 +54,10 @@ authors = [
     { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
-    "anyio>=4.8.0",
+    "anyio>=4.10.0",
     "coredis>=5.0.1",
     "crontab>=1.0.5",
-    "typer>=0.15.2",
+    "typer>=0.16.1",
     "uvloop>=0.21.0; sys_platform != 'win32'",
     "watchfiles>=1.1.0",
 ]
@@ -71,10 +71,10 @@ benchmark = [
 ]
 web = [
     "async-lru>=2.0.5",
-    "fastapi>=0.115.12",
+    "fastapi>=0.116.1",
     "jinja2>=3.1.6",
     "python-multipart>=0.0.20",
-    "uvicorn>=0.34.2",
+    "uvicorn>=0.35.0",
 ]
 
 [project.scripts]
@@ -89,16 +89,16 @@ Changelog = "https://github.com/tastyware/streaq/releases"
 
 [dependency-groups]
 dev = [
-    "enum-tools[sphinx]>=0.12.0",
+    "enum-tools[sphinx]>=0.13.0",
     "httpx>=0.28.1",
-    "pyright>=1.1.392.post0",
-    "pytest>=8.3.4",
-    "pytest-cov>=6.0.0",
+    "pyright>=1.1.404",
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.9.3",
+    "ruff>=0.12.10",
     "sphinx>=8.1.3",
-    "sphinx-immaterial>=0.13.5",
-    "testcontainers[redis]>=4.9.1",
+    "sphinx-immaterial>=0.13.6",
+    "testcontainers[redis]>=4.12.0",
 ]
 
 [tool.pytest.ini_options]
