@@ -405,11 +405,10 @@ class Worker(Generic[C]):
             )
             if task.fn_name in self.registry:
                 raise StreaqError(
-                    f"task {task.fn_name!r} ⚠︎ A task with same name has already been registered!" #noqa: E501
+                    f"A task named {task.fn_name} has already been registered!"
                 )
             self.cron_jobs[task.fn_name] = task
             self.registry[task.fn_name] = task
-            logger.debug(f"task {task.fn_name} ⏲ cron job registered in worker {self.id}")
             return task
 
         return wrapped  # type: ignore
@@ -460,10 +459,9 @@ class Worker(Generic[C]):
             )
             if task.fn_name in self.registry:
                 raise StreaqError(
-                    f"task {task.fn_name!r} ⚠︎ A task with same name has already been registered!" #noqa: E501
+                    f"A task named {task.fn_name} has already been registered!"
                 )
             self.registry[task.fn_name] = task
-            logger.debug(f"task {task.fn_name} ℹ︎ task registered in worker {self.id}")
             return task
 
         return wrapped  # type: ignore
@@ -637,7 +635,9 @@ class Worker(Generic[C]):
                 and not self._cancel_scopes[task_id].cancel_called
             ):
                 self._cancel_scopes[task_id].cancel()
-                logger.debug(f"task ⊘ {task_id} is to abort in worker {self.id}")
+                logger.debug(
+                    f"task ⊘ {task_id} marked for abortion in worker {self.id}"
+                )
 
     async def schedule_cron_jobs(self) -> None:
         """
@@ -841,7 +841,7 @@ class Worker(Generic[C]):
         await pipe.execute()
         raw, task_try, abort, active = await asyncio.gather(*commands)
         if not raw:
-            logger.warning(f"task † {task_id} expired ")
+            logger.warning(f"task † {task_id} expired")
             return await self.finish_failed_task(
                 msg, StreaqError("Task expired!"), task_try
             )
@@ -853,14 +853,14 @@ class Worker(Generic[C]):
         try:
             data = self.deserialize(raw)
         except StreaqError as e:
-            logger.exception(f"task {task_id} ⚠︎ Failed to deserialize")
+            logger.error(f"task ☒ {task_id} failed to deserialize")
             return await self.finish_failed_task(msg, e, task_try)
 
         if (fn_name := data["f"]) not in self.registry:
-            logger.error(f"task {task_id} ⚠︎ Missing function {fn_name}, can't execute task") # noqa: E501
+            logger.error(f"task {fn_name} ⊘ {task_id} aborted, missing function")
             return await self.finish_failed_task(
                 msg,
-                StreaqError(f"task {task_id} ⚠︎ Missing function {fn_name}, can't execute task"), # noqa: E501
+                StreaqError(f"Missing function {fn_name}!"),
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=data["f"],
@@ -872,7 +872,7 @@ class Worker(Generic[C]):
                 logger.info(f"task {fn_name} ⊘ {task_id} aborted prior to run")
             return await self.finish_failed_task(
                 msg,
-                asyncio.CancelledError(f"task {fn_name} ⊘ {task_id} aborted prior to run"), # noqa: E501
+                asyncio.CancelledError("Task aborted prior to run!"),
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=data["f"],
@@ -886,7 +886,7 @@ class Worker(Generic[C]):
                 )
             return await self.finish_failed_task(
                 msg,
-                StreaqError(f"task {fn_name} × {task_id} failed after {task.max_tries} retries"), # noqa: E501
+                StreaqError("Max retry attempts reached for task!"),
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=data["f"],
@@ -917,12 +917,14 @@ class Worker(Generic[C]):
             if existing and existing != task_id:
                 if not task.silent:
                     logger.warning(
-                        f"task {fn_name} ↯ unique task {task_id} clashed with running task {existing}" # noqa: E501
+                        f"task {fn_name} ↯ {task_id} clashed with unique task "
+                        f"{existing}"
                     )
                 return await self.finish_failed_task(
                     msg,
                     StreaqError(
-                        f"task {fn_name} ↯ unique task {task_id} clashed with running task {existing}" # noqa: E501
+                        "Task is unique and another instance of the same task is "
+                        "already running!"
                     ),
                     task_try,
                     enqueue_time=data["t"],
@@ -958,7 +960,7 @@ class Worker(Generic[C]):
                 return await task.fn(*args, **kwargs)
 
         if not task.silent:
-            logger.info(f"task {ctx.fn_name} ○ {task_id} → worker {self.id}")
+            logger.info(f"task {task.fn_name} ○ {task_id} → worker {self.id}")
 
         wrapped = _fn
         for middleware in reversed(self.middlewares):
@@ -977,7 +979,7 @@ class Worker(Generic[C]):
                 success = False
                 done = True
                 if not task.silent:
-                    logger.info(f"task {ctx.fn_name} ⊘ {task_id} aborted")
+                    logger.info(f"task {task.fn_name} ⊘ {task_id} aborted")
                     self.counters["aborted"] += 1
                     self.counters["failed"] -= 1  # this will get incremented later
         except StreaqRetry as e:
@@ -986,26 +988,26 @@ class Worker(Generic[C]):
             if e.schedule:
                 schedule = datetime_ms(e.schedule)
                 if not task.silent:
-                    logger.exception(f"task {ctx.fn_name} ↻ retrying at {schedule}")
-                    logger.info(f"task {ctx.fn_name} ↻ retrying at {schedule}")
+                    logger.exception(f"Retrying task {task_id}!")
+                    logger.info(
+                        f"task {task.fn_name} ↻ {task_id} retrying at {schedule}"
+                    )
             else:
                 delay = to_ms(e.delay) if e.delay is not None else task_try**2 * 1000
                 schedule = now_ms() + delay
                 if not task.silent:
-                    logger.exception(f"task {ctx.fn_name} ↻ {task_id} retrying in {delay}s") # noqa: E501
-                    logger.info(
-                        f"task {ctx.fn_name} ↻ {task_id} retrying in {delay}s"
-                    )
+                    logger.exception(f"Retrying task {task_id}!")
+                    logger.info(f"task {task.fn_name} ↻ {task_id} retrying in {delay}s")
         except TimeoutError as e:
             if not task.silent:
-                logger.error(f"task {ctx.fn_name} … {task_id} timed out")
+                logger.error(f"task {task.fn_name} … {task_id} timed out")
             result = e
             success = False
             done = True
         except asyncio.CancelledError:
             if not task.silent:
                 logger.info(
-                    f"task {ctx.fn_name} ↻ {task_id} cancelled, will be retried"
+                    f"task {task.fn_name} ↻ {task_id} cancelled, will be retried"
                 )
             success = False
             done = False
@@ -1015,8 +1017,8 @@ class Worker(Generic[C]):
             success = False
             done = True
             if not task.silent:
-                logger.info(f"task {ctx.fn_name} × {task_id} failed")
-                logger.exception(f"task {ctx.fn_name} × {task_id} failed!")
+                logger.exception(f"Task {task_id} failed!")
+                logger.info(f"task {task.fn_name} × {task_id} failed")
         finally:
             with CancelScope(shield=True):
                 finish_time = now_ms()
@@ -1060,7 +1062,7 @@ class Worker(Generic[C]):
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
         for dep_id in dependents:
-            logger.info(f"task × {dep_id} dependency failed")
+            logger.info(f"task dependent × {dep_id} failed")
             to_delete.append(self.prefix + REDIS_TASK + dep_id)
             pipe.set(self.results_key + dep_id, result, ex=300)
             pipe.publish(self._channel_key + dep_id, result)
