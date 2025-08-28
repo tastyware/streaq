@@ -767,7 +767,7 @@ class Worker(Generic[C]):
                 if len(output) > truncate_length:
                     output = f"{output[:truncate_length]}…"
                 if not silent:
-                    logger.info(f"task {fn_name} ● {task_id} ← {output}")
+                    logger.info(f"task {fn_name} ■ {task_id} ← {output}")
                 if triggers:
                     args = self.serialize(to_tuple(return_value))
                     pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
@@ -875,7 +875,7 @@ class Worker(Generic[C]):
                 asyncio.CancelledError("Task aborted prior to run!"),
                 task_try,
                 enqueue_time=data["t"],
-                fn_name=data["f"],
+                fn_name=fn_name,
                 silent=task.silent,
                 ttl=task.ttl,
             )
@@ -889,7 +889,7 @@ class Worker(Generic[C]):
                 StreaqError("Max retry attempts reached for task!"),
                 task_try,
                 enqueue_time=data["t"],
-                fn_name=data["f"],
+                fn_name=fn_name,
                 silent=task.silent,
                 ttl=task.ttl,
             )
@@ -901,7 +901,7 @@ class Worker(Generic[C]):
         after = data.get("A")
         pipe = await self.redis.pipeline(transaction=True)
         if task.unique:
-            lock_key = self.prefix + REDIS_UNIQUE + task.fn_name
+            lock_key = self.prefix + REDIS_UNIQUE + fn_name
             locked = pipe.set(
                 lock_key, task_id, get=True, condition=PureToken.NX, pxat=timeout
             )
@@ -928,7 +928,7 @@ class Worker(Generic[C]):
                     ),
                     task_try,
                     enqueue_time=data["t"],
-                    fn_name=data["f"],
+                    fn_name=fn_name,
                     silent=task.silent,
                     ttl=task.ttl,
                 )
@@ -960,7 +960,7 @@ class Worker(Generic[C]):
                 return await task.fn(*args, **kwargs)
 
         if not task.silent:
-            logger.info(f"task {task.fn_name} ○ {task_id} → worker {self.id}")
+            logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
 
         wrapped = _fn
         for middleware in reversed(self.middlewares):
