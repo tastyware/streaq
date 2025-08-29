@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import pickle
@@ -12,11 +11,11 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
-from anyio import create_task_group, move_on_after
+from anyio import create_task_group, move_on_after, sleep
 
 from streaq.constants import REDIS_TASK
 from streaq.task import TaskStatus
-from streaq.utils import StreaqError
+from streaq.utils import StreaqError, gather
 from streaq.worker import Worker
 
 NAME_STR = "Freddy"
@@ -47,7 +46,7 @@ async def test_lifespan(redis_url: str):
     task = await foobar.enqueue()
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        await asyncio.sleep(1)
+        await sleep(1)
         res = await task.result(3)
         assert res.success and res.result == NAME_STR
         tg.cancel_scope.cancel()
@@ -61,7 +60,7 @@ async def test_health_check(redis_url: str):
     )
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        await asyncio.sleep(2)
+        await sleep(2)
         worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
         redis_health = await worker.redis.get(worker._health_key + ":redis")
         assert worker_health is not None
@@ -131,14 +130,14 @@ async def test_uninitialized_worker(worker: Worker):
 async def test_active_tasks(worker: Worker):
     @worker.task()
     async def foo() -> None:
-        await asyncio.sleep(3)
+        await sleep(3)
 
     n_tasks = 5
     tasks = [foo.enqueue() for _ in range(n_tasks)]
     await worker.enqueue_many(tasks)
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        await asyncio.sleep(1)
+        await sleep(1)
         assert worker.active == n_tasks
         tg.cancel_scope.cancel()
 
@@ -146,11 +145,11 @@ async def test_active_tasks(worker: Worker):
 async def test_handle_signal(worker: Worker):
     @worker.task()
     async def foo() -> None:
-        await asyncio.sleep(3)
+        await sleep(3)
 
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        await asyncio.sleep(1)
+        await sleep(1)
         os.kill(os.getpid(), signal.SIGINT)
 
     task = await foo.enqueue()
@@ -165,7 +164,7 @@ async def test_reclaim_backed_up(redis_url: str):
     worker2 = Worker(redis_url=redis_url, queue_name=queue_name, idle_timeout=1)
 
     async def foo() -> None:
-        await asyncio.sleep(4)
+        await sleep(4)
 
     registered = worker.task()(foo)
     worker2.task()(foo)
@@ -176,11 +175,11 @@ async def test_reclaim_backed_up(redis_url: str):
     async with create_task_group() as tg:
         # run first worker which will pick up all tasks
         tg.start_soon(worker.run_async)
-        await asyncio.sleep(1)
+        await sleep(1)
         # run second worker which will pick up prefetched tasks
         tg.start_soon(worker2.run_async)
 
-        results = await asyncio.gather(*[t.result(8) for t in tasks])
+        results = await gather(*[t.result(8) for t in tasks])
         assert any(r.worker_id == worker2.id for r in results)
         tg.cancel_scope.cancel()
 
@@ -190,13 +189,13 @@ async def test_reclaim_idle_task(redis_url: str):
 
     @worker2.task(timeout=3)
     async def foo() -> None:
-        await asyncio.sleep(2)
+        await sleep(2)
 
     # enqueue task
     task = await foo.enqueue()
     # run separate worker which will pick up task
     worker = subprocess.Popen([sys.executable, "tests/failure.py", redis_url])
-    await asyncio.sleep(1)
+    await sleep(1)
     # kill worker abruptly to disallow cleanup
     os.kill(worker.pid, signal.SIGKILL)
     worker.wait()
@@ -223,7 +222,7 @@ async def test_change_cron_schedule(redis_url: str):
     foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
     async with create_task_group() as tg:
         tg.start_soon(worker2.run_async)
-        await asyncio.sleep(2)
+        await sleep(2)
         tg.cancel_scope.cancel()
     task2 = foo2.enqueue()
     info2 = await task2.info()
@@ -293,7 +292,7 @@ async def test_corrupt_signed_data(redis_url: str):
 async def test_enqueue_many(worker: Worker):
     @worker.task()
     async def foobar(val: int) -> int:
-        await asyncio.sleep(1)
+        await sleep(1)
         return val
 
     tasks = [foobar.enqueue(i) for i in range(10)]
