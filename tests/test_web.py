@@ -1,7 +1,5 @@
-import asyncio
-
 import pytest
-from anyio import create_task_group
+from anyio import create_task_group, sleep
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
@@ -26,7 +24,7 @@ async def test_get_pages(worker: Worker):
 
     @worker.task()
     async def sleeper(time: int) -> None:
-        await asyncio.sleep(time)
+        await sleep(time)
 
     async def _get_worker():
         yield worker
@@ -40,7 +38,7 @@ async def test_get_pages(worker: Worker):
     app.dependency_overrides[get_worker] = _get_worker
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
-        await asyncio.sleep(2)
+        await sleep(2)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:

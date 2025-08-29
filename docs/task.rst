@@ -16,7 +16,7 @@ All streaQ tasks should therefore be designed to cope with being called repeated
 streaQ handles exceptions in the following manner:
 
 * ``StreaqRetry`` exceptions result in retrying the task, sometimes after a delay (see below).
-* ``asyncio.CancelledError`` exceptions result in the task failing if the task was aborted by the user, or being retried if the worker was shut down unexpectedly.
+* ``asyncio.CancelledError`` or ``trio.Cancelled`` exceptions result in the task failing if the task was aborted by the user, or being retried if the worker was shut down unexpectedly.
 * ``TimeoutError`` exceptions result in the task failing if the task took too long to run.
 * Any other ``Exception`` will result in the task failing.
 
@@ -34,9 +34,11 @@ We can now register async functions with the worker:
 
 .. code-block:: python
 
+   from anyio import sleep  # you can just as well use asyncio or trio
+
    @worker.task()
    async def sleeper(time: int) -> int:
-       await asyncio.sleep(time)
+       await sleep(time)
        return time
 
 The ``task`` decorator has several optional arguments that can be used to customize behavior:
@@ -280,9 +282,8 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
    async def is_even(val: int) -> bool:
        return val % 2 == 0
 
-   async with worker:
-       task = await fetch.enqueue("https://tastyware.dev").then(double).then(is_even)
-       print(await task.result(3))
+   task = await fetch.enqueue("https://tastyware.dev").then(double).then(is_even)
+   print(await task.result(3))
 
 .. code-block:: python
 
@@ -299,16 +300,16 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
    async def map(data: Sequence[Any], to: str) -> list[Any]:
        task = worker.registry[to]
        coros = [task.enqueue(*to_tuple(d)).start() for d in data]
-       tasks = await asyncio.gather(*coros)
-       results = await asyncio.gather(*[t.result(3) for t in tasks])
+       tasks = await gather(*coros)
+       results = await gather(*[t.result(3) for t in tasks])
        return [r.result for r in results]
 
    @worker.task()
    async def filter(data: Sequence[Any], by: str) -> list[Any]:
        task = worker.registry[by]
        coros = [task.enqueue(*to_tuple(d)).start() for d in data]
-       tasks = await asyncio.gather(*coros)
-       results = await asyncio.gather(*[t.result(5) for t in tasks])
+       tasks = await gather(*coros)
+       results = await gather(*[t.result(5) for t in tasks])
        return [data[i] for i in range(len(data)) if results[i].result]
 
    data = [0, 1, 2, 3]

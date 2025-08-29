@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hmac
 import pickle
 import signal
@@ -8,6 +7,7 @@ from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
+from inspect import iscoroutinefunction
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Generic, cast
 from uuid import uuid4
@@ -18,6 +18,7 @@ from anyio import (
     create_memory_object_stream,
     create_task_group,
     fail_after,
+    get_cancelled_exc_class,
     open_signal_receiver,
     run,
     sleep,
@@ -76,6 +77,7 @@ from streaq.utils import (
     StreaqError,
     asyncify,
     datetime_ms,
+    gather,
     now_ms,
     to_ms,
     to_seconds,
@@ -170,6 +172,7 @@ class Worker(Generic[C]):
         "fail_dependents",
         "update_dependents",
         "read_streams",
+        "_cancelled_class",
     )
 
     def __init__(
@@ -287,11 +290,11 @@ class Worker(Generic[C]):
                 pipe.dbsize(),
             )
             await pipe.execute()
-            info, keys = await asyncio.gather(*infos)
+            info, keys = await gather(*infos)
             mem_usage = info.get("used_memory_human", "?")
             clients = info.get("connected_clients", "?")
-            queued = sum(await asyncio.gather(*streams))
-            scheduled = sum(await asyncio.gather(*queues))
+            queued = sum(await gather(*streams))
+            scheduled = sum(await gather(*queues))
             health = (
                 f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "  # type: ignore
                 f"queued: {queued}, scheduled: {scheduled}}}"
@@ -306,15 +309,6 @@ class Worker(Generic[C]):
         counters = {k: v for k, v in self.counters.items() if v}
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
-
-    async def __aenter__(self) -> Worker[C]:
-        """
-        Coredis will likely require an async context manager in the future!
-        """
-        return self
-
-    async def __aexit__(self, *args: Any):
-        pass
 
     def task_context(self) -> TaskContext:
         """
@@ -388,7 +382,7 @@ class Worker(Generic[C]):
         """
 
         def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredCron[C, R]:
-            if asyncio.iscoroutinefunction(fn):
+            if iscoroutinefunction(fn):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
@@ -442,7 +436,7 @@ class Worker(Generic[C]):
         def wrapped(
             fn: AsyncTask[P, R] | SyncTask[P, R],
         ) -> RegisteredTask[C, P, R]:
-            if asyncio.iscoroutinefunction(fn):
+            if iscoroutinefunction(fn):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
@@ -486,6 +480,7 @@ class Worker(Generic[C]):
         """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
         start_time = now_ms()
+        self._cancelled_class = get_cancelled_exc_class()
         # create consumer group if it doesn't exist
         await self.create_groups(
             keys=[self.stream_key, self._group_name],
@@ -839,7 +834,7 @@ class Worker(Generic[C]):
             ),
         )
         await pipe.execute()
-        raw, task_try, abort, active = await asyncio.gather(*commands)
+        raw, task_try, abort, active = await gather(*commands)
         if not raw:
             logger.warning(f"task † {task_id} expired")
             return await self.finish_failed_task(
@@ -872,7 +867,7 @@ class Worker(Generic[C]):
                 logger.info(f"task {fn_name} ⊘ {task_id} aborted prior to run")
             return await self.finish_failed_task(
                 msg,
-                asyncio.CancelledError("Task aborted prior to run!"),
+                self._cancelled_class("Task aborted prior to run!"),
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=fn_name,
@@ -969,13 +964,13 @@ class Worker(Generic[C]):
         result: Any = None
         try:
             if self._block_new_tasks:
-                raise asyncio.CancelledError("Not running task, worker shut down!")
+                raise self._cancelled_class("Not running task, worker shut down!")
             with CancelScope() as scope:
                 self._cancel_scopes[task_id] = scope
                 self._running_tasks[msg.priority].add(msg.message_id)
                 result = await wrapped(*_args, **data["k"])
             if scope.cancelled_caught:
-                result = asyncio.CancelledError("Task aborted by user!")
+                result = self._cancelled_class("Task aborted by user!")
                 success = False
                 done = True
                 if not task.silent:
@@ -1004,7 +999,7 @@ class Worker(Generic[C]):
             result = e
             success = False
             done = True
-        except asyncio.CancelledError:
+        except self._cancelled_class:
             if not task.silent:
                 logger.info(
                     f"task {task.fn_name} ↻ {task_id} cancelled, will be retried"
@@ -1113,8 +1108,7 @@ class Worker(Generic[C]):
 
             # importantly, we're not using `await` here
             tasks = [foobar.enqueue(i) for i in range(10)]
-            async with worker:
-                await worker.enqueue_many(tasks)
+            await worker.enqueue_many(tasks)
 
         """
         enqueue_time = now_ms()
@@ -1154,7 +1148,7 @@ class Worker(Generic[C]):
             pipe.xlen(self.stream_key + priority) for priority in self.priorities
         ] + [pipe.zcard(self.queue_key + priority) for priority in self.priorities]
         await pipe.execute()
-        return sum(await asyncio.gather(*commands))
+        return sum(await gather(*commands))
 
     @property
     def active(self) -> int:
@@ -1213,13 +1207,13 @@ class Worker(Generic[C]):
             pipe.exists([key(REDIS_DEPENDENCIES)]),
         )
         await pipe.execute()
-        done, running, data, dependencies = await asyncio.gather(*commands)
+        done, running, data, dependencies = await gather(*commands)
 
         if done:
             return TaskStatus.DONE
         elif running:
             return TaskStatus.RUNNING
-        score = any(r for r in await asyncio.gather(*delayed))
+        score = any(r for r in await gather(*delayed))
         if score or dependencies:
             return TaskStatus.SCHEDULED
         elif data:
@@ -1280,7 +1274,7 @@ class Worker(Generic[C]):
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
             return not result.success and isinstance(
-                result.result, asyncio.CancelledError
+                result.result, get_cancelled_exc_class()
             )
         except TimeoutError:
             return False
@@ -1310,13 +1304,11 @@ class Worker(Generic[C]):
             pipe.smembers(key(REDIS_DEPENDENTS)),
         )
         await pipe.execute()
-        result, raw, try_count, dependencies, dependents = await asyncio.gather(
-            *commands
-        )
+        result, raw, try_count, dependencies, dependents = await gather(*commands)
         if result or not raw:  # if result exists or task data doesn't
             return None
         data = self.deserialize(raw)
-        res = await asyncio.gather(*delayed)
+        res = await gather(*delayed)
         score = next((r for r in res if r), None)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
         return TaskInfo(
