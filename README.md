@@ -11,7 +11,7 @@ Fast, async, type-safe distributed task queue via Redis streams
 ## Features
 
 - Up to [5x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than `arq`
-- Strongly typed
+- Fully type-safe
 - 95%+ unit test coverage
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
@@ -23,7 +23,7 @@ Fast, async, type-safe distributed task queue via Redis streams
 - Support for synchronous tasks (run in separate threads)
 - Redis Sentinel support for production
 - Built-in web UI for monitoring tasks
-- Built with structured concurrency on `anyio`
+- Built with structured concurrency on `anyio`, supports both `asyncio` and `trio`
 
 ## Installation
 
