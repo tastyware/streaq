@@ -43,7 +43,7 @@ The ``task`` decorator has several optional arguments that can be used to custom
 
 - ``expire``: time after which to dequeue the task, if None will never be dequeued
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to 3
-- ``name``: use a custom name for the task instead of the function name
+- ``name``: use a custom name for the task instead of the function name (see :ref:`Custom name for tasks <custom-name-for-task>` for related impacts and behavior)
 - ``silent``: whether to silence task startup/shutdown logs and task success/failure tracking; defaults to False
 - ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
@@ -324,3 +324,24 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
 .. note::
    For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
+
+.. _custom-name-for-task:
+
+Custom name for tasks
+---------------------
+
+As soon as you provide a custom name to a function using the ``name`` argument, you must call the task with the customized name and no longer with the function name. 
+
+.. code-block:: python
+
+   @worker.task(name="custom_sleeper")
+   async def sleeper(time: int) -> int:
+       await asyncio.sleep(time)
+       return time
+
+   # no longer correct
+   await sleeper.enqueue(3)
+   
+   # correct
+   await custom_sleeper.enqueue(3)
+   
