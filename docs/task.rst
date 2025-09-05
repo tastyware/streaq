@@ -79,6 +79,9 @@ Tasks can depend on other tasks, meaning they won't be enqueued until their depe
    task2 = await sleeper.enqueue(2).start(after=task1.id)
    task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
+.. note::
+   ``Task.enqueue()`` is actually a sync function that returns a ``Task`` object. Since ``Task`` is awaitable, it gets enqueued when awaited. Therefore, you should always use await even though ``Task.enqueue()`` is sync, unless you're enqueuing by batch (see below).
+
 Task priorities
 ---------------
 

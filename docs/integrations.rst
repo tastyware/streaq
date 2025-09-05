@@ -8,19 +8,28 @@ Integration with FastAPI is straightforward:
 
 .. code-block:: python
 
-   from fastapi import FastAPI
+   from fastapi import FastAPI, HTTPException, status
 
    from example import fetch
 
    app = FastAPI()
 
-   @app.post("/enqueue")
-   async def enqueue(url: str) -> bool:
+   @app.post("/fetch")
+   async def do_fetch(url: str) -> int:
        task = await fetch.enqueue(url)
-       res = await task.result(5)
-       return res.success
+       try:
+           res = await task.result(5)
+       except TimeoutError as e:
+           raise HTTPException(
+               status_code=status.HTTP_408_REQUEST_TIMEOUT, detail="Timed out!"
+           )
+       if not res.success:
+           raise HTTPException(
+               status_code=status.HTTP_424_FAILED_DEPENDENCY, detail="Task failed!"
+           )
+       return res.result
 
-Here, we're building off of the ``fetch`` task defined in :doc:`Getting started <getting-started>`. But what if the backend doesn't have access to the task definitions?
+Here, we're building off of the ``fetch`` task defined in :doc:`Getting started <getting-started>`. As you can imagine, integrating with other frameworks should be very similar!
 
 Separating enqueuing from task definitions
 ------------------------------------------

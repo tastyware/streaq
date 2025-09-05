@@ -1244,11 +1244,11 @@ class Worker(Generic[C]):
             fn_name=data["f"],
             enqueue_time=data["et"],
             success=data["s"],
-            result=data["r"],
             start_time=data["st"],
             finish_time=data["ft"],
             tries=data["t"],
             worker_id=data["w"],
+            _result=data["r"],
         )
 
     async def abort_by_id(
