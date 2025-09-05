@@ -78,11 +78,29 @@ class TaskResult(Generic[R]):
     fn_name: str
     enqueue_time: int
     success: bool
-    result: R | Exception
     start_time: int
     finish_time: int
     tries: int
     worker_id: str
+    _result: R | BaseException
+
+    @property
+    def result(self) -> R:
+        if not self.success:
+            raise StreaqError(
+                "Can't access result for a failed task, use TaskResult.exception "
+                "instead!"
+            )
+        return self._result  # type: ignore
+
+    @property
+    def exception(self) -> BaseException:
+        if self.success:
+            raise StreaqError(
+                "Can't access exception for a successful task, use TaskResult.result "
+                "instead!"
+            )
+        return self._result  # type: ignore
 
 
 @dataclass

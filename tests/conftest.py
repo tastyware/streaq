@@ -7,16 +7,10 @@ from testcontainers.redis import RedisContainer
 from streaq import Worker
 
 
-@fixture(scope="module")
-def anyio_backend() -> str:
-    return "asyncio"
-
-
 @fixture(scope="session")
 def redis_container() -> Generator[RedisContainer, Any, None]:
     with RedisContainer() as container:
         yield container
-        container.get_client().flushdb()
 
 
 @fixture(scope="session")

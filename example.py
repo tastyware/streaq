@@ -1,4 +1,4 @@
-import asyncio
+from anyio import run, sleep
 
 from streaq import Worker
 
@@ -7,7 +7,7 @@ worker = Worker(redis_url="redis://localhost:6379")
 
 @worker.task()
 async def sleeper(time: int) -> int:
-    await asyncio.sleep(time)
+    await sleep(time)
     return time
 
 
@@ -25,4 +25,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run(main)

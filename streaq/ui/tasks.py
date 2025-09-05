@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -20,6 +19,7 @@ from pydantic import BaseModel
 from streaq import TaskStatus, Worker
 from streaq.constants import REDIS_RESULT, REDIS_RUNNING, REDIS_TASK
 from streaq.ui.deps import get_worker, templates
+from streaq.utils import gather
 
 router = APIRouter()
 
@@ -54,14 +54,14 @@ async def _get_context(
         pipe.keys(worker.prefix + REDIS_TASK + "*"),
     )
     await pipe.execute()
-    _stream, _results, _running, _data = await asyncio.gather(*commands)
+    _stream, _results, _running, _data = await gather(*commands)
     stream: set[str] = (
         set(t.field_values["task_id"] for v in _stream.values() for t in v)  # type: ignore
         if _stream
         else set()
     )
     queue: set[str] = set()
-    for r in await asyncio.gather(*delayed):
+    for r in await gather(*delayed):
         queue |= set(r)
     results = set(r.split(":")[-1] for r in _results)
     running = set(r.split(":")[-1] for r in _running)
