@@ -170,7 +170,7 @@ class Task(Generic[R]):
         data = self.serialize(enqueue_time)
         _priority = self.priority or self.parent.worker.priorities[-1]
         expire = to_ms(self.parent.expire or 0)
-        if not await self.parent.worker.publish_task(
+        if not await self.parent.worker.scripts["publish_task"](
             keys=[
                 self.parent.worker.stream_key,
                 self.parent.worker.queue_key,

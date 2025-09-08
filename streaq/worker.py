@@ -166,13 +166,8 @@ class Worker(Generic[C]):
         "signing_secret",
         "_task_context",
         "priorities",
-        "create_groups",
-        "publish_task",
-        "publish_delayed_tasks",
-        "fail_dependents",
-        "update_dependents",
-        "read_streams",
         "_cancelled_class",
+        "scripts",
     )
 
     def __init__(
@@ -195,6 +190,8 @@ class Worker(Generic[C]):
         signing_secret: str | None = None,
         idle_timeout: timedelta | int = 300,
     ):
+        #: Redis Lua scripts
+        self.scripts: dict[str, Script[str]] = {}
         # Redis connection
         redis_kwargs = redis_kwargs or {}
         if redis_kwargs.pop("decode_responses", None) is not None:
@@ -213,15 +210,19 @@ class Worker(Generic[C]):
         # register lua scripts
         root = Path(__file__).parent / "lua"
 
-        def register(name: str) -> Script[str]:
-            return self.redis.register_script((root / name).read_text())
+        def register(name: str) -> None:
+            path = root / f"{name}.lua"
+            self.scripts[name] = self.redis.register_script(path.read_text())
 
-        self.create_groups = register("create_groups.lua")
-        self.publish_task = register("publish_task.lua")
-        self.publish_delayed_tasks = register("publish_delayed_tasks.lua")
-        self.fail_dependents = register("fail_dependents.lua")
-        self.update_dependents = register("update_dependents.lua")
-        self.read_streams = register("read_streams.lua")
+        for lua_file in [
+            "create_groups",
+            "publish_task",
+            "publish_delayed_tasks",
+            "fail_dependents",
+            "update_dependents",
+            "read_streams",
+        ]:
+            register(lua_file)
         # user-facing properties
         self.concurrency = concurrency
         self.queue_name = queue_name
@@ -482,7 +483,7 @@ class Worker(Generic[C]):
         start_time = now_ms()
         self._cancelled_class = get_cancelled_exc_class()
         # create consumer group if it doesn't exist
-        await self.create_groups(
+        await self.scripts["create_groups"](
             keys=[self.stream_key, self._group_name],
             args=self.priorities,  # type: ignore
         )
@@ -560,7 +561,7 @@ class Worker(Generic[C]):
                 # Fetch new messages
                 if count > 0:
                     # non-blocking, priority ordered first
-                    res = await self.read_streams(
+                    res = await self.scripts["read_streams"](
                         keys=[self.stream_key, self._group_name, self.id],
                         args=[count, self.idle_timeout, *self.priorities],
                     )
@@ -589,7 +590,7 @@ class Worker(Generic[C]):
                             )
                 # schedule delayed tasks
                 pipe = await self.redis.pipeline(transaction=False)
-                self.publish_delayed_tasks(
+                self.scripts["publish_delayed_tasks"](
                     keys=[self.queue_key, self.stream_key],
                     args=[now_ms(), *self.priorities],
                     client=pipe,
@@ -689,7 +690,7 @@ class Worker(Generic[C]):
         pipe.xdel(stream_key, [msg.message_id])
         if raw is not None and ttl:
             pipe.set(key(REDIS_RESULT), raw, ex=ttl)
-        command = self.fail_dependents(
+        command = self.scripts["fail_dependents"](
             keys=[
                 self.prefix + REDIS_DEPENDENTS,
                 self.prefix + REDIS_DEPENDENCIES,
@@ -766,9 +767,9 @@ class Worker(Generic[C]):
                 if triggers:
                     args = self.serialize(to_tuple(return_value))
                     pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
-                script = self.update_dependents
+                script = self.scripts["update_dependents"]
             else:
-                script = self.fail_dependents
+                script = self.scripts["fail_dependents"]
             command = script(
                 keys=[
                     self.prefix + REDIS_DEPENDENTS,
@@ -1125,7 +1126,7 @@ class Worker(Generic[C]):
             data = task.serialize(enqueue_time)
             _priority = task.priority or self.priorities[-1]
             expire = to_ms(task.parent.expire or 0)
-            self.publish_task(
+            self.scripts["publish_task"](
                 keys=[
                     self.stream_key,
                     self.queue_key,
@@ -1274,7 +1275,7 @@ class Worker(Generic[C]):
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
             return not result.success and isinstance(
-                result.result, get_cancelled_exc_class()
+                result.exception, get_cancelled_exc_class()
             )
         except TimeoutError:
             return False

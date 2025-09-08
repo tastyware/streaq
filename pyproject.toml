@@ -15,7 +15,7 @@ exclude = ["**/__pycache__/**"]
 
 [project]
 name = "streaq"
-description = "Fast, async, type-safe job queuing with Redis streams"
+description = "Fast, async, fully-typed distributed task queue via Redis streams"
 readme = "README.md"
 classifiers = [
     "Development Status :: 5 - Production/Stable",

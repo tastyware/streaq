@@ -285,7 +285,7 @@ async def test_corrupt_signed_data(redis_url: str):
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         res = await task.result(5)
-        assert not res.success and isinstance(res.result, StreaqError)
+        assert not res.success and isinstance(res.exception, StreaqError)
         tg.cancel_scope.cancel()
 
 

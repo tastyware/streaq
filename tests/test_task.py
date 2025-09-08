@@ -46,7 +46,7 @@ async def test_task_timeout(worker: Worker):
         tg.start_soon(worker.run_async)
         res = await task.result(3)
         assert not res.success
-        assert isinstance(res.result, TimeoutError)
+        assert isinstance(res.exception, TimeoutError)
         tg.cancel_scope.cancel()
 
 
@@ -183,7 +183,7 @@ async def test_task_failure(worker: Worker):
         tg.start_soon(worker.run_async)
         res = await task.result(3)
         assert not res.success
-        assert isinstance(res.result, Exception)
+        assert isinstance(res.exception, Exception)
         tg.cancel_scope.cancel()
 
 
@@ -215,7 +215,7 @@ async def test_task_max_retries(worker: Worker):
         res = await task.result(3)
         assert res is not None
         assert not res.success
-        assert isinstance(res.result, StreaqError)
+        assert isinstance(res.exception, StreaqError)
         tg.cancel_scope.cancel()
 
 
@@ -299,7 +299,7 @@ async def test_task_dependency_failed(worker: Worker):
         tg.start_soon(worker.run_async)
         res = await dep.result(3)
         assert not res.success
-        assert isinstance(res.result, StreaqError)
+        assert isinstance(res.exception, StreaqError)
         tg.cancel_scope.cancel()
 
 
@@ -350,8 +350,8 @@ async def test_chained_failed_dependencies(worker: Worker):
         assert await task.abort(3)
         res1 = await dep1.result(3)
         res2 = await dep2.result(3)
-        assert not res1.success and isinstance(res1.result, StreaqError)
-        assert not res2.success and isinstance(res2.result, StreaqError)
+        assert not res1.success and isinstance(res1.exception, StreaqError)
+        assert not res2.success and isinstance(res2.exception, StreaqError)
         tg.cancel_scope.cancel()
 
 
@@ -417,8 +417,10 @@ async def test_enqueue_unique_task(worker: Worker):
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         results = await gather(task.result(), task2.result())
-        assert any(isinstance(r.result, StreaqError) for r in results)
-        assert any(r.result is None for r in results)
+        assert any(
+            not r.success and isinstance(r.exception, StreaqError) for r in results
+        )
+        assert any(r.success and r.result is None for r in results)
         tg.cancel_scope.cancel()
 
 
@@ -589,5 +591,5 @@ async def test_task_expired(worker: Worker):
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         res = await task.result(3)
-        assert not res.success and isinstance(res.result, StreaqError)
+        assert not res.success and isinstance(res.exception, StreaqError)
         tg.cancel_scope.cancel()
