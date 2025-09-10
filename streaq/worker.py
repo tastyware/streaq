@@ -122,6 +122,7 @@ class Worker(Generic[C]):
     :param idle_timeout:
         the amount of time to wait before re-enqueuing idle tasks (either prefetched
         tasks that don't run, or running tasks that become unresponsive)
+    :param trio: whether to use Trio instead of asyncio to run the worker
     """
 
     _worker_context: C
@@ -144,6 +145,7 @@ class Worker(Generic[C]):
         "_running_tasks",
         "tz",
         "burst",
+        "trio",
         "_handle_signals",
         "_block_new_tasks",
         "lifespan",
@@ -189,6 +191,7 @@ class Worker(Generic[C]):
         health_crontab: str = "*/5 * * * *",
         signing_secret: str | None = None,
         idle_timeout: timedelta | int = 300,
+        trio: bool = False,
     ):
         #: Redis Lua scripts
         self.scripts: dict[str, Script[str]] = {}
@@ -209,12 +212,7 @@ class Worker(Generic[C]):
             )
         # register lua scripts
         root = Path(__file__).parent / "lua"
-
-        def register(name: str) -> None:
-            path = root / f"{name}.lua"
-            self.scripts[name] = self.redis.register_script(path.read_text())
-
-        for lua_file in [
+        for name in [
             "create_groups",
             "publish_task",
             "publish_delayed_tasks",
@@ -222,7 +220,8 @@ class Worker(Generic[C]):
             "update_dependents",
             "read_streams",
         ]:
-            register(lua_file)
+            path = root / f"{name}.lua"
+            self.scripts[name] = self.redis.register_script(path.read_text())
         # user-facing properties
         self.concurrency = concurrency
         self.queue_name = queue_name
@@ -247,6 +246,7 @@ class Worker(Generic[C]):
         self.tz = tz
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
+        self.trio = trio
         #: list of middlewares added to the worker
         self.middlewares: list[Middleware] = []
         self.signing_secret = signing_secret.encode() if signing_secret else None
@@ -472,7 +472,12 @@ class Worker(Generic[C]):
         """
         Sync function to run the worker, finally closes worker connections.
         """
-        run(self.run_async, backend_options={"use_uvloop": True})
+        print(self.trio)
+        if self.trio:
+            print("running on trio!")
+            run(self.run_async, backend="trio")
+        else:
+            run(self.run_async, backend_options={"use_uvloop": True})
 
     async def run_async(self) -> None:
         """

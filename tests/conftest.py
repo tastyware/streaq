@@ -21,5 +21,7 @@ def redis_url(redis_container: RedisContainer) -> Generator[str, None, None]:
 
 
 @fixture(scope="function")
-def worker(redis_url: str) -> Worker:
-    return Worker(redis_url=redis_url, queue_name=uuid4().hex)
+def worker(anyio_backend: str, redis_url: str) -> Worker:
+    return Worker(
+        redis_url=redis_url, queue_name=uuid4().hex, trio=(anyio_backend == "trio")
+    )
