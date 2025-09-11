@@ -9,6 +9,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
+from sys import platform
 from typing import Any, AsyncIterator, Callable, Generic, cast
 from uuid import uuid4
 
@@ -477,7 +478,8 @@ class Worker(Generic[C]):
         """
         Sync function to run the worker, finally closes worker connections.
         """
-        run(self.run_async, backend_options={"use_uvloop": True})
+        use_uvloop = platform != "win32"
+        run(self.run_async, backend_options={"use_uvloop": use_uvloop})
 
     async def run_async(self) -> None:
         """
