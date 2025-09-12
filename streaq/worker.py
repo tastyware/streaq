@@ -177,6 +177,7 @@ class Worker(Generic[C]):
         redis_url: str = "redis://localhost:6379",
         redis_sentinel_nodes: list[tuple[str, int]] | None = None,
         redis_sentinel_master: str = "mymaster",
+        sentinel_kwargs: dict[str, Any] | None = None,
         redis_kwargs: dict[str, Any] | None = None,
         concurrency: int = 16,
         sync_concurrency: int | None = None,
@@ -200,6 +201,7 @@ class Worker(Generic[C]):
             self._sentinel = Sentinel(
                 redis_sentinel_nodes,
                 decode_responses=True,
+                sentinel_kwargs=sentinel_kwargs,
                 **redis_kwargs,
             )
             self.redis = self._sentinel.primary_for(redis_sentinel_master)
