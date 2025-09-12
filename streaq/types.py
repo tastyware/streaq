@@ -48,6 +48,7 @@ class TaskContext:
     timeout: timedelta | int | None
     tries: int
     ttl: timedelta | int | None
+    is_cron: bool
 
 
 AnyCoroutine: TypeAlias = Coroutine[Any, Any, Any]

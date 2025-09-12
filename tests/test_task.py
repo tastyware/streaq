@@ -591,3 +591,45 @@ async def test_task_expired(worker: Worker):
         res = await task.result(3)
         assert not res.success and isinstance(res.result, StreaqError)
         tg.cancel_scope.cancel()
+
+
+async def test_task_context_is_non_cron(worker: Worker):
+    @worker.task()
+    async def foobar() -> None:
+        pass
+
+    @worker.middleware
+    def middleware(task: ReturnCoroutine) -> ReturnCoroutine:
+        async def wrapper(*args, **kwargs) -> Any:
+            assert not worker.task_context().is_cron
+            return await task(*args, **kwargs)
+
+        return wrapper
+
+    task = await foobar.enqueue()
+
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        res = await task.result()
+        assert res.success
+        tg.cancel_scope.cancel()
+
+
+async def test_task_context_is_cron(worker: Worker):
+    @worker.cron("* * * * * * *", name="foo")
+    async def cronjob() -> None:
+        await asyncio.sleep(3)
+
+    @worker.middleware
+    def middleware(task: ReturnCoroutine) -> ReturnCoroutine:
+        async def wrapper(*args, **kwargs) -> Any:
+            assert worker.task_context().is_cron
+            return await task(*args, **kwargs)
+
+        return wrapper
+
+    async with create_task_group() as tg:
+        tg.start_soon(worker.run_async)
+        await asyncio.sleep(2)
+        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
+        tg.cancel_scope.cancel()

@@ -358,6 +358,7 @@ class Worker(Generic[C]):
             timeout=registered_task.timeout,
             tries=tries,
             ttl=registered_task.ttl,
+            is_cron=isinstance(registered_task, RegisteredCron),
         )
 
     def cron(
