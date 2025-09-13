@@ -1,4 +1,4 @@
-from typing import Any, Generator
+from typing import Any, AsyncGenerator, Generator
 from uuid import uuid4
 
 from pytest import fixture
@@ -21,7 +21,8 @@ def redis_url(redis_container: RedisContainer) -> Generator[str, None, None]:
 
 
 @fixture(scope="function")
-def worker(anyio_backend: str, redis_url: str) -> Worker:
-    return Worker(
+async def worker(anyio_backend: str, redis_url: str) -> AsyncGenerator[Worker, None]:
+    async with Worker(
         redis_url=redis_url, queue_name=uuid4().hex, trio=(anyio_backend == "trio")
-    )
+    ) as worker:
+        yield worker

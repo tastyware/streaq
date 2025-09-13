@@ -43,7 +43,8 @@ async def test_lifespan(redis_url: str):
     async def foobar() -> str:
         return worker.context.name
 
-    task = await foobar.enqueue()
+    async with worker:
+        task = await foobar.enqueue()
     async with create_task_group() as tg:
         tg.start_soon(worker.run_async)
         await sleep(1)
@@ -83,8 +84,9 @@ async def test_bad_serializer(redis_url: str):
     async def foobar() -> None:
         print("This can't print!")
 
-    with pytest.raises(StreaqError):
-        await foobar.enqueue()
+    async with worker:
+        with pytest.raises(StreaqError):
+            await foobar.enqueue()
 
 
 async def test_bad_deserializer(redis_url: str):
@@ -97,10 +99,11 @@ async def test_bad_deserializer(redis_url: str):
         print("This can't print!")
 
     worker.burst = True
-    task = await foobar.enqueue()
-    await worker.run_async()
-    with pytest.raises(StreaqError):
-        await task.result(3)
+    async with worker:
+        task = await foobar.enqueue()
+        await worker.run_async()
+        with pytest.raises(StreaqError):
+            await task.result(3)
 
 
 async def test_custom_serializer(worker: Worker):
@@ -111,9 +114,9 @@ async def test_custom_serializer(worker: Worker):
     async def foobar() -> None:
         pass
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         assert (await task.result(3)).success
         tg.cancel_scope.cancel()
 

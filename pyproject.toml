@@ -108,6 +108,7 @@ testpaths = "tests"
 
 [tool.uv.sources]
 arq = { git = "https://github.com/graeme22/arq" }
+coredis = { git = "https://github.com/Graeme22/coredis.git", rev = "anyio" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

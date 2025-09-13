@@ -9,10 +9,11 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Generic, cast
+from typing import Any, AsyncIterator, Callable, Generic, Self, cast
 from uuid import uuid4
 
 from anyio import (
+    TASK_STATUS_IGNORED,
     CancelScope,
     CapacityLimiter,
     create_memory_object_stream,
@@ -23,6 +24,7 @@ from anyio import (
     run,
     sleep,
 )
+from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
 from coredis.commands import Script
@@ -158,6 +160,7 @@ class Worker(Generic[C]):
         "_health_key",
         "_channel_key",
         "idle_timeout",
+        "_entry_count",
         "_running",
         "prefix",
         "sync_concurrency",
@@ -254,6 +257,7 @@ class Worker(Generic[C]):
         # internal objects
         self._group_name = REDIS_GROUP
         self._handle_signals = handle_signals
+        self._entry_count = 0
         self._running = False
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
@@ -279,18 +283,19 @@ class Worker(Generic[C]):
             """
             Saves Redis health in Redis.
             """
-            pipe = await self.redis.pipeline(transaction=False)
-            streams = [
-                pipe.xlen(self.stream_key + priority) for priority in self.priorities
-            ]
-            queues = [
-                pipe.zcard(self.queue_key + priority) for priority in self.priorities
-            ]
-            infos = (
-                pipe.info("Memory", "Clients"),
-                pipe.dbsize(),
-            )
-            await pipe.execute()
+            async with self.redis.pipeline(transaction=False) as pipe:
+                streams = [
+                    pipe.xlen(self.stream_key + priority)
+                    for priority in self.priorities
+                ]
+                queues = [
+                    pipe.zcard(self.queue_key + priority)
+                    for priority in self.priorities
+                ]
+                infos = (
+                    pipe.info("Memory", "Clients"),
+                    pipe.dbsize(),
+                )
             info, keys = await gather(*infos)
             mem_usage = info.get("used_memory_human", "?")
             clients = info.get("connected_clients", "?")
@@ -311,6 +316,19 @@ class Worker(Generic[C]):
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
 
+    async def __aenter__(self) -> Self:
+        # TODO: reentrancy not needed w/ tg.start()??
+        if self._entry_count == 0:
+            self._cancelled_class = get_cancelled_exc_class()
+            await self.redis.__aenter__()
+        self._entry_count += 1
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        self._entry_count -= 1
+        if self._entry_count == 0:
+            await self.redis.__aexit__(*args)
+
     def task_context(self) -> TaskContext:
         """
         Fetch task information for the currently running task.
@@ -327,7 +345,7 @@ class Worker(Generic[C]):
     @property
     def context(self) -> C:
         """
-        Worker dependencies initialized with the async context manager.
+        Worker dependencies initialized upon worker startup.
         This can only be called from within a running task or a middleware.
         """
         if not self._running:
@@ -479,23 +497,25 @@ class Worker(Generic[C]):
         else:
             run(self.run_async, backend_options={"use_uvloop": True})
 
-    async def run_async(self) -> None:
+    async def run_async(
+        self, *, task_status: AnyStatus[None] = TASK_STATUS_IGNORED
+    ) -> None:
         """
         Async function to run the worker, finally closes worker connections.
         Groups together and runs worker tasks.
         """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
         start_time = now_ms()
-        self._cancelled_class = get_cancelled_exc_class()
-        # create consumer group if it doesn't exist
-        await self.scripts["create_groups"](
-            keys=[self.stream_key, self._group_name],
-            args=self.priorities,  # type: ignore
-        )
         # run user-defined initialization code
-        async with self.lifespan as context:
+        async with self, self.lifespan as context:
             self._worker_context = context
             self._running = True
+            # create consumer group if it doesn't exist
+            await self.scripts["create_groups"](
+                keys=[self.stream_key, self._group_name],
+                args=self.priorities,  # type: ignore
+            )
+            task_status.started()
             # start tasks
             try:
                 send, receive = create_memory_object_stream[StreamMessage](
@@ -533,13 +553,16 @@ class Worker(Generic[C]):
         timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
         while True:
             await sleep(timeout)
-            pipe = await self.redis.pipeline(transaction=True)
-            for priority, tasks in self._running_tasks.items():
-                if tasks:
-                    pipe.xclaim(
-                        self.stream_key + priority, self._group_name, self.id, 0, tasks
-                    )
-            await pipe.execute()
+            async with self.redis.pipeline(transaction=True) as pipe:
+                for priority, tasks in self._running_tasks.items():
+                    if tasks:
+                        pipe.xclaim(
+                            self.stream_key + priority,
+                            self._group_name,
+                            self.id,
+                            0,
+                            tasks,
+                        )
 
     async def producer(
         self,
@@ -594,14 +617,13 @@ class Worker(Generic[C]):
                                 ]
                             )
                 # schedule delayed tasks
-                pipe = await self.redis.pipeline(transaction=False)
-                self.scripts["publish_delayed_tasks"](
-                    keys=[self.queue_key, self.stream_key],
-                    args=[now_ms(), *self.priorities],
-                    client=pipe,
-                )
-                command = pipe.smembers(self._abort_key)
-                await pipe.execute()
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    self.scripts["publish_delayed_tasks"](
+                        keys=[self.queue_key, self.stream_key],
+                        args=[now_ms(), *self.priorities],
+                        client=pipe,
+                    )
+                    command = pipe.smembers(self._abort_key)
                 aborted = await command
                 # aborted tasks
                 if aborted:
@@ -687,23 +709,22 @@ class Worker(Generic[C]):
         if not silent:
             self.counters["failed"] += 1
         stream_key = self.stream_key + msg.priority
-        pipe = await self.redis.pipeline(transaction=True)
-        pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
-        pipe.publish(self._channel_key + task_id, raw)
-        pipe.srem(self._abort_key, [task_id])
-        pipe.xack(stream_key, self._group_name, [msg.message_id])
-        pipe.xdel(stream_key, [msg.message_id])
-        if raw is not None and ttl:
-            pipe.set(key(REDIS_RESULT), raw, ex=ttl)
-        command = self.scripts["fail_dependents"](
-            keys=[
-                self.prefix + REDIS_DEPENDENTS,
-                self.prefix + REDIS_DEPENDENCIES,
-                task_id,
-            ],
-            client=pipe,
-        )
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
+            pipe.publish(self._channel_key + task_id, raw)
+            pipe.srem(self._abort_key, [task_id])
+            pipe.xack(stream_key, self._group_name, [msg.message_id])
+            pipe.xdel(stream_key, [msg.message_id])
+            if raw is not None and ttl:
+                pipe.set(key(REDIS_RESULT), raw, ex=ttl)
+            command = self.scripts["fail_dependents"](
+                keys=[
+                    self.prefix + REDIS_DEPENDENTS,
+                    self.prefix + REDIS_DEPENDENCIES,
+                    task_id,
+                ],
+                client=pipe,
+            )
         res = cast(list[str], await command)
         if res:
             await self.fail_task_dependents(res)
@@ -734,73 +755,71 @@ class Worker(Generic[C]):
             return self.prefix + mid + task_id
 
         stream_key = self.stream_key + msg.priority
-        pipe = await self.redis.pipeline(transaction=True)
-        pipe.xack(stream_key, self._group_name, [msg.message_id])
-        pipe.xdel(stream_key, [msg.message_id])
-        to_delete: list[KeyT] = [key(REDIS_RUNNING)]
-        if lock_key:
-            to_delete.append(lock_key)
-        if finish:
-            data = {
-                "f": fn_name,
-                "et": enqueue_time,
-                "s": success,
-                "r": return_value,
-                "st": start_time,
-                "ft": finish_time,
-                "t": tries,
-                "w": self.id,
-            }
-            result = self.serialize(data)
-            pipe.publish(self._channel_key + task_id, result)
-            if not silent:
-                if success:
-                    self.counters["completed"] += 1
-                else:
-                    self.counters["failed"] += 1
-            if ttl != 0:
-                pipe.set(key(REDIS_RESULT), result, ex=ttl)
-            to_delete.extend([key(REDIS_RETRY), key(REDIS_TASK)])
-            pipe.delete(to_delete)
-            pipe.srem(self._abort_key, [task_id])
-            if success:
-                output, truncate_length = str(return_value), 32
-                if len(output) > truncate_length:
-                    output = f"{output[:truncate_length]}…"
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.xack(stream_key, self._group_name, [msg.message_id])
+            pipe.xdel(stream_key, [msg.message_id])
+            to_delete: list[KeyT] = [key(REDIS_RUNNING)]
+            if lock_key:
+                to_delete.append(lock_key)
+            if finish:
+                data = {
+                    "f": fn_name,
+                    "et": enqueue_time,
+                    "s": success,
+                    "r": return_value,
+                    "st": start_time,
+                    "ft": finish_time,
+                    "t": tries,
+                    "w": self.id,
+                }
+                result = self.serialize(data)
+                pipe.publish(self._channel_key + task_id, result)
                 if not silent:
-                    logger.info(f"task {fn_name} ■ {task_id} ← {output}")
-                if triggers:
-                    args = self.serialize(to_tuple(return_value))
-                    pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
-                script = self.scripts["update_dependents"]
+                    if success:
+                        self.counters["completed"] += 1
+                    else:
+                        self.counters["failed"] += 1
+                if ttl != 0:
+                    pipe.set(key(REDIS_RESULT), result, ex=ttl)
+                to_delete.extend([key(REDIS_RETRY), key(REDIS_TASK)])
+                pipe.delete(to_delete)
+                pipe.srem(self._abort_key, [task_id])
+                if success:
+                    output, truncate_length = str(return_value), 32
+                    if len(output) > truncate_length:
+                        output = f"{output[:truncate_length]}…"
+                    if not silent:
+                        logger.info(f"task {fn_name} ■ {task_id} ← {output}")
+                    if triggers:
+                        args = self.serialize(to_tuple(return_value))
+                        pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
+                    script = self.scripts["update_dependents"]
+                else:
+                    script = self.scripts["fail_dependents"]
+                command = script(
+                    keys=[
+                        self.prefix + REDIS_DEPENDENTS,
+                        self.prefix + REDIS_DEPENDENCIES,
+                        task_id,
+                    ],
+                    client=pipe,
+                )
+            elif schedule:
+                if not silent:
+                    self.counters["retried"] += 1
+                pipe.delete(to_delete)
+                pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
             else:
-                script = self.scripts["fail_dependents"]
-            command = script(
-                keys=[
-                    self.prefix + REDIS_DEPENDENTS,
-                    self.prefix + REDIS_DEPENDENCIES,
-                    task_id,
-                ],
-                client=pipe,
-            )
-        elif schedule:
-            if not silent:
-                self.counters["retried"] += 1
-            pipe.delete(to_delete)
-            pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
-        else:
-            if not silent:
-                self.counters["retried"] += 1
-            pipe.delete(to_delete)
-            pipe.xadd(stream_key, {"task_id": task_id})
-        await pipe.execute()
+                if not silent:
+                    self.counters["retried"] += 1
+                pipe.delete(to_delete)
+                pipe.xadd(stream_key, {"task_id": task_id})
         if finish and (res := cast(list[str], await command)):  # type: ignore
             if success:
-                pipe = await self.redis.pipeline(transaction=False)
-                for dep_id in res:
-                    logger.info(f"↳ dependent {dep_id} triggered")
-                    pipe.xadd(stream_key, {"task_id": dep_id})
-                await pipe.execute()
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    for dep_id in res:
+                        logger.info(f"↳ dependent {dep_id} triggered")
+                        pipe.xadd(stream_key, {"task_id": dep_id})
             else:
                 await self.fail_task_dependents(res)
 
@@ -825,21 +844,20 @@ class Worker(Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        pipe = await self.redis.pipeline(transaction=True)
-        commands = (
-            pipe.get(key(REDIS_TASK)),
-            pipe.incr(key(REDIS_RETRY)),
-            pipe.srem(self._abort_key, [task_id]),
-            pipe.xclaim(
-                self.stream_key + msg.priority,
-                self._group_name,
-                self.id,
-                0,
-                [msg.message_id],
-                justid=True,
-            ),
-        )
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=True) as pipe:
+            commands = (
+                pipe.get(key(REDIS_TASK)),
+                pipe.incr(key(REDIS_RETRY)),
+                pipe.srem(self._abort_key, [task_id]),
+                pipe.xclaim(
+                    self.stream_key + msg.priority,
+                    self._group_name,
+                    self.id,
+                    0,
+                    [msg.message_id],
+                    justid=True,
+                ),
+            )
         raw, task_try, abort, active = await gather(*commands)
         if not raw:
             logger.warning(f"task † {task_id} expired")
@@ -900,18 +918,17 @@ class Worker(Generic[C]):
             None if task.timeout is None else start_time + 1000 + to_ms(task.timeout)
         )
         after = data.get("A")
-        pipe = await self.redis.pipeline(transaction=True)
-        if task.unique:
-            lock_key = self.prefix + REDIS_UNIQUE + fn_name
-            locked = pipe.set(
-                lock_key, task_id, get=True, condition=PureToken.NX, pxat=timeout
-            )
-        else:
-            lock_key = None
-        pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
-        if after:
-            previous = pipe.get(self.prefix + REDIS_PREVIOUS + after)
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=True) as pipe:
+            if task.unique:
+                lock_key = self.prefix + REDIS_UNIQUE + fn_name
+                locked = pipe.set(
+                    lock_key, task_id, get=True, condition=PureToken.NX, pxat=timeout
+                )
+            else:
+                lock_key = None
+            pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
+            if after:
+                previous = pipe.get(self.prefix + REDIS_PREVIOUS + after)
         if task.unique:
             existing = cast(str | None, await locked)  # type: ignore
             # allow retries of the same task but not new ones
@@ -1059,16 +1076,15 @@ class Worker(Generic[C]):
             "w": self.id,
         }
         result = self.serialize(failure)
-        pipe = await self.redis.pipeline(transaction=False)
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
-        for dep_id in dependents:
-            logger.info(f"task dependent × {dep_id} failed")
-            to_delete.append(self.prefix + REDIS_TASK + dep_id)
-            pipe.set(self.results_key + dep_id, result, ex=300)
-            pipe.publish(self._channel_key + dep_id, result)
-        pipe.delete(to_delete)
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=False) as pipe:
+            for dep_id in dependents:
+                logger.info(f"task dependent × {dep_id} failed")
+                to_delete.append(self.prefix + REDIS_TASK + dep_id)
+                pipe.set(self.results_key + dep_id, result, ex=300)
+                pipe.publish(self._channel_key + dep_id, result)
+            pipe.delete(to_delete)
 
     def enqueue_unsafe(
         self,
@@ -1118,42 +1134,40 @@ class Worker(Generic[C]):
 
         """
         enqueue_time = now_ms()
-        pipe = await self.redis.pipeline(transaction=False)
-        for task in tasks:
-            if task._after:  # type: ignore
-                task.after.append(task._after.id)  # type: ignore
-            if task.schedule:
-                score = datetime_ms(task.schedule)
-            elif task.delay is not None:
-                score = enqueue_time + to_ms(task.delay)
-            else:
-                score = 0
-            data = task.serialize(enqueue_time)
-            _priority = task.priority or self.priorities[-1]
-            expire = to_ms(task.parent.expire or 0)
-            self.scripts["publish_task"](
-                keys=[
-                    self.stream_key,
-                    self.queue_key,
-                    task.task_key(REDIS_TASK),
-                    self.dependents_key,
-                    self.dependencies_key,
-                    self.results_key,
-                ],
-                args=[task.id, data, _priority, score, expire] + task.after,
-                client=pipe,
-            )
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=False) as pipe:
+            for task in tasks:
+                if task._after:  # type: ignore
+                    task.after.append(task._after.id)  # type: ignore
+                if task.schedule:
+                    score = datetime_ms(task.schedule)
+                elif task.delay is not None:
+                    score = enqueue_time + to_ms(task.delay)
+                else:
+                    score = 0
+                data = task.serialize(enqueue_time)
+                _priority = task.priority or self.priorities[-1]
+                expire = to_ms(task.parent.expire or 0)
+                self.scripts["publish_task"](
+                    keys=[
+                        self.stream_key,
+                        self.queue_key,
+                        task.task_key(REDIS_TASK),
+                        self.dependents_key,
+                        self.dependencies_key,
+                        self.results_key,
+                    ],
+                    args=[task.id, data, _priority, score, expire] + task.after,
+                    client=pipe,
+                )
 
     async def queue_size(self) -> int:
         """
         Returns the number of tasks currently queued in Redis.
         """
-        pipe = await self.redis.pipeline(transaction=True)
-        commands = [
-            pipe.xlen(self.stream_key + priority) for priority in self.priorities
-        ] + [pipe.zcard(self.queue_key + priority) for priority in self.priorities]
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=True) as pipe:
+            commands = [
+                pipe.xlen(self.stream_key + priority) for priority in self.priorities
+            ] + [pipe.zcard(self.queue_key + priority) for priority in self.priorities]
         return sum(await gather(*commands))
 
     @property
@@ -1201,18 +1215,17 @@ class Worker(Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        pipe = await self.redis.pipeline(transaction=True)
-        delayed = [
-            pipe.zscore(self.queue_key + priority, task_id)
-            for priority in self.priorities
-        ]
-        commands = (
-            pipe.exists([key(REDIS_RESULT)]),
-            pipe.exists([key(REDIS_RUNNING)]),
-            pipe.exists([key(REDIS_TASK)]),
-            pipe.exists([key(REDIS_DEPENDENCIES)]),
-        )
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=True) as pipe:
+            delayed = [
+                pipe.zscore(self.queue_key + priority, task_id)
+                for priority in self.priorities
+            ]
+            commands = (
+                pipe.exists([key(REDIS_RESULT)]),
+                pipe.exists([key(REDIS_RUNNING)]),
+                pipe.exists([key(REDIS_TASK)]),
+                pipe.exists([key(REDIS_DEPENDENCIES)]),
+            )
         done, running, data, dependencies = await gather(*commands)
 
         if done:
@@ -1280,7 +1293,7 @@ class Worker(Generic[C]):
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
             return not result.success and isinstance(
-                result.exception, get_cancelled_exc_class()
+                result.exception, self._cancelled_class
             )
         except TimeoutError:
             return False
@@ -1297,19 +1310,18 @@ class Worker(Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        pipe = await self.redis.pipeline(transaction=False)
-        delayed = [
-            pipe.zscore(self.queue_key + priority, task_id)
-            for priority in self.priorities
-        ]
-        commands = (
-            pipe.get(key(REDIS_RESULT)),
-            pipe.get(key(REDIS_TASK)),
-            pipe.get(key(REDIS_RETRY)),
-            pipe.smembers(key(REDIS_DEPENDENCIES)),
-            pipe.smembers(key(REDIS_DEPENDENTS)),
-        )
-        await pipe.execute()
+        async with self.redis.pipeline(transaction=False) as pipe:
+            delayed = [
+                pipe.zscore(self.queue_key + priority, task_id)
+                for priority in self.priorities
+            ]
+            commands = (
+                pipe.get(key(REDIS_RESULT)),
+                pipe.get(key(REDIS_TASK)),
+                pipe.get(key(REDIS_RETRY)),
+                pipe.smembers(key(REDIS_DEPENDENCIES)),
+                pipe.smembers(key(REDIS_DEPENDENTS)),
+            )
         result, raw, try_count, dependencies, dependents = await gather(*commands)
         if result or not raw:  # if result exists or task data doesn't
             return None
