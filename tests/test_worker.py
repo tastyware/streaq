@@ -43,11 +43,9 @@ async def test_lifespan(redis_url: str):
     async def foobar() -> str:
         return worker.context.name
 
-    async with worker:
-        task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
-        await sleep(1)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(3)
         assert res.success and res.result == NAME_STR
         tg.cancel_scope.cancel()

@@ -9,11 +9,12 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Generic, Self, cast
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, Self, cast
 from uuid import uuid4
 
 from anyio import (
     TASK_STATUS_IGNORED,
+    AsyncContextManagerMixin,
     CancelScope,
     CapacityLimiter,
     create_memory_object_stream,
@@ -95,7 +96,7 @@ async def _lifespan() -> AsyncIterator[None]:
 async def _placeholder() -> None: ...
 
 
-class Worker(Generic[C]):
+class Worker(AsyncContextManagerMixin, Generic[C]):
     """
     Worker object that fetches and executes tasks from a queue.
 
@@ -160,7 +161,6 @@ class Worker(Generic[C]):
         "_health_key",
         "_channel_key",
         "idle_timeout",
-        "_entry_count",
         "_running",
         "prefix",
         "sync_concurrency",
@@ -257,7 +257,6 @@ class Worker(Generic[C]):
         # internal objects
         self._group_name = REDIS_GROUP
         self._handle_signals = handle_signals
-        self._entry_count = 0
         self._running = False
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
@@ -316,18 +315,11 @@ class Worker(Generic[C]):
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
 
-    async def __aenter__(self) -> Self:
-        # TODO: reentrancy not needed w/ tg.start()??
-        if self._entry_count == 0:
+    @asynccontextmanager
+    async def __asynccontextmanager__(self) -> AsyncGenerator[Self]:
+        async with self.redis:
             self._cancelled_class = get_cancelled_exc_class()
-            await self.redis.__aenter__()
-        self._entry_count += 1
-        return self
-
-    async def __aexit__(self, *args: Any) -> None:
-        self._entry_count -= 1
-        if self._entry_count == 0:
-            await self.redis.__aexit__(*args)
+            yield self
 
     def task_context(self) -> TaskContext:
         """
@@ -490,9 +482,7 @@ class Worker(Generic[C]):
         """
         Sync function to run the worker, finally closes worker connections.
         """
-        print(self.trio)
         if self.trio:
-            print("running on trio!")
             run(self.run_async, backend="trio")
         else:
             run(self.run_async, backend_options={"use_uvloop": True})
