@@ -9,7 +9,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, Self, cast
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, cast
 from uuid import uuid4
 
 from anyio import (
@@ -33,6 +33,7 @@ from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
 from crontab import CronTab
+from typing_extensions import Self
 
 from streaq import logger
 from streaq.constants import (
@@ -77,6 +78,7 @@ from streaq.types import (
     TaskDefinition,
 )
 from streaq.utils import (
+    StreaqCancelled,
     StreaqError,
     asyncify,
     datetime_ms,
@@ -193,7 +195,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         handle_signals: bool = True,
         health_crontab: str = "*/5 * * * *",
         signing_secret: str | None = None,
-        idle_timeout: timedelta | int = 300,
+        idle_timeout: timedelta | int = 60,
         trio: bool = False,
     ):
         #: Redis Lua scripts
@@ -881,7 +883,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 logger.info(f"task {fn_name} ⊘ {task_id} aborted prior to run")
             return await self.finish_failed_task(
                 msg,
-                self._cancelled_class("Task aborted prior to run!"),
+                StreaqCancelled("Task aborted prior to run!"),
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=fn_name,
@@ -948,10 +950,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         Execute the registered task, then store the result in Redis.
         """
-        res = None
-        with CancelScope(shield=True):
-            res = await self.prepare_task(msg)
-        if not res:
+        if not (res := await self.prepare_task(msg)):
             return
         task, data, task_try, _args, lock_key = res
 
@@ -977,13 +976,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         result: Any = None
         try:
             if self._block_new_tasks:
-                raise self._cancelled_class("Not running task, worker shut down!")
+                raise StreaqCancelled("Not running task, worker shut down!")
             with CancelScope() as scope:
                 self._cancel_scopes[task_id] = scope
                 self._running_tasks[msg.priority].add(msg.message_id)
                 result = await wrapped(*_args, **data["k"])
             if scope.cancelled_caught:
-                result = self._cancelled_class("Task aborted by user!")
+                result = StreaqCancelled("Task aborted by user!")
                 success = False
                 done = True
                 if not task.silent:
@@ -1028,27 +1027,26 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 logger.exception(f"Task {task_id} failed!")
                 logger.info(f"task {task.fn_name} × {task_id} failed")
         finally:
-            with CancelScope(shield=True):
-                finish_time = now_ms()
-                self._cancel_scopes.pop(task_id, None)
-                self._running_tasks[msg.priority].remove(msg.message_id)
-                await self.finish_task(
-                    msg,
-                    finish=done,
-                    schedule=schedule,
-                    return_value=result,
-                    start_time=start_time,
-                    finish_time=finish_time or now_ms(),
-                    enqueue_time=data["t"],
-                    fn_name=data["f"],
-                    success=success,
-                    silent=task.silent,
-                    ttl=task.ttl,
-                    triggers=data.get("T"),
-                    lock_key=lock_key,
-                    tries=task_try,
-                )
-                self._task_context.reset(token)
+            finish_time = now_ms()
+            self._cancel_scopes.pop(task_id, None)
+            self._running_tasks[msg.priority].remove(msg.message_id)
+            await self.finish_task(
+                msg,
+                finish=done,
+                schedule=schedule,
+                return_value=result,
+                start_time=start_time,
+                finish_time=finish_time or now_ms(),
+                enqueue_time=data["t"],
+                fn_name=data["f"],
+                success=success,
+                silent=task.silent,
+                ttl=task.ttl,
+                triggers=data.get("T"),
+                lock_key=lock_key,
+                tries=task_try,
+            )
+            self._task_context.reset(token)
 
     async def fail_task_dependents(self, dependents: list[str]) -> None:
         """
@@ -1241,11 +1239,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :return: wrapped result object
         """
         result_key = self.results_key + task_id
-        async with self.redis.pubsub(
-            channels=[self._channel_key + task_id], ignore_subscribe_messages=True
-        ) as pubsub:
-            if not (raw := await self.redis.get(result_key)):
-                with fail_after(to_seconds(timeout)):
+        with fail_after(to_seconds(timeout)):
+            async with self.redis.pubsub(
+                channels=[self._channel_key + task_id], ignore_subscribe_messages=True
+            ) as pubsub:
+                if not (raw := await self.redis.get(result_key)):
                     msg = await pubsub.__anext__()
                     raw = msg["data"]  # type: ignore
         data = self.deserialize(raw)
@@ -1282,9 +1280,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return False
         try:
             result = await self.result_by_id(task_id, timeout=timeout)
-            return not result.success and isinstance(
-                result.exception, self._cancelled_class
-            )
+            return not result.success and isinstance(result.exception, StreaqCancelled)
         except TimeoutError:
             return False
 

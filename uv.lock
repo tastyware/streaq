@@ -293,8 +293,8 @@ wheels = [
 
 [[package]]
 name = "coredis"
-version = "5.0.1.post0.dev17"
-source = { git = "https://github.com/Graeme22/coredis.git?rev=anyio#b26a26b29cecf856748093495688349b06289a9e" }
+version = "5.0.1.post0.dev21"
+source = { editable = "../coredis" }
 dependencies = [
     { name = "anyio" },
     { name = "beartype" },
@@ -303,6 +303,19 @@ dependencies = [
     { name = "pympler" },
     { name = "typing-extensions" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiobotocore", marker = "extra == 'recipes'", specifier = ">=2.15.2" },
+    { name = "anyio", specifier = ">=4.10.0" },
+    { name = "asyncache", marker = "extra == 'recipes'", specifier = ">=0.3.1" },
+    { name = "beartype", specifier = ">=0.20" },
+    { name = "deprecated", specifier = ">=1.2" },
+    { name = "packaging", specifier = ">=21,<26" },
+    { name = "pympler", specifier = ">1,<2" },
+    { name = "typing-extensions", specifier = ">=4.13" },
+]
+provides-extras = ["recipes"]
 
 [[package]]
 name = "coverage"
@@ -1720,7 +1733,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.10.0" },
     { name = "arq", marker = "extra == 'benchmark'", git = "https://github.com/graeme22/arq" },
     { name = "async-lru", marker = "extra == 'web'", specifier = ">=2.0.5" },
-    { name = "coredis", git = "https://github.com/Graeme22/coredis.git?rev=anyio" },
+    { name = "coredis", editable = "../coredis" },
     { name = "crontab", specifier = ">=1.0.5" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.116.1" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1.6" },

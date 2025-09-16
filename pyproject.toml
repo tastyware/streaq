@@ -56,7 +56,7 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.10.0",
-    "coredis>=5.0.1",
+    "coredis",
     "crontab>=1.0.5",
     "typer>=0.16.1",
     "uvloop>=0.21.0; sys_platform != 'win32'",
@@ -108,7 +108,7 @@ testpaths = "tests"
 
 [tool.uv.sources]
 arq = { git = "https://github.com/graeme22/arq" }
-coredis = { git = "https://github.com/Graeme22/coredis.git", rev = "anyio" }
+coredis = { path = "../coredis", editable = true }
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

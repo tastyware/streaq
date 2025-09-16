@@ -29,16 +29,14 @@ async def test_get_pages(worker: Worker):
     async def _get_worker():
         yield worker
 
-    # queue up some tasks
-    scheduled = await sleeper.enqueue(10).start(delay=5)
-    done = await sleeper.enqueue(0)
-    running = await sleeper.enqueue(10)
-    queued = await sleeper.enqueue(10)
-
     app.dependency_overrides[get_worker] = _get_worker
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
-        await sleep(2)
+        await tg.start(worker.run_async)
+        # queue up some tasks
+        scheduled = await sleeper.enqueue(10).start(delay=5)
+        done = await sleeper.enqueue(0)
+        running = await sleeper.enqueue(10)
+        queued = await sleeper.enqueue(10)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:

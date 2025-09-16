@@ -15,6 +15,10 @@ class StreaqError(Exception):
     pass
 
 
+class StreaqCancelled(StreaqError):
+    pass
+
+
 class TimezoneFormatter(Formatter):
     def __init__(
         self,

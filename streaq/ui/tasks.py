@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Annotated, Any
 
-from async_lru import alru_cache
 from fastapi import (
     APIRouter,
     Depends,
@@ -35,7 +34,6 @@ class TaskData(BaseModel):
     url: str
 
 
-@alru_cache(ttl=1)
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:

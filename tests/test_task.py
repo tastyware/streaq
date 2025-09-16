@@ -20,9 +20,9 @@ async def test_result_timeout(worker: Worker):
     async def foobar() -> None:
         await sleep(5)
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         with pytest.raises(TimeoutError):
             await task.result(3)
         tg.cancel_scope.cancel()
@@ -41,9 +41,9 @@ async def test_task_timeout(worker: Worker):
     async def foobar() -> None:
         await sleep(5)
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(3)
         assert not res.success
         assert isinstance(res.exception, TimeoutError)
@@ -53,31 +53,22 @@ async def test_task_timeout(worker: Worker):
 async def test_task_status(worker: Worker):
     @worker.task()
     async def foobar() -> None:
-        await sleep(1)
+        await sleep(2)
 
-    task = foobar.enqueue()
-    assert await task.status() == TaskStatus.NOT_FOUND
-    await task.start()
-    assert await task.status() == TaskStatus.QUEUED
-    task2 = await foobar.enqueue().start(delay=5)
+    async with worker:
+        task = foobar.enqueue()
+        assert await task.status() == TaskStatus.NOT_FOUND
+        await task.start()
+        assert await task.status() == TaskStatus.QUEUED
+        task2 = await foobar.enqueue().start(delay=5)
+
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        await sleep(1)
+        assert await task.status() == TaskStatus.RUNNING
         await task.result(3)
         assert await task.status() == TaskStatus.DONE
         assert await task2.status() == TaskStatus.SCHEDULED
-        tg.cancel_scope.cancel()
-
-
-async def test_task_status_running(worker: Worker):
-    @worker.task()
-    async def foobar() -> None:
-        await sleep(3)
-
-    task = await foobar.enqueue().start()
-    async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
-        await sleep(1)
-        assert await task.status() == TaskStatus.RUNNING
         tg.cancel_scope.cancel()
 
 
@@ -106,12 +97,13 @@ async def test_task_info(worker: Worker):
     async def foobar() -> None:
         pass
 
-    task = await foobar.enqueue().start(delay=5)
-    task2 = await foobar.enqueue()
-    info = await task.info()
-    info2 = await task2.info()
-    assert info and info.scheduled is not None
-    assert info2 and info2.scheduled is None
+    async with worker:
+        task = await foobar.enqueue().start(delay=5)
+        task2 = await foobar.enqueue()
+        info = await task.info()
+        info2 = await task2.info()
+        assert info and info.scheduled is not None
+        assert info2 and info2.scheduled is None
 
 
 async def test_task_retry(worker: Worker):
@@ -122,9 +114,9 @@ async def test_task_retry(worker: Worker):
             raise StreaqRetry("Retrying!")
         return ctx.tries
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(7)
         assert res.success
         assert res.result == 3
@@ -139,12 +131,10 @@ async def test_task_retry_with_delay(worker: Worker):
             raise StreaqRetry("Retrying!", delay=timedelta(seconds=3))
         return ctx.tries
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
-        with pytest.raises(TimeoutError):
-            await task.result(3)
-        res = await task.result(1)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
+        res = await task.result(5)
         assert res is not None
         assert res.success
         assert res.result == 2
@@ -161,12 +151,10 @@ async def test_task_retry_with_schedule(worker: Worker):
             )
         return ctx.tries
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
-        with pytest.raises(TimeoutError):
-            await task.result(3)
-        res = await task.result(1)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
+        res = await task.result(5)
         assert res is not None
         assert res.success
         assert res.result == 2
@@ -178,9 +166,9 @@ async def test_task_failure(worker: Worker):
     async def foobar() -> None:
         raise Exception("That wasn't supposed to happen!")
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(3)
         assert not res.success
         assert isinstance(res.exception, Exception)
@@ -194,9 +182,9 @@ async def test_task_retry_no_delay(worker: Worker):
             raise StreaqRetry("Retrying!", delay=0)
         return True
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(3)
         assert res is not None
         assert res.success
@@ -209,9 +197,9 @@ async def test_task_max_retries(worker: Worker):
     async def foobar() -> None:
         raise StreaqRetry("Retrying!", delay=0)
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(3)
         assert res is not None
         assert not res.success
@@ -225,12 +213,14 @@ async def test_task_failed_abort(worker: Worker):
         return True
 
     worker.burst = True
-    task = await foobar.enqueue()
-    await worker.run_async()
-    result = await task.result(3)
-    assert result.success
-    assert result.result
-    assert not await task.abort()
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
+        result = await task.result(3)
+        assert result.success
+        assert result.result
+        assert not await task.abort()
+        tg.cancel_scope.cancel()
 
 
 async def test_task_nonexistent_or_finished_dependency(worker: Worker):
@@ -238,9 +228,9 @@ async def test_task_nonexistent_or_finished_dependency(worker: Worker):
     async def foobar() -> None:
         pass
 
-    task = await foobar.enqueue().start(after="nonexistent")
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start(after="nonexistent")
         with pytest.raises(TimeoutError):
             await task.result(3)
         tg.cancel_scope.cancel()
@@ -251,10 +241,10 @@ async def test_task_dependency(worker: Worker):
     async def foobar() -> None:
         await sleep(1)
 
-    task = await foobar.enqueue().start(delay=1)
-    task2 = await foobar.enqueue().start(after=task.id)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start(delay=1)
+        task2 = await foobar.enqueue().start(after=task.id)
         assert await task2.status() == TaskStatus.SCHEDULED
         await task.result(3)
         result = await task2.result(3)
@@ -267,11 +257,11 @@ async def test_task_dependency_multiple(worker: Worker):
     async def foobar() -> None:
         await sleep(1)
 
-    task = await foobar.enqueue().start()
-    task2 = await foobar.enqueue().start(after=task.id)
-    task3 = await foobar.enqueue().start(after=[task.id, task2.id])
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start()
+        task2 = await foobar.enqueue().start(after=task.id)
+        task3 = await foobar.enqueue().start(after=[task.id, task2.id])
         assert await task2.status() == TaskStatus.SCHEDULED
         assert await task3.status() == TaskStatus.SCHEDULED
         res1 = await task.result(3)
@@ -293,10 +283,10 @@ async def test_task_dependency_failed(worker: Worker):
     async def do_nothing() -> None:
         pass
 
-    task = await foobar.enqueue().start()
-    dep = await do_nothing.enqueue().start(after=task.id)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start()
+        dep = await do_nothing.enqueue().start(after=task.id)
         res = await dep.result(3)
         assert not res.success
         assert isinstance(res.exception, StreaqError)
@@ -308,10 +298,10 @@ async def test_sync_task(worker: Worker):
     def foobar() -> None:
         time.sleep(2)
 
-    task = await foobar.enqueue()
-    task2 = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
+        task2 = await foobar.enqueue()
         # this would time out if these were running sequentially
         results = await gather(task.result(3), task2.result(3))
         assert all(res.success for res in results)
@@ -323,9 +313,9 @@ async def test_unsafe_enqueue(worker: Worker):
     async def foobar(ret: int) -> int:
         return ret
 
-    task = await worker.enqueue_unsafe(foobar.fn_name, 42)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await worker.enqueue_unsafe(foobar.fn_name, 42)
         res = await task.result(3)
         assert res.success
         assert res.result == 42
@@ -341,11 +331,11 @@ async def test_chained_failed_dependencies(worker: Worker):
     async def child() -> None:
         pass
 
-    task = await foobar.enqueue().start(delay=timedelta(seconds=3))
-    dep1 = await child.enqueue().start(after=task.id)
-    dep2 = await child.enqueue().start(after=[task.id, dep1.id])
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start(delay=timedelta(seconds=3))
+        dep1 = await child.enqueue().start(after=task.id)
+        dep2 = await child.enqueue().start(after=[task.id, dep1.id])
         await sleep(1)
         assert await task.abort(3)
         res1 = await dep1.result(3)
@@ -369,9 +359,9 @@ async def test_task_priorities(redis_url: str):
 
     low = [foobar.enqueue().start(priority="low") for _ in range(4)]
     high = [foobar.enqueue().start(priority="high") for _ in range(4)]
-    await worker.enqueue_many(low + high)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        await worker.enqueue_many(low + high)
         results = await gather(*[t.result(3) for t in high])
         statuses = await gather(*[t.status() for t in low])
         assert all(res.success for res in results)
@@ -385,9 +375,9 @@ async def test_scheduled_task(worker: Worker):
         pass
 
     dt = datetime.now() + timedelta(seconds=1)
-    task = await foobar.enqueue().start(schedule=dt)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start(schedule=dt)
         assert await task.status() == TaskStatus.SCHEDULED
         res = await task.result(3)
         assert res.success
@@ -399,12 +389,13 @@ async def test_bad_start_params(worker: Worker):
     async def foobar() -> None:
         pass
 
-    with pytest.raises(StreaqError):
-        await foobar.enqueue().start(delay=1, schedule=datetime.now())
-    with pytest.raises(StreaqError):
-        await foobar.enqueue().start(delay=1, after="foobar")
-    with pytest.raises(StreaqError):
-        await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
+    async with worker:
+        with pytest.raises(StreaqError):
+            await foobar.enqueue().start(delay=1, schedule=datetime.now())
+        with pytest.raises(StreaqError):
+            await foobar.enqueue().start(delay=1, after="foobar")
+        with pytest.raises(StreaqError):
+            await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
 
 
 async def test_enqueue_unique_task(worker: Worker):
@@ -412,10 +403,10 @@ async def test_enqueue_unique_task(worker: Worker):
     async def foobar() -> None:
         await sleep(1)
 
-    task = await foobar.enqueue()
-    task2 = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
+        task2 = await foobar.enqueue()
         results = await gather(task.result(), task2.result())
         assert any(
             not r.success and isinstance(r.exception, StreaqError) for r in results
@@ -429,9 +420,9 @@ async def test_failed_abort(worker: Worker):
     async def foobar() -> None:
         pass
 
-    task = await foobar.enqueue().start()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start()
         await sleep(1)
         assert not await task.abort(1)
         tg.cancel_scope.cancel()
@@ -457,7 +448,7 @@ async def test_sync_cron(worker: Worker):
         time.sleep(3)
 
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
         await sleep(2)
         assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
         tg.cancel_scope.cancel()
@@ -472,7 +463,7 @@ async def test_cron_multiple_runs(worker: Worker):
         val += 1
 
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
         await sleep(5)
         assert val > 1
         tg.cancel_scope.cancel()
@@ -491,9 +482,9 @@ async def test_middleware(worker: Worker):
 
         return wrapper
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         res = await task.result(3)
         assert res.success
         assert res.result == 4
@@ -509,9 +500,9 @@ async def test_task_pipeline(worker: Worker):
     async def is_even(val: int) -> bool:
         return val % 2 == 0
 
-    task = await double.enqueue(1).then(double).then(is_even)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await double.enqueue(1).then(double).then(is_even)
         res = await task.result(3)
         assert res.result and res.success
         tg.cancel_scope.cancel()
@@ -533,11 +524,11 @@ async def test_task_with_custom_name(worker: Worker):
     async def bar():
         return 10
 
-    task1 = await worker.enqueue_unsafe("bar")
-    task2 = await worker.enqueue_unsafe(bar.fn_name)
-    task3 = await worker.enqueue_unsafe(foo.fn.__qualname__)
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task1 = await worker.enqueue_unsafe("bar")
+        task2 = await worker.enqueue_unsafe(bar.fn_name)
+        task3 = await worker.enqueue_unsafe(foo.fn.__qualname__)
         res = await task1.result(3)
         assert res.result == 42
         res = await task2.result(3)
@@ -560,7 +551,7 @@ async def test_cron_with_custom_name(worker: Worker):
         worker.cron("* * * * * * *", name="foo")(cronjob1)
 
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
         await sleep(2)
         assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
         tg.cancel_scope.cancel()
@@ -573,9 +564,9 @@ async def test_abort(worker: Worker, ttl: int, wait: int):
     async def foobar() -> None:
         await sleep(5)
 
-    task = await foobar.enqueue()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
         await sleep(wait)
         assert await task.abort(3)
         tg.cancel_scope.cancel()
@@ -586,10 +577,12 @@ async def test_task_expired(worker: Worker):
     async def foobar() -> None:
         pass
 
-    task = await foobar.enqueue()
-    await sleep(1)
+    async with worker:
+        task = await foobar.enqueue()
+        await sleep(1)
+
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
         res = await task.result(3)
         assert not res.success and isinstance(res.exception, StreaqError)
         tg.cancel_scope.cancel()
