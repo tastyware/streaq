@@ -56,7 +56,7 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.10.0",
-    "coredis",
+    "coredis>=6.0.0",
     "crontab>=1.0.5",
     "typer>=0.16.1",
     "uvloop>=0.21.0; sys_platform != 'win32'",

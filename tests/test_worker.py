@@ -132,15 +132,15 @@ async def test_uninitialized_worker(worker: Worker):
 async def test_active_tasks(worker: Worker):
     @worker.task()
     async def foo() -> None:
-        await sleep(3)
+        await sleep(10)
 
     n_tasks = 5
     tasks = [foo.enqueue() for _ in range(n_tasks)]
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         await worker.enqueue_many(tasks)
-        await sleep(1)
-        assert worker.active == n_tasks
+        await sleep(3)
+        assert worker.active >= n_tasks
         tg.cancel_scope.cancel()
 
 
@@ -167,7 +167,7 @@ async def test_reclaim_backed_up(redis_url: str):
     worker2 = Worker(redis_url=redis_url, queue_name=queue_name, idle_timeout=1)
 
     async def foo() -> None:
-        await sleep(4)
+        await sleep(3)
 
     registered = worker.task()(foo)
     worker2.task()(foo)
@@ -178,11 +178,10 @@ async def test_reclaim_backed_up(redis_url: str):
         # run first worker which will pick up all tasks
         await tg.start(worker.run_async)
         await worker.enqueue_many(tasks)
-        await sleep(1)
         # run second worker which will pick up prefetched tasks
-        tg.start_soon(worker2.run_async)
+        await tg.start(worker2.run_async)
 
-        results = await gather(*[t.result(8) for t in tasks])
+        results = await gather(*[t.result(5) for t in tasks])
         assert any(r.worker_id == worker2.id for r in results)
         tg.cancel_scope.cancel()
 

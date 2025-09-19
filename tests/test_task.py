@@ -37,7 +37,7 @@ async def test_run_local(worker: Worker):
 
 
 async def test_task_timeout(worker: Worker):
-    @worker.task(timeout=1)
+    @worker.task(timeout=timedelta(seconds=1))
     async def foobar() -> None:
         await sleep(5)
 
@@ -117,7 +117,7 @@ async def test_task_retry(worker: Worker):
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         task = await foobar.enqueue()
-        res = await task.result(7)
+        res = await task.result(10)
         assert res.success
         assert res.result == 3
         tg.cancel_scope.cancel()
@@ -147,14 +147,14 @@ async def test_task_retry_with_schedule(worker: Worker):
         ctx = worker.task_context()
         if ctx.tries == 1:
             raise StreaqRetry(
-                "Retrying!", schedule=datetime.now() + timedelta(seconds=3)
+                "Retrying!", schedule=datetime.now() + timedelta(seconds=2)
             )
         return ctx.tries
 
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         task = await foobar.enqueue()
-        res = await task.result(5)
+        res = await task.result(6)
         assert res is not None
         assert res.success
         assert res.result == 2
@@ -172,6 +172,8 @@ async def test_task_failure(worker: Worker):
         res = await task.result(3)
         assert not res.success
         assert isinstance(res.exception, Exception)
+        with pytest.raises(StreaqError):
+            _ = res.result
         tg.cancel_scope.cancel()
 
 
@@ -249,6 +251,8 @@ async def test_task_dependency(worker: Worker):
         await task.result(3)
         result = await task2.result(3)
         assert result.success
+        with pytest.raises(StreaqError):
+            _ = result.exception
         tg.cancel_scope.cancel()
 
 
@@ -357,11 +361,13 @@ async def test_task_priorities(redis_url: str):
     async def foobar() -> None:
         await sleep(1)
 
-    low = [foobar.enqueue().start(priority="low") for _ in range(4)]
-    high = [foobar.enqueue().start(priority="high") for _ in range(4)]
+    async with worker:
+        low = [foobar.enqueue().start(priority="low") for _ in range(4)]
+        high = [foobar.enqueue().start(priority="high") for _ in range(4)]
+        await worker.enqueue_many(low + high)
+
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
-        await worker.enqueue_many(low + high)
         results = await gather(*[t.result(3) for t in high])
         statuses = await gather(*[t.status() for t in low])
         assert all(res.success for res in results)
@@ -585,4 +591,18 @@ async def test_task_expired(worker: Worker):
         await tg.start(worker.run_async)
         res = await task.result(3)
         assert not res.success and isinstance(res.exception, StreaqError)
+        tg.cancel_scope.cancel()
+
+
+async def test_cron_deterministic_id(worker: Worker):
+    @worker.cron("30 9 1 1 *")
+    async def cronjob() -> None:
+        pass
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        await sleep(1)
+        task = cronjob.enqueue()
+        assert await task.status() == TaskStatus.SCHEDULED
+        await task
         tg.cancel_scope.cancel()

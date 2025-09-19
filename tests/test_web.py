@@ -37,6 +37,7 @@ async def test_get_pages(worker: Worker):
         done = await sleeper.enqueue(0)
         running = await sleeper.enqueue(10)
         queued = await sleeper.enqueue(10)
+        await done.result(2)  # make sure task is done
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:

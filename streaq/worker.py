@@ -8,7 +8,6 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
-from pathlib import Path
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, cast
 from uuid import uuid4
 
@@ -17,6 +16,7 @@ from anyio import (
     AsyncContextManagerMixin,
     CancelScope,
     CapacityLimiter,
+    Path,
     create_memory_object_stream,
     create_task_group,
     fail_after,
@@ -215,18 +215,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self.redis = Redis.from_url(
                 redis_url, decode_responses=True, **redis_kwargs
             )
-        # register lua scripts
-        root = Path(__file__).parent / "lua"
-        for name in [
-            "create_groups",
-            "publish_task",
-            "publish_delayed_tasks",
-            "fail_dependents",
-            "update_dependents",
-            "read_streams",
-        ]:
-            path = root / f"{name}.lua"
-            self.scripts[name] = self.redis.register_script(path.read_text())
         # user-facing properties
         self.concurrency = concurrency
         self.queue_name = queue_name
@@ -319,6 +307,23 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self]:
+        # register lua scripts
+        root = Path(__file__).parent / "lua"
+
+        async def load_script(name: str) -> None:
+            path = root / f"{name}.lua"
+            self.scripts[name] = self.redis.register_script(await path.read_text())
+
+        async with create_task_group() as tg:
+            for name in [
+                "create_groups",
+                "publish_task",
+                "publish_delayed_tasks",
+                "fail_dependents",
+                "update_dependents",
+                "read_streams",
+            ]:
+                tg.start_soon(load_script, name)
         async with self.redis:
             self._cancelled_class = get_cancelled_exc_class()
             yield self
@@ -796,16 +801,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     ],
                     client=pipe,
                 )
-            elif schedule:
+            else:
+                assert schedule is not None  # this shouldn't be possible
                 if not silent:
                     self.counters["retried"] += 1
                 pipe.delete(to_delete)
                 pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
-            else:
-                if not silent:
-                    self.counters["retried"] += 1
-                pipe.delete(to_delete)
-                pipe.xadd(stream_key, {"task_id": task_id})
         if finish and (res := cast(list[str], await command)):  # type: ignore
             if success:
                 async with self.redis.pipeline(transaction=False) as pipe:

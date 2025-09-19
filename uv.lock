@@ -293,7 +293,7 @@ wheels = [
 
 [[package]]
 name = "coredis"
-version = "5.0.1.post0.dev21"
+version = "5.0.1.post0.dev23"
 source = { editable = "../coredis" }
 dependencies = [
     { name = "anyio" },
