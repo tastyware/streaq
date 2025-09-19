@@ -8,7 +8,8 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, cast
+from sys import platform
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, Literal, cast
 from uuid import uuid4
 
 from anyio import (
@@ -28,7 +29,6 @@ from anyio import (
 from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
-from coredis.commands import Script
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
@@ -127,7 +127,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     :param idle_timeout:
         the amount of time to wait before re-enqueuing idle tasks (either prefetched
         tasks that don't run, or running tasks that become unresponsive)
-    :param trio: whether to use Trio instead of asyncio to run the worker
+    :param anyio_backend: anyio backend to use, either Trio or asyncio
+    :param anyio_kwargs: extra arguments to pass to anyio backend
+    :param sentinel_nodes: list of (address, port) tuples to create sentinel from
+    :param sentinel_master: name of sentinel master to use
+    :param sentinel_kwargs: extra arguments to pass to sentinel (but not instances)
     """
 
     _worker_context: C
@@ -174,14 +178,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_task_context",
         "priorities",
         "_cancelled_class",
-        "scripts",
     )
 
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
-        redis_sentinel_nodes: list[tuple[str, int]] | None = None,
-        redis_sentinel_master: str = "mymaster",
         redis_kwargs: dict[str, Any] | None = None,
         concurrency: int = 16,
         sync_concurrency: int | None = None,
@@ -196,21 +197,24 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         health_crontab: str = "*/5 * * * *",
         signing_secret: str | None = None,
         idle_timeout: timedelta | int = 60,
-        trio: bool = False,
+        anyio_backend: Literal["asyncio", "trio"] = "asyncio",
+        anyio_kwargs: dict[str, Any] | None = None,
+        sentinel_nodes: list[tuple[str, int]] | None = None,
+        sentinel_master: str = "mymaster",
+        sentinel_kwargs: dict[str, Any] | None = None,
     ):
-        #: Redis Lua scripts
-        self.scripts: dict[str, Script[str]] = {}
         # Redis connection
         redis_kwargs = redis_kwargs or {}
         if redis_kwargs.pop("decode_responses", None) is not None:
             logger.warning("decode_responses ignored in redis_kwargs")
-        if redis_sentinel_nodes:
+        if sentinel_nodes:
             self._sentinel = Sentinel(
-                redis_sentinel_nodes,
+                sentinel_nodes,
                 decode_responses=True,
+                sentinel_kwargs=sentinel_kwargs,
                 **redis_kwargs,
             )
-            self.redis = self._sentinel.primary_for(redis_sentinel_master)
+            self.redis = self._sentinel.primary_for(sentinel_master)
         else:
             self.redis = Redis.from_url(
                 redis_url, decode_responses=True, **redis_kwargs
@@ -239,7 +243,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.tz = tz
         #: whether to shut down the worker when the queue is empty; set via CLI
         self.burst = False
-        self.trio = trio
+        # save anyio configuration
+        self.anyio_backend = anyio_backend
+        self.anyio_kwargs = anyio_kwargs or {}
+        if self.anyio_backend == "asyncio" and "use_uvloop" not in self.anyio_kwargs:
+            self.anyio_kwargs["use_uvloop"] = platform != "win32"
         #: list of middlewares added to the worker
         self.middlewares: list[Middleware] = []
         self.signing_secret = signing_secret.encode() if signing_secret else None
@@ -307,24 +315,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self]:
-        # register lua scripts
-        root = Path(__file__).parent / "lua"
-
-        async def load_script(name: str) -> None:
-            path = root / f"{name}.lua"
-            self.scripts[name] = self.redis.register_script(await path.read_text())
-
-        async with create_task_group() as tg:
-            for name in [
-                "create_groups",
-                "publish_task",
-                "publish_delayed_tasks",
-                "fail_dependents",
-                "update_dependents",
-                "read_streams",
-            ]:
-                tg.start_soon(load_script, name)
         async with self.redis:
+            # register lua scripts from library
+            text = await (Path(__file__).parent / "lua/streaq.lua").read_text()
+            await self.redis.register_library("streaq", text, replace=True)
             self._cancelled_class = get_cancelled_exc_class()
             yield self
 
@@ -489,10 +483,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         Sync function to run the worker, finally closes worker connections.
         """
-        if self.trio:
-            run(self.run_async, backend="trio")
-        else:
-            run(self.run_async, backend_options={"use_uvloop": True})
+        run(
+            self.run_async,
+            backend=self.anyio_backend,
+            backend_options=self.anyio_kwargs,
+        )
 
     async def run_async(
         self, *, task_status: AnyStatus[None] = TASK_STATUS_IGNORED
@@ -508,7 +503,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._worker_context = context
             self._running = True
             # create consumer group if it doesn't exist
-            await self.scripts["create_groups"](
+            await self.redis.fcall(
+                "create_groups",
                 keys=[self.stream_key, self._group_name],
                 args=self.priorities,  # type: ignore
             )
@@ -586,7 +582,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 # Fetch new messages
                 if count > 0:
                     # non-blocking, priority ordered first
-                    res = await self.scripts["read_streams"](
+                    res = await self.redis.fcall(
+                        "read_streams",
                         keys=[self.stream_key, self._group_name, self.id],
                         args=[count, self.idle_timeout, *self.priorities],
                     )
@@ -615,10 +612,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                             )
                 # schedule delayed tasks
                 async with self.redis.pipeline(transaction=False) as pipe:
-                    self.scripts["publish_delayed_tasks"](
+                    pipe.fcall(
+                        "publish_delayed_tasks",
                         keys=[self.queue_key, self.stream_key],
                         args=[now_ms(), *self.priorities],
-                        client=pipe,
                     )
                     command = pipe.smembers(self._abort_key)
                 aborted = await command
@@ -714,13 +711,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.xdel(stream_key, [msg.message_id])
             if raw is not None and ttl:
                 pipe.set(key(REDIS_RESULT), raw, ex=ttl)
-            command = self.scripts["fail_dependents"](
+            command = pipe.fcall(
+                "fail_dependents",
                 keys=[
                     self.prefix + REDIS_DEPENDENTS,
                     self.prefix + REDIS_DEPENDENCIES,
                     task_id,
                 ],
-                client=pipe,
             )
         res = cast(list[str], await command)
         if res:
@@ -790,16 +787,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     if triggers:
                         args = self.serialize(to_tuple(return_value))
                         pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
-                    script = self.scripts["update_dependents"]
+                    script = "update_dependents"
                 else:
-                    script = self.scripts["fail_dependents"]
-                command = script(
+                    script = "fail_dependents"
+                command = pipe.fcall(
+                    script,
                     keys=[
                         self.prefix + REDIS_DEPENDENTS,
                         self.prefix + REDIS_DEPENDENCIES,
                         task_id,
                     ],
-                    client=pipe,
                 )
             else:
                 assert schedule is not None  # this shouldn't be possible
@@ -1136,7 +1133,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 data = task.serialize(enqueue_time)
                 _priority = task.priority or self.priorities[-1]
                 expire = to_ms(task.parent.expire or 0)
-                self.scripts["publish_task"](
+                pipe.fcall(
+                    "publish_task",
                     keys=[
                         self.stream_key,
                         self.queue_key,
@@ -1146,7 +1144,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         self.results_key,
                     ],
                     args=[task.id, data, _priority, score, expire] + task.after,
-                    client=pipe,
                 )
 
     async def queue_size(self) -> int:
