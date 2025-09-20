@@ -1002,7 +1002,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 schedule = now_ms() + delay
                 if not task.silent:
                     logger.exception(f"Retrying task {task_id}!")
-                    logger.info(f"task {task.fn_name} ↻ {task_id} retrying in {delay}s")
+                    logger.info(
+                        f"task {task.fn_name} ↻ {task_id} retrying in {delay}ms"
+                    )
         except TimeoutError as e:
             if not task.silent:
                 logger.error(f"task {task.fn_name} … {task_id} timed out")
