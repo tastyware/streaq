@@ -79,14 +79,14 @@ $ python example.py
 Let's see what the output looks like:
 
 ```
-[INFO] 02:14:30: starting worker 3265311d for 2 functions
-[INFO] 02:14:35: task fetch □ cf0c55387a214320bd23e8987283a562 → worker 3265311d
-[INFO] 02:14:38: task fetch ■ cf0c55387a214320bd23e8987283a562 ← 3
-[INFO] 02:14:40: task fetch □ 1de3f192ee4a40d4884ebf303874681c → worker 3265311d
-[INFO] 02:14:41: task fetch ■ 1de3f192ee4a40d4884ebf303874681c ← 1
-[INFO] 02:15:00: task cronjob □ 2a4b864e5ecd4fc99979a92f5db3a6e0 → worker 3265311d
+[INFO] 2025-09-23 02:14:30: starting worker 3265311d for 2 functions
+[INFO] 2025-09-23 02:14:35: task fetch □ cf0c55387a214320bd23e8987283a562 → worker 3265311d
+[INFO] 2025-09-23 02:14:38: task fetch ■ cf0c55387a214320bd23e8987283a562 ← 3
+[INFO] 2025-09-23 02:14:40: task fetch □ 1de3f192ee4a40d4884ebf303874681c → worker 3265311d
+[INFO] 2025-09-23 02:14:41: task fetch ■ 1de3f192ee4a40d4884ebf303874681c ← 1
+[INFO] 2025-09-23 02:15:00: task cronjob □ 2a4b864e5ecd4fc99979a92f5db3a6e0 → worker 3265311d
 Nobody respects the spammish repetition!
-[INFO] 02:15:00: task cronjob ■ 2a4b864e5ecd4fc99979a92f5db3a6e0 ← None
+[INFO] 2025-09-23 02:15:00: task cronjob ■ 2a4b864e5ecd4fc99979a92f5db3a6e0 ← None
 ```
 ```python
 TaskInfo(fn_name='sleeper', enqueue_time=1751508876961, tries=0, scheduled=datetime.datetime(2025, 7, 3, 2, 14, 39, 961000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())

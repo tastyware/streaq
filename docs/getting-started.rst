@@ -67,10 +67,10 @@ Let's see what the output looks like:
 
 .. code-block::
 
-   [INFO] 07:19:48: task fetch □ 45d7ff032e6d42239e9f479a2fc4b70e → worker 12195ce1
-   [INFO] 07:19:48: task fetch ■ 45d7ff032e6d42239e9f479a2fc4b70e ← 15
-   [INFO] 07:19:51: task fetch □ 65e687f9ba644a1fbe23096fa246dfe1 → worker 12195ce1
-   [INFO] 07:19:52: task fetch ■ 65e687f9ba644a1fbe23096fa246dfe1 ← 303659
+   [INFO] 2025-09-23 07:19:48: task fetch □ 45d7ff032e6d42239e9f479a2fc4b70e → worker 12195ce1
+   [INFO] 2025-09-23 07:19:48: task fetch ■ 45d7ff032e6d42239e9f479a2fc4b70e ← 15
+   [INFO] 2025-09-23 07:19:51: task fetch □ 65e687f9ba644a1fbe23096fa246dfe1 → worker 12195ce1
+   [INFO] 2025-09-23 07:19:52: task fetch ■ 65e687f9ba644a1fbe23096fa246dfe1 ← 303659
 
 .. code-block:: python
 
