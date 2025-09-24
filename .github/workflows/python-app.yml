@@ -16,17 +16,6 @@ jobs:
           - "3.11"
           - "3.12"
           - "3.13"
-    # redis service
-    services:
-      redis:
-        image: redis:latest
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       TERM: 'dumb'
     steps:
@@ -47,4 +36,4 @@ jobs:
         uv run pyright streaq/ tests/ example.py
     - name: Test with pytest
       run: |
-        uv run pytest -n auto --cov=streaq --cov-report=term-missing tests/ --cov-fail-under=95
+        docker compose run --rm tests uv run --locked --all-extras --dev pytest -n auto --dist=loadgroup --cov=streaq tests/

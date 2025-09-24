@@ -4,7 +4,7 @@ import hmac
 import pickle
 import signal
 from collections import defaultdict
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
@@ -216,6 +216,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             )
             self.redis = self._sentinel.primary_for(sentinel_master)
         else:
+            self._sentinel = None
             self.redis = Redis.from_url(
                 redis_url, decode_responses=True, **redis_kwargs
             )
@@ -315,7 +316,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self]:
-        async with self.redis:
+        async with AsyncExitStack() as stack:
+            if self._sentinel:
+                await stack.enter_async_context(
+                    self._sentinel.__asynccontextmanager__()
+                )
+            await stack.enter_async_context(self.redis.__asynccontextmanager__())
             # register lua scripts from library
             text = await (Path(__file__).parent / "lua/streaq.lua").read_text()
             await self.redis.register_library("streaq", text, replace=True)

@@ -56,7 +56,7 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.10.0",
-    "coredis>=6.0.0",
+    "coredis",
     "crontab>=1.0.5",
     "typer>=0.16.1",
     "uvloop>=0.21.0; sys_platform != 'win32'",
@@ -99,7 +99,6 @@ dev = [
     "ruff>=0.12.10",
     "sphinx>=8.1.3",
     "sphinx-immaterial>=0.13.6",
-    "testcontainers[redis]>=4.12.0",
     "trio>=0.30.0",
 ]
 
@@ -108,9 +107,24 @@ testpaths = "tests"
 
 [tool.uv.sources]
 arq = { git = "https://github.com/graeme22/arq" }
+coredis = { git = "https://github.com/Graeme22/coredis.git", rev = "anyio" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
 [tool.pyright]
 strict = ["streaq/"]
+
+[tool.coverage.run]
+branch = true
+parallel = true
+source = ["streaq"]
+concurrency = ["multiprocessing", "thread"]
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 95
+
+[tool.coverage.paths]
+streaq = ["streaq", "/app/streaq"]

@@ -1,11 +1,19 @@
+import os
+import socket
 import subprocess
 import sys
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 
+import httpx
 import pytest
+from anyio import sleep
+from anyio.to_thread import run_sync
 from typer.testing import CliRunner
 
 from streaq import VERSION, Worker
 from streaq.cli import cli
+from streaq.utils import gather
 
 pytestmark = pytest.mark.anyio
 runner = CliRunner()
@@ -58,13 +66,12 @@ def test_main_entry_point():
     assert "--help" in result.stdout
 
 
-"""
 @pytest.fixture(scope="function")
 def worker_file(redis_url: str, tmp_path: Path):
     tmp = NamedTemporaryFile(dir=tmp_path, suffix=".py", mode="w+", delete=False)
-    tmp.write(f""from uuid import uuid4
+    tmp.write(f"""from uuid import uuid4
 from streaq import Worker
-worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"")
+worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)""")
     tmp.close()
     yield tmp.name
     os.remove(tmp.name)
@@ -86,11 +93,11 @@ async def test_watch(worker_file: str, tmp_path: Path):
         return e
 
     async def modify_file():
-        await asyncio.sleep(1)  # wait for startup
+        await sleep(1)  # wait for startup
         with open(worker_file, "a") as f:
             f.write("  # change from test")
 
-    res, _ = await asyncio.gather(asyncio.to_thread(run_subprocess), modify_file())
+    res, _ = await gather(run_sync(run_subprocess), modify_file())
     assert str(res.value.stderr).count("starting") > 1
 
 
@@ -100,8 +107,10 @@ def find_free_port() -> int:  # Finds and returns an available TCP port.
         return s.getsockname()[1]
 
 
+@pytest.mark.xdist_group(name="web")
 async def test_web_cli(worker_file: str):
     file_name = worker_file.split("/")[-1][:-3]
+    port = find_free_port()
 
     def run_subprocess():
         with pytest.raises(subprocess.TimeoutExpired) as e:
@@ -113,7 +122,7 @@ async def test_web_cli(worker_file: str):
                     f"{file_name}.worker",
                     "--web",
                     "--port",
-                    str(find_free_port()),
+                    str(port),
                 ],
                 capture_output=True,
                 text=True,
@@ -123,10 +132,9 @@ async def test_web_cli(worker_file: str):
         return e
 
     async def modify_file():
-        await asyncio.sleep(1)  # wait for startup
-        return httpx.get("http://localhost:8000/")
+        await sleep(1)  # wait for startup
+        return httpx.get(f"http://localhost:{port}/")
 
-    web, res = await asyncio.gather(asyncio.to_thread(run_subprocess), modify_file())
+    web, res = await gather(run_sync(run_subprocess), modify_file())
     assert "Uvicorn" in str(web.value.stderr)
     assert res.status_code == 303
-"""

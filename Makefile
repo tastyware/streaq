@@ -10,7 +10,10 @@ lint:
 	uv run pyright streaq/ tests/ example.py
 
 test:
-	uv run pytest -n auto --cov=streaq --cov-report=term-missing --cov-fail-under=95
+	UV_PYTHON=3.10 docker compose run --rm tests uv run --locked --all-extras --dev pytest -n auto --dist=loadgroup --cov=streaq tests/
 
 docs:
 	uv run -m sphinx -T -b html -d docs/_build/doctrees -D language=en docs/ docs/_build/
+
+cleanup:
+	docker compose down --remove-orphans
