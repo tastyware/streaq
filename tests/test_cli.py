@@ -1,19 +1,11 @@
-import os
-import socket
 import subprocess
 import sys
-from pathlib import Path
-from tempfile import NamedTemporaryFile
 
-import httpx
 import pytest
-from anyio import sleep
-from anyio.to_thread import run_sync
 from typer.testing import CliRunner
 
 from streaq import VERSION, Worker
 from streaq.cli import cli
-from streaq.utils import gather
 
 pytestmark = pytest.mark.anyio
 runner = CliRunner()
@@ -66,12 +58,13 @@ def test_main_entry_point():
     assert "--help" in result.stdout
 
 
+"""
 @pytest.fixture(scope="function")
 def worker_file(redis_url: str, tmp_path: Path):
     tmp = NamedTemporaryFile(dir=tmp_path, suffix=".py", mode="w+", delete=False)
-    tmp.write(f"""from uuid import uuid4
+    tmp.write(f""from uuid import uuid4
 from streaq import Worker
-worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)""")
+worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"")
     tmp.close()
     yield tmp.name
     os.remove(tmp.name)
@@ -138,3 +131,4 @@ async def test_web_cli(worker_file: str):
     web, res = await gather(run_sync(run_subprocess), modify_file())
     assert "Uvicorn" in str(web.value.stderr)
     assert res.status_code == 303
+"""

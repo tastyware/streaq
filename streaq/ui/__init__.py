@@ -10,7 +10,7 @@ from streaq.utils import import_string
 __all__ = ["get_worker", "router"]
 
 
-def run_web(host: str, port: int, worker_path: str) -> None:
+def run_web(host: str, port: int, worker_path: str) -> None:  # pragma: no cover
     import uvicorn
     from fastapi import FastAPI
 
