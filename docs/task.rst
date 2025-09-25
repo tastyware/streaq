@@ -4,9 +4,7 @@ Tasks
 Task execution
 --------------
 
-streaQ preserves arq's task execution model, called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will be cancelled immediately and will remain in the queue to be run again when the worker starts up again (or gets run by another worker which is still running).
-
-In the case of a catastrophic failure (that is, the worker shuts down abruptly without doing cleanup), tasks can still be retried, as workers will refresh timeouts for running tasks every ``Worker.idle_timeout`` seconds.
+streaQ preserves arq's task execution model called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will remain in the queue to be picked up by another worker. ``Worker.idle_timeout`` controls how often task liveness is updated (and consequently, how quickly failed tasks can be retried).
 
 All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice.
 
@@ -43,8 +41,8 @@ We can now register async functions with the worker:
 
 The ``task`` decorator has several optional arguments that can be used to customize behavior:
 
-- ``expire``: time after which to dequeue the task, if None will never be dequeued
-- ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to 3
+- ``expire``: time after which to dequeue the task, if ``None`` will never be dequeued
+- ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to ``3``
 - ``name``: use a custom name for the task instead of the function name
 - ``silent``: whether to silence task startup/shutdown logs and task success/failure tracking; defaults to False
 - ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
@@ -54,13 +52,14 @@ The ``task`` decorator has several optional arguments that can be used to custom
 Enqueuing tasks
 ---------------
 
-Once registered, tasks can then be queued up for execution by worker processes, with full type safety:
+Once registered, tasks can then be queued up for execution by worker processes (with full type safety!) using the worker's async context manager:
 
 .. code-block:: python
 
-   # these two are equivalent
-   await sleeper.enqueue(5)
-   await sleeper.enqueue(5).start()
+   async with worker:
+       # these two are equivalent
+       await sleeper.enqueue(5)
+       await sleeper.enqueue(5).start()
 
 We can also defer task execution to a later time:
 
@@ -68,16 +67,18 @@ We can also defer task execution to a later time:
 
    from datetime import datetime
 
-   await sleeper.enqueue(3).start(delay=10)  # start after 10 seconds
-   await sleeper.enqueue(3).start(schedule=datetime(...))  # start at a specific time
+   async with worker:
+       await sleeper.enqueue(3).start(delay=10)  # start after 10 seconds
+       await sleeper.enqueue(3).start(schedule=datetime(...))  # start at a specific time
 
 Tasks can depend on other tasks, meaning they won't be enqueued until their dependencies have finished successfully. If the dependency fails, the dependent task will not be enqueued.
 
 .. code-block:: python
 
-   task1 = await sleeper.enqueue(1)
-   task2 = await sleeper.enqueue(2).start(after=task1.id)
-   task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
+   async with worker:
+       task1 = await sleeper.enqueue(1)
+       task2 = await sleeper.enqueue(2).start(after=task1.id)
+       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
 .. note::
    ``Task.enqueue()`` is actually a sync function that returns a ``Task`` object. Since ``Task`` is awaitable, it gets enqueued when awaited. Therefore, you should always use await even though ``Task.enqueue()`` is sync, unless you're enqueuing by batch (see below).
@@ -94,7 +95,8 @@ By passing the ``priorities`` argument on worker creation, you can create an arb
    # this list should be ordered from lowest to highest
    worker = Worker(priorities=["low", "high"])
 
-   await sleeper.enqueue(3).start(priority="low")
+   async with worker:
+       await sleeper.enqueue(3).start(priority="low")
 
 Here's an example that demonstrates how priorities work. Note that the low priority task is enqueued first, but the high priority task is executed first. (Make sure to run this *before* starting the worker!)
 
@@ -110,8 +112,9 @@ Here's an example that demonstrates how priorities work. Note that the low prior
    async def high() -> None:
        print("High priority task")
 
-   await low.enqueue().start(priority="low")
-   await high.enqueue().start(priority="high")
+   async with worker:
+       await low.enqueue().start(priority="low")
+       await high.enqueue().start(priority="high")
 
 Enqueuing by batch
 ------------------
@@ -122,7 +125,8 @@ For most cases, the above method of enqueuing tasks is sufficient. However, stre
 
    # importantly, we're not using `await` here
    tasks = [sleeper.enqueue(i) for i in range(10)]
-   await worker.enqueue_many(tasks)
+   async with worker:
+       await worker.enqueue_many(tasks)
 
 Running tasks locally
 ---------------------
@@ -144,10 +148,11 @@ Enqueued tasks return a ``Task`` object which can be used to wait for task resul
 
    from datetime import timedelta
 
-   task = await sleeper.enqueue(3).start(delay=timedelta(seconds=5))
-   print(await task.status())
-   print(await task.result())
-   print(await task.status())
+   async with worker:
+       task = await sleeper.enqueue(3).start(delay=timedelta(seconds=5))
+       print(await task.status())
+       print(await task.result())
+       print(await task.status())
 
 .. code-block:: python
 
@@ -233,7 +238,8 @@ Note that if the task waiting for its completion is cancelled, the thread will s
        return seconds
 
    # here we use await, the wrapper does the magic for us!
-   task = await sync_sleep.enqueue(1)
+   async with worker:
+       task = await sync_sleep.enqueue(1)
    print(await task.result(3))
 
 Task dependency graph
@@ -245,9 +251,10 @@ Dependencies can be specified using the ``after`` parameter of the ``Task.start`
 
 .. code-block:: python
 
-   task1 = await sleeper.enqueue(1)
-   task2 = await sleeper.enqueue(2).start(after=task1.id)
-   task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
+   async with worker:
+       task1 = await sleeper.enqueue(1)
+       task2 = await sleeper.enqueue(2).start(after=task1.id)
+       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
 
 And the dependency failing will cause dependent tasks to fail as well:
 
@@ -261,9 +268,10 @@ And the dependency failing will cause dependent tasks to fail as well:
     async def do_nothing() -> None:
         pass
 
-    task = await foobar.enqueue().start()
-    dep = await do_nothing.enqueue().start(after=task.id)
-    print(await dep.result(3))
+    async with worker:
+        task = await foobar.enqueue().start()
+        dep = await do_nothing.enqueue().start(after=task.id)
+        print(await dep.result(3))
 
 Task pipelining
 ---------------
@@ -285,8 +293,9 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
    async def is_even(val: int) -> bool:
        return val % 2 == 0
 
-   task = await fetch.enqueue("https://tastyware.dev").then(double).then(is_even)
-   print(await task.result(3))
+   async with worker:
+       task = await fetch.enqueue("https://tastyware.dev").then(double).then(is_even)
+       print(await task.result(3))
 
 .. code-block:: python
 
@@ -315,16 +324,17 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        results = await gather(*[t.result(5) for t in tasks])
        return [data[i] for i in range(len(data)) if results[i].result]
 
-   data = [0, 1, 2, 3]
-   t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
-   print(await t1.result())
-   t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
-   print(await t2.result())
+   async with worker:
+       data = [0, 1, 2, 3]
+       t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
+       print(await t1.result())
+       t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
+       print(await t2.result())
 
 .. code-block:: python
 
    TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, result=[0, 2, 4, 6], start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb')
    TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, result=[0, 4], start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb')
 
-.. note::
+.. warning::
    For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.

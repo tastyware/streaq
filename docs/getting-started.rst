@@ -7,7 +7,7 @@ To start, you'll need to create a ``Worker`` object. At worker creation, you can
 
    from contextlib import asynccontextmanager
    from dataclasses import dataclass
-   from typing import AsyncIterator
+   from typing import AsyncGenerator
    from httpx import AsyncClient
    from streaq import Worker
 
@@ -20,7 +20,7 @@ To start, you'll need to create a ``Worker`` object. At worker creation, you can
        http_client: AsyncClient
 
    @asynccontextmanager
-   async def lifespan() -> AsyncIterator[WorkerContext]:
+   async def lifespan() -> AsyncGenerator[WorkerContext]:
        """
        Here, we initialize the worker's dependencies.
        You can also do any startup/shutdown work here
@@ -40,15 +40,16 @@ You can then register async tasks with the worker like this:
        res = await worker.context.http_client.get(url)
        return len(res.text)
 
-Finally, let's queue up some tasks:
+Finally, let's queue up some tasks via the worker's async context manager:
 
 .. code-block:: python
 
-    await fetch.enqueue("https://tastyware.dev/")
-    # enqueue returns a task object that can be used to get results/info
-    task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
-    print(await task.info())
-    print(await task.result(timeout=5))
+    async with worker:
+        await fetch.enqueue("https://tastyware.dev/")
+        # enqueue returns a task object that can be used to get results/info
+        task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
+        print(await task.info())
+        print(await task.result(timeout=5))
 
 Put this all together in a script and spin up a worker:
 

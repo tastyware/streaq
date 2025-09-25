@@ -9,7 +9,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
 from sys import platform
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Generic, Literal, cast
+from typing import Any, AsyncGenerator, Callable, Generic, Literal, cast
 from uuid import uuid4
 
 from anyio import (
@@ -91,7 +91,7 @@ from streaq.utils import (
 
 
 @asynccontextmanager
-async def _lifespan() -> AsyncIterator[None]:
+async def _lifespan() -> AsyncGenerator[None]:
     yield None
 
 
@@ -137,7 +137,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     _worker_context: C
 
     __slots__ = (
-        "redis",
+        "_redis",
         "concurrency",
         "queue_name",
         "_group_name",
@@ -178,6 +178,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_task_context",
         "priorities",
         "_cancelled_class",
+        "_initialized",
     )
 
     def __init__(
@@ -214,10 +215,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 sentinel_kwargs=sentinel_kwargs,
                 **redis_kwargs,
             )
-            self.redis = self._sentinel.primary_for(sentinel_master)
+            self._redis = self._sentinel.primary_for(sentinel_master)
         else:
             self._sentinel = None
-            self.redis = Redis.from_url(
+            self._redis = Redis.from_url(
                 redis_url, decode_responses=True, **redis_kwargs
             )
         # user-facing properties
@@ -265,6 +266,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.idle_timeout = to_ms(idle_timeout)
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
+        self._initialized = False
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
         self.queue_key = self.prefix + REDIS_QUEUE
@@ -321,12 +323,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 await stack.enter_async_context(
                     self._sentinel.__asynccontextmanager__()
                 )
-            await stack.enter_async_context(self.redis.__asynccontextmanager__())
+            await stack.enter_async_context(self._redis.__asynccontextmanager__())
             # register lua scripts from library
             text = await (Path(__file__).parent / "lua/streaq.lua").read_text()
-            await self.redis.register_library("streaq", text, replace=True)
+            await self._redis.register_library("streaq", text, replace=True)
             self._cancelled_class = get_cancelled_exc_class()
+            self._initialized = True
             yield self
+        self._initialized = False
+
+    @property
+    def redis(self) -> Redis[str]:
+        if not self._initialized:
+            raise StreaqError("Worker not initialized, use the async context manager!")
+        return self._redis
 
     def task_context(self) -> TaskContext:
         """
