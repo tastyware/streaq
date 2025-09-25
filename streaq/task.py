@@ -168,7 +168,7 @@ class Task(Generic[R]):
         else:
             score = 0
         data = self.serialize(enqueue_time)
-        _priority = self.priority or self.parent.worker.priorities[-1]
+        self.priority = self.priority or self.parent.worker.priorities[-1]
         expire = to_ms(self.parent.expire or 0)
         if not await self.parent.worker.redis.fcall(
             "publish_task",
@@ -180,7 +180,7 @@ class Task(Generic[R]):
                 self.parent.worker.dependencies_key,
                 self.parent.worker.results_key,
             ],
-            args=[self.id, data, _priority, score, expire] + self.after,
+            args=[self.id, data, self.priority, score, expire] + self.after,
         ):
             logger.debug("Task is unique and already exists, not enqueuing!")
         return self

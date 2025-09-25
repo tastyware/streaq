@@ -578,6 +578,18 @@ async def test_abort(worker: Worker, ttl: int, wait: int):
         tg.cancel_scope.cancel()
 
 
+async def test_abort_delayed(worker: Worker):
+    @worker.task()
+    async def foobar() -> None:
+        pass
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue().start(delay=10)
+        assert await task.abort(3)
+        tg.cancel_scope.cancel()
+
+
 async def test_task_expired(worker: Worker):
     @worker.task(expire=1)
     async def foobar() -> None:

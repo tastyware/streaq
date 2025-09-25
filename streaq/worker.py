@@ -1134,7 +1134,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
             # importantly, we're not using `await` here
             tasks = [foobar.enqueue(i) for i in range(10)]
-            await worker.enqueue_many(tasks)
+            async with worker:
+                await worker.enqueue_many(tasks)
 
         """
         enqueue_time = now_ms()
@@ -1149,7 +1150,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 else:
                     score = 0
                 data = task.serialize(enqueue_time)
-                _priority = task.priority or self.priorities[-1]
+                task.priority = task.priority or self.priorities[-1]
                 expire = to_ms(task.parent.expire or 0)
                 pipe.fcall(
                     "publish_task",
@@ -1161,7 +1162,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         self.dependencies_key,
                         self.results_key,
                     ],
-                    args=[task.id, data, _priority, score, expire] + task.after,
+                    args=[task.id, data, task.priority, score, expire] + task.after,
                 )
 
     async def queue_size(self) -> int:
@@ -1280,10 +1281,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         Notify workers that the task should be aborted, then wait for confirmation.
 
-        If the task is still enqueued, it will not be removed from the queue, but it
-        will be aborted when it gets eventually dequeued. (Note that in this case,
-        confirmation will also be delayed until dequeuing.)
-
         :param task_id: ID of the task to abort
         :param timeout:
             how long to wait to confirm abortion was successful. None means wait
@@ -1291,7 +1288,27 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :return: whether the task was aborted successfully
         """
-        await self.redis.sadd(self._abort_key, [task_id])
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.sadd(self._abort_key, [task_id])
+            delayed = [
+                pipe.zrem(self.queue_key + priority, [task_id])
+                for priority in self.priorities
+            ]
+        if any(await gather(*delayed)):
+            # task was in delayed queue, we need to handle deps
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.delete([self.prefix + REDIS_TASK + task_id])
+                command = pipe.fcall(
+                    "fail_dependents",
+                    keys=[
+                        self.prefix + REDIS_DEPENDENTS,
+                        self.prefix + REDIS_DEPENDENCIES,
+                        task_id,
+                    ],
+                )
+            if res := await command:
+                await self.fail_task_dependents(res)  # type: ignore
+            return True
         if timeout is not None and not timeout:  # check for 0, works with timedelta
             return False
         try:

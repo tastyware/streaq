@@ -165,18 +165,13 @@ T5 = TypeVar("T5")
 
 @overload
 async def gather(
-    awaitable1: Awaitable[T1],
-    awaitable2: Awaitable[T2],
-    /,
+    awaitable1: Awaitable[T1], awaitable2: Awaitable[T2], /
 ) -> tuple[T1, T2]: ...
 
 
 @overload
 async def gather(
-    awaitable1: Awaitable[T1],
-    awaitable2: Awaitable[T2],
-    awaitable3: Awaitable[T3],
-    /,
+    awaitable1: Awaitable[T1], awaitable2: Awaitable[T2], awaitable3: Awaitable[T3], /
 ) -> tuple[T1, T2, T3]: ...
 
 
@@ -206,6 +201,8 @@ async def gather(*awaitables: Awaitable[T1]) -> tuple[T1, ...]: ...
 
 
 async def gather(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
+    if len(awaitables) == 1:  # optimize for this case
+        return (await awaitables[0],)
     results: list[Any] = [None] * len(awaitables)
 
     async def runner(awaitable: Awaitable[Any], i: int) -> None:
