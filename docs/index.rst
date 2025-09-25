@@ -28,6 +28,8 @@ Fast, async, type-safe job queuing with Redis streams
 +----------------------------+--------+-----+-----+--------+
 | Task middleware            | ✅     | ✅  | ✅  | ✅     |
 +----------------------------+--------+-----+-----+--------+
+| Web UI available           | ✅     | ✅  | ✅  | ✅     |
++----------------------------+--------+-----+-----+--------+
 | Actively maintained        | ✅     | ❌  | ✅  | ✅     |
 +----------------------------+--------+-----+-----+--------+
 | Custom serializers         | ✅     | ✅  | ❌  | ✅     |
@@ -48,9 +50,9 @@ Fast, async, type-safe job queuing with Redis streams
 +----------------------------+--------+-----+-----+--------+
 | Redis Sentinel support     | ✅     | ❌  | ❌  | ✅     |
 +----------------------------+--------+-----+-----+--------+
-| Web UI available           | ✅     | ✅  | ✅  | ✅     |
-+----------------------------+--------+-----+-----+--------+
 | Structured concurrency     | ❌     | ❌  | ❌  | ✅     |
++----------------------------+--------+-----+-----+--------+
+| Trio support               | ❌     | ❌  | ❌  | ✅     |
 +----------------------------+--------+-----+-----+--------+
 
 .. toctree::
@@ -65,6 +67,7 @@ Fast, async, type-safe job queuing with Redis streams
    middleware
    cli
    integrations
+   contributing
 
 .. toctree::
    :maxdepth: 2

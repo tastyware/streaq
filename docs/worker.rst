@@ -28,16 +28,16 @@ Next, create an async context manager to run at worker creation/teardown. Use th
 .. code-block:: python
 
    from contextlib import asynccontextmanager
-   from typing import AsyncIterator
+   from typing import AsyncGenerator
    from streaq import Worker
 
    @asynccontextmanager
-   async def lifespan() -> AsyncIterator[WorkerContext]:
+   async def lifespan() -> AsyncGenerator[WorkerContext]:
        # here we run code if desired after worker start up
        # yield our dependencies as an instance of the class
        async with AsyncClient() as http_client:
            yield WorkerContext(http_client)
-       # here we run code if desired before worker shutdown
+           # here we run code if desired before worker shutdown
 
 Now, tasks created for the worker will have access to the dependencies like so:
 
@@ -83,28 +83,33 @@ Other configuration options
 ``Worker`` accepts a variety of other configuration options:
 
 - ``redis_url``: the URI for connecting to your Redis instance
-- ``concurrency``: the maximum number of tasks the worker can run concurrently; by default, this also controls the number of tasks which will be pre-fetched by the worker
+- ``redis_kwargs``: additional arguments for Redis connections
+- ``concurrency``: the maximum number of tasks the worker can run concurrently
 - ``sync_concurrency``: the maximum number of tasks the worker can run simultaneously in separate threads; defaults to the same as ``concurrency``
+- ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
+- ``priorities``: a list of custom priorities for tasks, ordered from lowest to highest
 - ``prefetch``: the number of tasks to pre-fetch from Redis, defaults to ``concurrency``. You can set this to ``0`` to disable prefetching entirely.
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler and logs
-- ``queue_name``: name of the queue in Redis, can be used to create multiple queues at once
-- ``health_check_interval``: how often to log info about worker and Redis health (also stored in Redis)
+- ``handle_signals``: whether to handle signals for graceful shutdown (unavailable on Windows)
+- ``health_crontab``: crontab for frequency to store worker health in Redis
 - ``idle_timeout``: the amount of time to wait before re-enqueuing idle tasks (either prefetched tasks that don't run, or running tasks that become unresponsive)
-- ``priorities``: a list of custom priorities for tasks, ordered from lowest to highest
+- ``anyio_backend``: either trio or asyncio, defaults to asyncio
+- ``anyio_kwargs``: extra arguments for anyio, see documentation `here <https://anyio.readthedocs.io/en/stable/basics.html#backend-specific-options>`_
+- ``sentinel_kwargs``: extra arguments to pass to sentinel connections (see below)
 
 Deploying with Redis Sentinel
 -----------------------------
 
-In production environments, oftentimes high availability guarantees are needed, which is why Redis Sentinel was created. streaQ allows you to use Redis Sentinel easily:
+In production environments, high availability guarantees are often needed, which is why Redis Sentinel was created. streaQ allows you to use Redis Sentinel easily:
 
 .. code-block:: python
 
    worker = Worker(
        redis_sentinel_master="mymaster",
        redis_sentinel_nodes=[
-           ("localhost", 26379),
-           ("localhost", 26380),
-           ("localhost", 26381),
+           ("sentinel-1", 26379),
+           ("sentinel-2", 26379),
+           ("sentinel-3", 26379),
        ],
    )
 

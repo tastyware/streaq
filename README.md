@@ -6,12 +6,12 @@
 
 # streaQ
 
-Fast, async, type-safe distributed task queue via Redis streams
+Fast, async, fully-typed distributed task queue via Redis streams
 
 ## Features
 
 - Up to [5x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than `arq`
-- Strongly typed
+- Fully typed
 - 95%+ unit test coverage
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
@@ -23,7 +23,7 @@ Fast, async, type-safe distributed task queue via Redis streams
 - Support for synchronous tasks (run in separate threads)
 - Redis Sentinel support for production
 - Built-in web UI for monitoring tasks
-- Built with structured concurrency on `anyio`
+- Built with structured concurrency on `anyio`, supports both `asyncio` and `trio`
 
 ## Installation
 
@@ -56,14 +56,15 @@ async def cronjob() -> None:
     print("Nobody respects the spammish repetition!")
 ```
 
-Finally, let's queue up some tasks:
+Finally, let's initialize the worker and queue up some tasks:
 
 ```python
-await sleeper.enqueue(3)
-# enqueue returns a task object that can be used to get results/info
-task = await sleeper.enqueue(1).start(delay=3)
-print(await task.info())
-print(await task.result(timeout=5))
+async with worker:
+    await sleeper.enqueue(3)
+    # enqueue returns a task object that can be used to get results/info
+    task = await sleeper.enqueue(1).start(delay=3)
+    print(await task.info())
+    print(await task.result(timeout=5))
 ```
 
 Putting this all together gives us [example.py](https://github.com/tastyware/streaq/blob/master/example.py). Let's spin up a worker:

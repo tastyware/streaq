@@ -3,15 +3,19 @@ from datetime import datetime, timedelta, tzinfo
 from functools import partial, wraps
 from importlib import import_module
 from logging import Formatter
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, TypeVar, overload
 
-from anyio.abc import CapacityLimiter
+from anyio import CapacityLimiter, create_task_group
 from anyio.to_thread import run_sync
 
 from streaq.types import P, R, TypedCoroutine
 
 
 class StreaqError(Exception):
+    pass
+
+
+class StreaqCancelled(StreaqError):
     pass
 
 
@@ -150,3 +154,64 @@ def asyncify(
         return await run_sync(call, abandon_on_cancel=True, limiter=limiter)
 
     return wrapper
+
+
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
+T4 = TypeVar("T4")
+T5 = TypeVar("T5")
+
+
+@overload
+async def gather(
+    awaitable1: Awaitable[T1],
+    awaitable2: Awaitable[T2],
+    /,
+) -> tuple[T1, T2]: ...
+
+
+@overload
+async def gather(
+    awaitable1: Awaitable[T1],
+    awaitable2: Awaitable[T2],
+    awaitable3: Awaitable[T3],
+    /,
+) -> tuple[T1, T2, T3]: ...
+
+
+@overload
+async def gather(
+    awaitable1: Awaitable[T1],
+    awaitable2: Awaitable[T2],
+    awaitable3: Awaitable[T3],
+    awaitable4: Awaitable[T4],
+    /,
+) -> tuple[T1, T2, T3, T4]: ...
+
+
+@overload
+async def gather(
+    awaitable1: Awaitable[T1],
+    awaitable2: Awaitable[T2],
+    awaitable3: Awaitable[T3],
+    awaitable4: Awaitable[T4],
+    awaitable5: Awaitable[T5],
+    /,
+) -> tuple[T1, T2, T3, T4, T5]: ...
+
+
+@overload
+async def gather(*awaitables: Awaitable[T1]) -> tuple[T1, ...]: ...
+
+
+async def gather(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
+    results: list[Any] = [None] * len(awaitables)
+
+    async def runner(awaitable: Awaitable[Any], i: int) -> None:
+        results[i] = await awaitable
+
+    async with create_task_group() as tg:
+        for i, awaitable in enumerate(awaitables):
+            tg.start_soon(runner, awaitable, i)
+    return tuple(results)

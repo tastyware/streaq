@@ -1,4 +1,4 @@
-import asyncio
+from anyio import run, sleep
 
 from streaq import Worker
 
@@ -7,7 +7,7 @@ worker = Worker(redis_url="redis://localhost:6379")
 
 @worker.task()
 async def sleeper(time: int) -> int:
-    await asyncio.sleep(time)
+    await sleep(time)
     return time
 
 
@@ -17,12 +17,13 @@ async def cronjob() -> None:
 
 
 async def main() -> None:
-    await sleeper.enqueue(3)
-    # enqueue returns a task object that can be used to get results/info
-    task = await sleeper.enqueue(1).start(delay=3)
-    print(await task.info())
-    print(await task.result(timeout=5))
+    async with worker:
+        await sleeper.enqueue(3)
+        # enqueue returns a task object that can be used to get results/info
+        task = await sleeper.enqueue(1).start(delay=3)
+        print(await task.info())
+        print(await task.result(timeout=5))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run(main)

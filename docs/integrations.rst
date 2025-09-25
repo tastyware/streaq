@@ -8,19 +8,33 @@ Integration with FastAPI is straightforward:
 
 .. code-block:: python
 
-   from fastapi import FastAPI
+   from fastapi import FastAPI, HTTPException, status
 
    from example import fetch
 
-   app = FastAPI()
+   @asynccontextmanager
+   async def app_lifespan(app: FastAPI) -> AsyncGenerator[None]:
+       async with worker:
+           yield
 
-   @app.post("/enqueue")
-   async def enqueue(url: str) -> bool:
+   app = FastAPI(lifespan=app_lifespan)
+
+   @app.post("/fetch")
+   async def do_fetch(url: str) -> int:
        task = await fetch.enqueue(url)
-       res = await task.result(5)
-       return res.success
+       try:
+           res = await task.result(5)
+       except TimeoutError as e:
+           raise HTTPException(
+               status_code=status.HTTP_408_REQUEST_TIMEOUT, detail="Timed out!"
+           )
+       if not res.success:
+           raise HTTPException(
+               status_code=status.HTTP_424_FAILED_DEPENDENCY, detail="Task failed!"
+           )
+       return res.result
 
-Here, we're building off of the ``fetch`` task defined in :doc:`Getting started <getting-started>`. But what if the backend doesn't have access to the task definitions?
+Here, we're building off of the ``fetch`` task defined in :doc:`Getting started <getting-started>`. As you can imagine, integrating with other frameworks should be very similar!
 
 Separating enqueuing from task definitions
 ------------------------------------------
@@ -44,7 +58,8 @@ Now, tasks can be enqueued in the same way as before:
 
 .. code-block:: python
 
-   await fetch.enqueue("https://github.com/tastyware/streaq")
+   async with worker:
+       await fetch.enqueue("https://github.com/tastyware/streaq")
 
 .. warning::
 
@@ -60,7 +75,8 @@ The second way is to use ``Worker.enqueue_unsafe``:
    # signing key, and queue name as the worker defined elsewhere
    worker = Worker(redis_url="redis://localhost:6379")
 
-   await worker.enqueue_unsafe("fetch", "https://tastyware.dev")
+   async with worker:
+       await worker.enqueue_unsafe("fetch", "https://tastyware.dev")
 
 This method is not type-safe, but it doesn't require you to re-define the task signature in the backend. Here, the first parameter is the ``fn_name`` of the task defined elsewhere, and the rest of the args and kwargs can be passed normally.
 
@@ -75,7 +91,7 @@ With a little work the UI can be mounted as a part of an existing FastAPI applic
 
    from streaq.ui import get_worker, router
 
-   app = FastAPI()
+   app = FastAPI(lifespan=app_lifespan)  # see above, we need the worker to be initialized
    app.dependency_overrides[get_worker] = lambda: worker
    # here, you can add any auth-related dependencies as well
    app.include_router(router, prefix="/streaq", dependencies=[...])

@@ -1,0 +1,182 @@
+services:
+  redis-master:
+    image: redis:latest
+    container_name: redis-master
+    hostname: redis-master
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/master:/data
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--repl-diskless-load",
+        "on-empty-db",
+        "--protected-mode",
+        "no"
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6379 ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  slave-1:
+    image: redis:latest
+    container_name: slave-1
+    hostname: slave-1
+    depends_on:
+      - redis-master
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./data/slave1:/data
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--replicaof",
+        "redis-master",
+        "6379",
+        "--repl-diskless-load",
+        "on-empty-db",
+        "--protected-mode",
+        "no"
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6379 --raw INFO replication | grep -q '^role:slave' && redis-cli -p 6379 --raw INFO replication | grep -q 'master_link_status:up'"]
+      interval: 3s
+      timeout: 4s
+      retries: 15
+      start_period: 15s
+
+  slave-2:
+    image: redis:latest
+    container_name: slave-2
+    hostname: slave-2
+    depends_on:
+      - redis-master
+    ports:
+      - "6381:6379"
+    volumes:
+      - ./data/slave2:/data
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--replicaof",
+        "redis-master",
+        "6379",
+        "--repl-diskless-load",
+        "on-empty-db",
+        "--protected-mode",
+        "no"
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 6379 --raw INFO replication | grep -q '^role:slave' && redis-cli -p 6379 --raw INFO replication | grep -q 'master_link_status:up'"]
+      interval: 3s
+      timeout: 4s
+      retries: 15
+      start_period: 15s
+
+  sentinel-1:
+    image: redis:latest
+    container_name: sentinel-1
+    hostname: sentinel-1
+    depends_on:
+      - redis-master
+    ports:
+      - "26379:26379"
+    command: >
+      sh -c 'echo "bind 0.0.0.0" > /etc/sentinel.conf &&
+            echo "sentinel monitor mymaster redis-master 6379 2" >> /etc/sentinel.conf &&
+            echo "sentinel resolve-hostnames yes" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel parallel-syncs mymaster 1" >> /etc/sentinel.conf &&
+            redis-sentinel /etc/sentinel.conf'
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL ckquorum mymaster | grep -q ^OK"]
+      interval: 3s
+      timeout: 4s
+      retries: 60
+      start_period: 10s
+
+  sentinel-2:
+    image: redis:latest
+    container_name: sentinel-2
+    hostname: sentinel-2
+    depends_on:
+      - redis-master
+    ports:
+      - "26380:26379"
+    command: >
+      sh -c 'echo "bind 0.0.0.0" > /etc/sentinel.conf &&
+            echo "sentinel monitor mymaster redis-master 6379 2" >> /etc/sentinel.conf &&
+            echo "sentinel resolve-hostnames yes" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel parallel-syncs mymaster 1" >> /etc/sentinel.conf &&
+            redis-sentinel /etc/sentinel.conf'
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL ckquorum mymaster | grep -q ^OK"]
+      interval: 3s
+      timeout: 4s
+      retries: 60
+      start_period: 10s
+
+  sentinel-3:
+    image: redis:latest
+    container_name: sentinel-3
+    hostname: sentinel-3
+    depends_on:
+      - redis-master
+    ports:
+      - "26381:26379"
+    command: >
+      sh -c 'echo "bind 0.0.0.0" > /etc/sentinel.conf &&
+            echo "sentinel monitor mymaster redis-master 6379 2" >> /etc/sentinel.conf &&
+            echo "sentinel resolve-hostnames yes" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel parallel-syncs mymaster 1" >> /etc/sentinel.conf &&
+            redis-sentinel /etc/sentinel.conf'
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL ckquorum mymaster | grep -q ^OK"]
+      interval: 3s
+      timeout: 4s
+      retries: 60
+      start_period: 10s
+
+  tests:
+    image: ghcr.io/astral-sh/uv:debian
+    environment:
+      - UV_PYTHON=${PYTHON_VERSION}
+      - UV_LINK_MODE=copy
+      - UV_PYTHON_CACHE_DIR=/root/.cache/uv/python
+    working_dir: /app
+    volumes:
+      - .:/app
+      - /app/.venv
+      - uv-cache:/root/.cache/uv
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      sentinel-1:
+        condition: service_healthy
+      sentinel-2:
+        condition: service_healthy
+      sentinel-3:
+        condition: service_healthy
+      slave-1:
+        condition: service_healthy
+      slave-2:
+        condition: service_healthy
+
+volumes:
+  uv-cache:  {}  # named volume for uv/pip caches
