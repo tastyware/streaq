@@ -13,6 +13,9 @@ exclude = ["**/__pycache__/**"]
 include = ["streaq/**/*"]
 exclude = ["**/__pycache__/**"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [project]
 name = "streaq"
 description = "Fast, async, fully-typed distributed task queue via Redis streams"
@@ -56,7 +59,7 @@ authors = [
 ]
 dependencies = [
     "anyio>=4.11.0",
-    "coredis",
+    "coredis @ git+https://github.com/Graeme22/coredis.git@anyio",
     "crontab>=1.0.5",
     "typer>=0.19.2",
     "uvloop>=0.21.0; sys_platform != 'win32'",
@@ -66,12 +69,11 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 benchmark = [
-    "arq==0.26.3",
+    "arq @ git+https://github.com/Graeme22/arq.git",
     "saq[hiredis]==0.25.2",
     "taskiq-redis==1.1.0",
 ]
 web = [
-    "async-lru>=2.0.5",
     "fastapi>=0.117.1",
     "jinja2>=3.1.6",
     "python-multipart>=0.0.20",
@@ -104,10 +106,6 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = "tests"
-
-[tool.uv.sources]
-arq = { git = "https://github.com/graeme22/arq" }
-coredis = { git = "https://github.com/Graeme22/coredis.git", rev = "anyio" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
