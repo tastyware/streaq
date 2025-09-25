@@ -1,29 +1,29 @@
-import asyncio
 import time as pytime
 
+import anyio
 import typer
 
 from streaq import Worker
 
-worker = Worker(concurrency=32)
+worker = Worker(concurrency=32, redis_kwargs={"blocking": False})
 N_TASKS = 20_000
 
 
 @worker.task()
 async def sleeper(time: int) -> None:
     if time:
-        await asyncio.sleep(time)
+        await anyio.sleep(time)
 
 
 async def main(time: int):
     tasks = [sleeper.enqueue(time) for _ in range(N_TASKS)]
-    await worker.enqueue_many(tasks)
+    async with worker:
+        await worker.enqueue_many(tasks)
 
 
 def run(time: int = 0):
-    loop = asyncio.get_event_loop()
     start = pytime.perf_counter()
-    loop.run_until_complete(main(time))
+    anyio.run(main, time)
     end = pytime.perf_counter()
     print(f"enqueued {N_TASKS} tasks in {end - start:.2f}s")
 

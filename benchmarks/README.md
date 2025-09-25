@@ -18,7 +18,7 @@ $ streaq --burst --workers ? bench_streaq.worker
 $ taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
 ```
 
-These benchmarks were run with streaQ v5.0.0 on an M4 Mac Mini.
+These benchmarks were run with streaQ v6.0.0 on an M4 Mac Mini using asyncio + uvloop. Trio performance is slightly worse.
 
 ## Benchmark 1: No-op
 
@@ -27,7 +27,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 1 worker | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | -------- | ---------- | ---------- | ---------- |
-| streaq   | 0.37s     | 6.83s    | 2.93s      | 3.30s      | 3.97s      |
+| streaq   | 0.45s     | 8.50s    | 3.84s      | 4.19s      | 5.18s      |
 | SAQ      | 1.67s     | 9.86s    | 3.46s      | 3.45s      | 3.93s      |
 | taskiq   | 1.68s     | 6.36s    | 3.26s      | 3.38s      | 6.43s      |
 | arq      | 2.31s     | 62.66s   | 28.10s     | 43.33s     | ☠️         |
@@ -39,7 +39,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | ---------- | ---------- | ---------- |
-| streaq   | 0.37s     | 63.43s     | 32.98s     | 17.00s     |
+| streaq   | 0.44s     | 63.89s     | 33.02s     | 17.33s     |
 | SAQ      | 1.69s     | 64.51s     | 33.56s     | 17.74s     |
 | taskiq   | 1.68s     | 67.53s     | 34.42s     | 18.55s     |
 | arq      | 2.27s     | 176.87s    | 169.47s    | ☠️         |
