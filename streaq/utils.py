@@ -104,7 +104,7 @@ def default_log_config(tz: tzinfo, verbose: bool) -> dict[str, Any]:
             "streaq.standard": {
                 "()": TimezoneFormatter,
                 "format": "[%(levelname)s] %(asctime)s: %(message)s",
-                "datefmt": "%H:%M:%S",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
                 "tz": tz,
             }
         },
