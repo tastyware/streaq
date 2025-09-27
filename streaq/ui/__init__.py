@@ -3,11 +3,16 @@ import sys
 from typing import Any, AsyncGenerator, cast
 
 from streaq import Worker
-from streaq.ui.deps import get_worker
+from streaq.ui.deps import get_exception_formatter, get_result_formatter, get_worker
 from streaq.ui.tasks import router
 from streaq.utils import import_string
 
-__all__ = ["get_worker", "router"]
+__all__ = [
+    "get_worker",
+    "get_result_formatter",
+    "get_exception_formatter",
+    "router",
+]
 
 
 def run_web(host: str, port: int, worker_path: str) -> None:  # pragma: no cover
