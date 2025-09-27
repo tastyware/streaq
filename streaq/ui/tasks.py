@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from fastapi import (
     APIRouter,
@@ -17,7 +17,12 @@ from pydantic import BaseModel
 
 from streaq import TaskStatus, Worker
 from streaq.constants import REDIS_RESULT, REDIS_RUNNING, REDIS_TASK
-from streaq.ui.deps import get_worker, templates
+from streaq.ui.deps import (
+    get_exception_formatter,
+    get_result_formatter,
+    get_worker,
+    templates,
+)
 from streaq.utils import gather
 
 router = APIRouter()
@@ -164,6 +169,10 @@ async def filter_tasks(
 async def get_task(
     request: Request,
     worker: Annotated[Worker[Any], Depends(get_worker)],
+    result_formatter: Annotated[Callable[[Any], str], Depends(get_result_formatter)],
+    exception_formatter: Annotated[
+        Callable[[BaseException], str], Depends(get_exception_formatter)
+    ],
     task_id: str,
 ) -> Any:
     status = await worker.status_by_id(task_id)
@@ -174,9 +183,10 @@ async def get_task(
         is_done = True
         start_dt = datetime.fromtimestamp(result.start_time / 1000, tz=worker.tz)
         end_dt = datetime.fromtimestamp(result.finish_time / 1000, tz=worker.tz)
-        output, truncate_length = str(result.result), 32
-        if len(output) > truncate_length:
-            output = f"{output[:truncate_length]}…"
+        if result.success:
+            output = result_formatter(result.result)
+        else:
+            output = exception_formatter(result.exception)
         task_try = result.tries
         worker_id = result.worker_id
         extra = {

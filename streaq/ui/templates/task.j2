@@ -48,7 +48,12 @@
             </tr>
             <tr>
               <th scope="row">Result</th>
-              <td>{{ result }}</td>
+                <td>
+                  <div class="border rounded p-2 overflow-auto bg-light"
+                       style="max-height: 300px; max-width: 100ch; white-space: pre-wrap;">
+                      {{- result|trim -}}
+                  </div>
+                </td>
             </tr>
             <tr>
               <th scope="row">Start Time</th>

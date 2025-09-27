@@ -1,5 +1,6 @@
 from pathlib import Path
-from typing import Any
+from traceback import format_exception
+from typing import Any, Callable
 
 from fastapi import HTTPException, status
 from fastapi.templating import Jinja2Templates
@@ -15,3 +16,14 @@ def get_worker() -> Worker[Any]:
         status_code=status.HTTP_412_PRECONDITION_FAILED,
         detail="get_worker dependency not implemented!",
     )
+
+
+def get_result_formatter() -> Callable[[Any], str]:
+    return str
+
+
+def get_exception_formatter() -> Callable[[BaseException], str]:
+    def _format_exc(exc: BaseException):
+        return "".join(format_exception(exc))
+
+    return _format_exc
