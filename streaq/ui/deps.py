@@ -1,4 +1,5 @@
 from pathlib import Path
+from textwrap import shorten
 from traceback import format_exception
 from typing import Any, Callable
 
@@ -19,11 +20,14 @@ def get_worker() -> Worker[Any]:
 
 
 def get_result_formatter() -> Callable[[Any], str]:
-    return str
+    def _format_result(result: Any) -> str:
+        return shorten(str(result), width=80, placeholder="…")
+
+    return _format_result
 
 
 def get_exception_formatter() -> Callable[[BaseException], str]:
-    def _format_exc(exc: BaseException):
+    def _format_exc(exc: BaseException) -> str:
         return "".join(format_exception(exc))
 
     return _format_exc
