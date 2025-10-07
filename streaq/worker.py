@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from inspect import iscoroutinefunction
 from sys import platform
+from textwrap import shorten
 from typing import Any, AsyncGenerator, Callable, Generic, Literal, cast
 from uuid import uuid4
 
@@ -795,10 +796,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 pipe.delete(to_delete)
                 pipe.srem(self._abort_key, [task_id])
                 if success:
-                    output, truncate_length = str(return_value), 32
-                    if len(output) > truncate_length:
-                        output = f"{output[:truncate_length]}…"
                     if not silent:
+                        output = shorten(str(return_value), width=32)
                         logger.info(f"task {fn_name} ■ {task_id} ← {output}")
                     if triggers:
                         args = self.serialize(to_tuple(return_value))
