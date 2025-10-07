@@ -338,3 +338,10 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
 .. warning::
    For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
+
+If you don't need to pass additional arguments, tasks can be pipelined using the ``|`` operator as a convenience:
+
+.. code-block:: python
+
+   async with worker:
+       await (fetch.enqueue("https://tastyware.dev") | double | is_even)

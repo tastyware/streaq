@@ -210,6 +210,11 @@ class Task(Generic[R]):
     def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
 
+    def __or__(self, other: RegisteredTask[C, POther, ROther]) -> Task[ROther]:
+        self._triggers = Task((), {}, other)
+        self._triggers._after = self
+        return self._triggers
+
     def task_key(self, mid: str) -> str:
         return self.parent.worker.prefix + mid + self.id
 
