@@ -54,6 +54,7 @@ async def test_lifespan(redis_url: str):
 async def test_health_check(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
+        redis_kwargs={"decode_responses": True},
         health_crontab="* * * * * * *",
         queue_name=uuid4().hex,
     )
@@ -127,6 +128,8 @@ async def test_uninitialized_worker(worker: Worker):
 
     with pytest.raises(StreaqError):
         await foobar.run()
+    with pytest.raises(StreaqError):
+        await worker.redis.ping()
 
 
 async def test_active_tasks(worker: Worker):
@@ -303,8 +306,11 @@ async def test_enqueue_many(worker: Worker):
 
     async with worker:
         tasks = [foobar.enqueue(i) for i in range(10)]
+        delayed = foobar.enqueue(1).start(delay=1)
+        depends = foobar.enqueue(1).start(after=delayed.id)
+        tasks.extend([delayed, depends])
         await worker.enqueue_many(tasks)
-        assert await worker.queue_size() >= len(tasks)
+        assert await worker.queue_size() >= 10
 
 
 async def test_invalid_task_context(worker: Worker):

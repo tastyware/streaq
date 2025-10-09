@@ -95,3 +95,15 @@ With a little work the UI can be mounted as a part of an existing FastAPI applic
    app.dependency_overrides[get_worker] = lambda: worker
    # here, you can add any auth-related dependencies as well
    app.include_router(router, prefix="/streaq", dependencies=[...])
+
+If desired, you can add custom formatters in a similar way:
+
+.. code-block:: python
+
+   from streaq.ui import get_result_formatter, get_exception_formatter
+
+   def my_result_formatter(result: Any) -> str: ...
+   def my_exception_formatter(exc: BaseException) -> str: ...
+
+   app.dependency_overrides[get_result_formatter] = lambda: my_result_formatter
+   app.dependency_overrides[get_exception_formatter] = lambda: my_exception_formatter

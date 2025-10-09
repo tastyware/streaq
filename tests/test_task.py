@@ -79,13 +79,13 @@ async def test_task_cron(worker: Worker):
 
     @worker.cron("* * * * * * *")  # once/second
     async def cron2() -> None:
-        await sleep(3)
+        await sleep(5)
 
     schedule = cron1.schedule()
     assert schedule.day == 1 and schedule.month == 1
     assert await cron1.run()
     async with create_task_group() as tg:
-        tg.start_soon(worker.run_async)
+        await tg.start(worker.run_async)
         await sleep(2)
         # this will be set if task is running
         assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cron2.fn_name)
@@ -104,6 +104,9 @@ async def test_task_info(worker: Worker):
         info2 = await task2.info()
         assert info and info.scheduled is not None
         assert info2 and info2.scheduled is None
+        task.id = "fake"
+        info3 = await task.info()
+        assert info3 is None
 
 
 async def test_task_retry(worker: Worker):
@@ -421,7 +424,8 @@ async def test_enqueue_unique_task(worker: Worker):
         tg.cancel_scope.cancel()
 
 
-async def test_failed_abort(worker: Worker):
+@pytest.mark.parametrize("wait", [1, 0])
+async def test_failed_abort(worker: Worker, wait: int):
     @worker.task(ttl=0)
     async def foobar() -> None:
         pass
@@ -430,7 +434,7 @@ async def test_failed_abort(worker: Worker):
         await tg.start(worker.run_async)
         task = await foobar.enqueue().start()
         await sleep(1)
-        assert not await task.abort(1)
+        assert not await task.abort(wait)
         tg.cancel_scope.cancel()
 
 
@@ -511,6 +515,19 @@ async def test_task_pipeline(worker: Worker):
         task = await double.enqueue(1).then(double).then(is_even)
         res = await task.result(3)
         assert res.result and res.success
+        tg.cancel_scope.cancel()
+
+
+async def test_task_pipeline_shorthand(worker: Worker):
+    @worker.task()
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        task = await (double.enqueue(1) | double | double)
+        res = await task.result(3)
+        assert res.success and res.result == 8
         tg.cancel_scope.cancel()
 
 

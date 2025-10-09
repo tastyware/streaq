@@ -6,7 +6,7 @@ Task execution
 
 streaQ preserves arq's task execution model called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will remain in the queue to be picked up by another worker. ``Worker.idle_timeout`` controls how often task liveness is updated (and consequently, how quickly failed tasks can be retried).
 
-All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice.
+All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice. Alternatively, you can opt-out of this behavior on a per-task basis by passing ``max_tries=1`` to the task constructor.
 
 .. note::
    Idempotency is super easy with Redis, see `here <https://gist.github.com/Graeme22/5cd3bffba46480d3936dad407b14d6a4>`_!

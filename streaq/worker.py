@@ -21,8 +21,10 @@ from anyio import (
     Path,
     create_memory_object_stream,
     create_task_group,
+    current_time,
     fail_after,
     get_cancelled_exc_class,
+    move_on_after,
     open_signal_receiver,
     run,
     sleep,
@@ -514,7 +516,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Groups together and runs worker tasks.
         """
         logger.info(f"starting worker {self.id} for {len(self)} functions")
-        start_time = now_ms()
+        start_time = current_time()
         # run user-defined initialization code
         async with self, self.lifespan as context:
             self._worker_context = context
@@ -541,7 +543,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     for _ in range(self.concurrency):
                         tg.start_soon(self.consumer, receive.clone(), limiter)
             finally:
-                run_time = now_ms() - start_time
+                run_time = round((current_time() - start_time) * 1000)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
 
     async def consumer(
@@ -585,17 +587,24 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Also handles cron jobs, task abortion, and scheduling delayed tasks.
         """
         streams = {self.stream_key + p: ">" for p in self.priorities}
-        priority_order = {p: i for i, p in enumerate(self.priorities)}
+        priority_order = {self.stream_key + p: i for i, p in enumerate(self.priorities)}
+        prefetch = self.concurrency + self.prefetch
         with queue:
             while not self._block_new_tasks:
-                # Calculate how many messages to fetch to fill the buffer
-                count = (
-                    self.concurrency
-                    + self.prefetch
-                    - limiter.borrowed_tokens
-                    - queue.statistics().current_buffer_used
-                )
                 messages: list[StreamMessage] = []
+                start_time = current_time()
+                # Calculate how many messages to fetch to fill the buffer
+                count = prefetch - limiter.borrowed_tokens - len(queue._state.buffer)  # type: ignore
+                if count == 0:
+                    # If we don't have space wait up to half a second for it to free up
+                    with move_on_after(0.5):
+                        # Acquire and release immediately, triggers when a task finishes
+                        async with limiter:
+                            count = (
+                                prefetch
+                                - limiter.borrowed_tokens
+                                - len(queue._state.buffer)  # type: ignore
+                            )
                 # Fetch new messages
                 if count > 0:
                     # non-blocking, priority ordered first
@@ -607,15 +616,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     entries = MultiStreamRangeCallback[str]()(res)
                     # blocking second if nothing fetched
                     if not entries:
-                        entries = await self.redis.xreadgroup(
-                            self._group_name,
-                            self.id,
-                            streams=streams,  # type: ignore
-                            block=500,
-                            count=count,
-                        )
+                        elapsed_ms = 500 - round((current_time() - start_time) * 1000)
+                        if elapsed_ms > 0:
+                            entries = await self.redis.xreadgroup(
+                                self._group_name,
+                                self.id,
+                                streams=streams,  # type: ignore
+                                block=elapsed_ms,
+                                count=count,
+                            )
                     if entries:
-                        for stream, msgs in entries.items():
+                        for stream, msgs in sorted(
+                            entries.items(), key=lambda item: priority_order[item[0]]
+                        ):
                             priority = stream.split(":")[-1]
                             messages.extend(
                                 [
@@ -627,6 +640,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                                     for msg_id, msg in msgs
                                 ]
                             )
+                        # start new tasks
+                        logger.debug(
+                            f"fetched {len(messages)} tasks in worker {self.id}"
+                        )
+                        for msg in messages:
+                            # this will succeed since we manually compute quantity
+                            queue.send_nowait(msg)
                 # schedule delayed tasks
                 async with self.redis.pipeline(transaction=False) as pipe:
                     pipe.fcall(
@@ -641,21 +661,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     await self.abort_tasks(aborted)
                 # cron jobs
                 await self.schedule_cron_jobs()
-                # start new tasks
-                if messages:
-                    logger.debug(
-                        f"starting {len(messages)} new tasks in worker {self.id}"
-                    )
-                    messages.sort(key=lambda msg: priority_order[msg.priority])
-                    for msg in messages:
-                        # this will succeed since we manually compute quantity
-                        queue.send_nowait(msg)
                 # wrap things up if we burstin'
-                elif (
-                    self.burst
-                    and limiter.borrowed_tokens == 0
-                    and queue.statistics().current_buffer_used == 0
-                ):
+                if self.burst and not messages and limiter.borrowed_tokens == 0:
                     self._block_new_tasks = True
                     scope.cancel()
 
@@ -717,8 +724,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        if not silent:
-            self.counters["failed"] += 1
+        self.counters["failed"] += 1
         stream_key = self.stream_key + msg.priority
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
@@ -766,30 +772,29 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return self.prefix + mid + task_id
 
         stream_key = self.stream_key + msg.priority
-        async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.xack(stream_key, self._group_name, [msg.message_id])
-            pipe.xdel(stream_key, [msg.message_id])
-            to_delete: list[KeyT] = [key(REDIS_RUNNING)]
-            if lock_key:
-                to_delete.append(lock_key)
-            if finish:
-                data = {
-                    "f": fn_name,
-                    "et": enqueue_time,
-                    "s": success,
-                    "r": return_value,
-                    "st": start_time,
-                    "ft": finish_time,
-                    "t": tries,
-                    "w": self.id,
-                }
-                result = self.serialize(data)
+        to_delete: list[KeyT] = [key(REDIS_RUNNING)]
+        if lock_key:
+            to_delete.append(lock_key)
+        if finish:
+            data = {
+                "f": fn_name,
+                "et": enqueue_time,
+                "s": success,
+                "r": return_value,
+                "st": start_time,
+                "ft": finish_time,
+                "t": tries,
+                "w": self.id,
+            }
+            result = self.serialize(data)
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.xack(stream_key, self._group_name, [msg.message_id])
+                pipe.xdel(stream_key, [msg.message_id])
                 pipe.publish(self._channel_key + task_id, result)
-                if not silent:
-                    if success:
-                        self.counters["completed"] += 1
-                    else:
-                        self.counters["failed"] += 1
+                if success:
+                    self.counters["completed"] += 1
+                else:
+                    self.counters["failed"] += 1
                 if ttl != 0:
                     pipe.set(key(REDIS_RESULT), result, ex=ttl)
                 to_delete.extend([key(REDIS_RETRY), key(REDIS_TASK)])
@@ -813,13 +818,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         task_id,
                     ],
                 )
-            else:
-                assert schedule is not None  # this shouldn't be possible
-                if not silent:
-                    self.counters["retried"] += 1
-                pipe.delete(to_delete)
-                pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
-        if finish and (res := cast(list[str], await command)):  # type: ignore
+            res = cast(list[str], await command)
             if success:
                 async with self.redis.pipeline(transaction=False) as pipe:
                     for dep_id in res:
@@ -827,6 +826,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         pipe.xadd(stream_key, {"task_id": dep_id})
             else:
                 await self.fail_task_dependents(res)
+        elif schedule:
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.xack(stream_key, self._group_name, [msg.message_id])
+                pipe.xdel(stream_key, [msg.message_id])
+                pipe.delete(to_delete)
+                pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
 
     async def prepare_task(
         self, msg: StreamMessage
@@ -1000,11 +1005,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 done = True
                 if not task.silent:
                     logger.info(f"task {task.fn_name} ⊘ {task_id} aborted")
-                    self.counters["aborted"] += 1
-                    self.counters["failed"] -= 1  # this will get incremented later
+                self.counters["aborted"] += 1
+                self.counters["failed"] -= 1  # this will get incremented later
         except StreaqRetry as e:
             success = False
             done = False
+            self.counters["retried"] += 1
             if e.schedule:
                 schedule = datetime_ms(e.schedule)
                 if not task.silent:
@@ -1033,6 +1039,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
             success = False
             done = False
+            self.counters["retried"] += 1
             raise  # best practice from anyio docs
         except Exception as e:
             result = e

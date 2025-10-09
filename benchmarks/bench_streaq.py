@@ -1,5 +1,3 @@
-import time as pytime
-
 import anyio
 import typer
 
@@ -16,16 +14,16 @@ async def sleeper(time: int) -> None:
 
 
 async def main(time: int):
+    start = anyio.current_time()
     tasks = [sleeper.enqueue(time) for _ in range(N_TASKS)]
     async with worker:
         await worker.enqueue_many(tasks)
+    end = anyio.current_time()
+    print(f"enqueued {N_TASKS} tasks in {end - start:.2f}s")
 
 
 def run(time: int = 0):
-    start = pytime.perf_counter()
     anyio.run(main, time)
-    end = pytime.perf_counter()
-    print(f"enqueued {N_TASKS} tasks in {end - start:.2f}s")
 
 
 if __name__ == "__main__":
