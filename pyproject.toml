@@ -116,6 +116,7 @@ strict = ["streaq/"]
 [tool.coverage.run]
 source = ["streaq"]
 concurrency = ["multiprocessing", "thread"]
+sigterm = true
 patch = ["subprocess"]
 
 [tool.coverage.report]

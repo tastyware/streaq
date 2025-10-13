@@ -12,7 +12,7 @@ Fast, async, fully-typed distributed task queue via Redis streams
 
 - Up to [5x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than `arq`
 - Fully typed
-- 95%+ unit test coverage
+- 99% unit test coverage
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
 - Cron jobs

@@ -63,42 +63,37 @@ def main(
         int, Option("--port", "-p", help="Port for the web UI server.")
     ] = 8000,
 ) -> None:
-    processes: list[Process] = []
-    if web:  # pragma: no cover
+    web_process: Process | None = None
+    if web:
         try:
             from streaq.ui import run_web
-        except ModuleNotFoundError as e:
+        except ModuleNotFoundError as e:  # pragma: no cover
             raise StreaqError(
                 "web module not installed, try `pip install streaq[web]`"
             ) from e
-        processes.append(
-            Process(
-                target=run_web,
-                args=(host, port, worker_path),
-            )
+        web_process = Process(
+            target=run_web,
+            args=(host, port, worker_path),
         )
-    if workers > 1:
-        processes.extend(
-            [
-                Process(
-                    target=run_worker,
-                    args=(worker_path, burst, reload, verbose),
-                )
-                for _ in range(workers - 1)
-            ]
-        )
-    for p in processes:
-        p.start()
-    run_worker(worker_path, burst, reload, verbose)
-    for p in processes:
-        p.join()
+        web_process.start()
+    for _ in range(workers - 1):
+        Process(
+            target=run_worker,
+            args=(worker_path, burst, reload, verbose),
+        ).start()
+    try:
+        run_worker(worker_path, burst, reload, verbose)
+    finally:
+        if web_process and web_process.is_alive():
+            web_process.terminate()
+            web_process.join()
 
 
 def run_worker(path: str, burst: bool, watch: bool, verbose: bool) -> None:
     """
     Run a worker with the given options.
     """
-    if watch:  # pragma: no cover
+    if watch:
         run_process(
             ".",
             target=_run_worker,
