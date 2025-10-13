@@ -742,9 +742,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     task_id,
                 ],
             )
-        res = cast(list[str], await command)
-        if res:
-            await self.fail_task_dependents(res)
+        if res := await command:
+            await self.fail_task_dependents(res)  # type: ignore
 
     async def finish_task(
         self,
@@ -818,14 +817,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         task_id,
                     ],
                 )
-            res = cast(list[str], await command)
-            if success:
-                async with self.redis.pipeline(transaction=False) as pipe:
-                    for dep_id in res:
-                        logger.info(f"↳ dependent {dep_id} triggered")
-                        pipe.xadd(stream_key, {"task_id": dep_id})
-            else:
-                await self.fail_task_dependents(res)
+            if res := cast(list[str], await command):
+                if success:
+                    async with self.redis.pipeline(transaction=False) as pipe:
+                        for dep_id in res:
+                            logger.info(f"↳ dependent {dep_id} triggered")
+                            pipe.xadd(stream_key, {"task_id": dep_id})
+                else:
+                    await self.fail_task_dependents(res)
         elif schedule:
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.xack(stream_key, self._group_name, [msg.message_id])

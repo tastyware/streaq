@@ -1,7 +1,14 @@
+import os
 import subprocess
 import sys
+from contextlib import redirect_stderr
+from multiprocessing import get_context
+from pathlib import Path
+from typing import Any
 
 import pytest
+from anyio import sleep
+from httpx import AsyncClient, ConnectError
 from typer.testing import CliRunner
 
 from streaq import VERSION, Worker
@@ -58,77 +65,62 @@ def test_main_entry_point():
     assert "--help" in result.stdout
 
 
-"""
-@pytest.fixture(scope="function")
-def worker_file(redis_url: str, tmp_path: Path):
-    tmp = NamedTemporaryFile(dir=tmp_path, suffix=".py", mode="w+", delete=False)
-    tmp.write(f""from uuid import uuid4
+def _run_in_tmp(path: Path, *args: Any) -> None:
+    os.chdir(path)
+    log_file = path / "log.txt"
+    with open(log_file, "w+", buffering=1) as f, redirect_stderr(f):
+        runner.invoke(cli, args=args)
+
+
+async def test_web_cli(redis_url: str, free_tcp_port: int, tmp_path: Path):
+    file = tmp_path / "web.py"
+    file.write_text(
+        f"""from uuid import uuid4
 from streaq import Worker
-worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"")
-    tmp.close()
-    yield tmp.name
-    os.remove(tmp.name)
+worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"""
+    )
+    ctx = get_context("spawn")
+    p = ctx.Process(
+        target=_run_in_tmp,
+        args=(tmp_path, "web.worker", "--web", "--port", str(free_tcp_port)),
+    )
+    p.start()
+
+    async with AsyncClient() as client:
+        for _ in range(5):
+            try:
+                res = await client.get(f"http://localhost:{free_tcp_port}/")
+                assert res.status_code == 303
+                break
+            except ConnectError:
+                await sleep(1)
+        else:
+            pytest.fail("Web CLI never listened on port!")
+    p.kill()
 
 
-async def test_watch(worker_file: str, tmp_path: Path):
-    file_name = worker_file.split("/")[-1][:-3]
+async def test_watch_subprocess(redis_url: str, tmp_path: Path):
+    file = tmp_path / "watch.py"
+    file.write_text(
+        f"""from uuid import uuid4
+from streaq import Worker
+worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"""
+    )
 
-    def run_subprocess():
-        with pytest.raises(subprocess.TimeoutExpired) as e:
-            subprocess.run(
-                [sys.executable, "-m", "streaq", f"{file_name}.worker", "--reload"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=3,
-                cwd=tmp_path,
-            )
-        return e
+    p = subprocess.Popen(
+        [sys.executable, "-m", "streaq", "watch.worker", "--reload"],
+        cwd=str(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
-    async def modify_file():
-        await sleep(1)  # wait for startup
-        with open(worker_file, "a") as f:
-            f.write("  # change from test")
+    await sleep(2)
+    with open(file, "a") as f:  # make change
+        f.write("  # change from test")
+    await sleep(1)
 
-    res, _ = await gather(run_sync(run_subprocess), modify_file())
-    assert str(res.value.stderr).count("starting") > 1
-
-
-def find_free_port() -> int:  # Finds and returns an available TCP port.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-@pytest.mark.xdist_group(name="web")
-async def test_web_cli(worker_file: str):
-    file_name = worker_file.split("/")[-1][:-3]
-    port = find_free_port()
-
-    def run_subprocess():
-        with pytest.raises(subprocess.TimeoutExpired) as e:
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "streaq",
-                    f"{file_name}.worker",
-                    "--web",
-                    "--port",
-                    str(port),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=3,
-            )
-        return e
-
-    async def modify_file():
-        await sleep(1)  # wait for startup
-        return httpx.get(f"http://localhost:{port}/")
-
-    web, res = await gather(run_sync(run_subprocess), modify_file())
-    assert "Uvicorn" in str(web.value.stderr)
-    assert res.status_code == 303
-"""
+    p.terminate()
+    out, err = p.communicate(timeout=3)
+    text = (out + err).lower()
+    assert "reload" in text and text.count("starting") > 1

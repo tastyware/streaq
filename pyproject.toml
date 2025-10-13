@@ -114,7 +114,6 @@ select = ["E", "F", "I"]
 strict = ["streaq/"]
 
 [tool.coverage.run]
-parallel = true
 source = ["streaq"]
 concurrency = ["multiprocessing", "thread"]
 patch = ["subprocess"]
