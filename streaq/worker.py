@@ -392,7 +392,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         max_tries: int | None = 3,
         name: str | None = None,
         silent: bool = False,
-        timeout: timedelta | int | None = None,
+        timeout: timedelta | int | None = timedelta(hours=1),
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
     ) -> CronDefinition[C]:
@@ -417,6 +417,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
+            if unique and timeout is None:
+                raise StreaqError("Unique tasks must have a timeout set!")
             task = RegisteredCron(
                 fn=cast(AsyncCron[R], _fn),
                 crontab=CronTab(tab),
@@ -471,6 +473,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
+            if unique and timeout is None:
+                raise StreaqError("Unique tasks must have a timeout set!")
             task = RegisteredTask(
                 fn=cast(AsyncTask[P, R], _fn),
                 expire=expire,
@@ -922,20 +926,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 ttl=task.ttl,
             )
 
-        start_time = now_ms()
         timeout = (
-            None if task.timeout is None else start_time + 1000 + to_ms(task.timeout)
+            None if task.timeout is None else self.idle_timeout + to_ms(task.timeout)
         )
         after = data.get("A")
-        async with self.redis.pipeline(transaction=True) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             if task.unique:
                 lock_key = self.prefix + REDIS_UNIQUE + fn_name
                 locked = pipe.set(
-                    lock_key, task_id, get=True, condition=PureToken.NX, pxat=timeout
+                    lock_key, task_id, get=True, condition=PureToken.NX, px=timeout
                 )
             else:
                 lock_key = None
-            pipe.set(key(REDIS_RUNNING), 1, pxat=timeout)
+            pipe.set(key(REDIS_RUNNING), 1, px=timeout)
             if after:
                 previous = pipe.get(self.prefix + REDIS_PREVIOUS + after)
         if task.unique:

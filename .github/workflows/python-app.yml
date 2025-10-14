@@ -26,14 +26,13 @@ jobs:
         enable-cache: true
         python-version: ${{ matrix.python-version }}
     - name: Setup uv venv
-      run: |
-        uv sync --locked --all-extras --dev
+      run: uv sync --locked --all-extras --dev
     - name: Lint with ruff
-      run: |
-        uv run ruff check streaq/ tests/ example.py
+      run: uv run ruff check streaq/ tests/ example.py
     - name: Type check with pyright
-      run: |
-        uv run pyright streaq/ tests/ example.py
+      run: uv run pyright streaq/ tests/ example.py
     - name: Test with pytest
       run: |
         docker compose run --rm tests uv run --locked --all-extras --dev pytest -n auto --dist=loadgroup --cov=streaq tests/
+    - name: Coverage Badge
+      uses: tj-actions/coverage-badge-py@v2

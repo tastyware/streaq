@@ -408,7 +408,7 @@ async def test_bad_start_params(worker: Worker):
 
 
 async def test_enqueue_unique_task(worker: Worker):
-    @worker.task(unique=True)
+    @worker.task(unique=True, timeout=3)
     async def foobar() -> None:
         await sleep(1)
 

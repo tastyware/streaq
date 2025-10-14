@@ -1,8 +1,9 @@
 [![Docs](https://readthedocs.org/projects/streaq/badge/?version=latest)](https://streaq.readthedocs.io/en/latest/?badge=latest)
 [![PyPI](https://img.shields.io/pypi/v/streaq)](https://pypi.org/project/streaq)
 [![Downloads](https://static.pepy.tech/badge/streaq)](https://pepy.tech/project/streaq)
-[![Release)](https://img.shields.io/github/v/release/tastyware/streaq?label=release%20notes)](https://github.com/tastyware/streaq/releases)
+[![Release](https://img.shields.io/github/v/release/tastyware/streaq?label=release%20notes)](https://github.com/tastyware/streaq/releases)
 [![Human](https://img.shields.io/badge/human-coded-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBjbGFzcz0ibHVjaWRlIGx1Y2lkZS1wZXJzb24tc3RhbmRpbmctaWNvbiBsdWNpZGUtcGVyc29uLXN0YW5kaW5nIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjUiIHI9IjEiLz48cGF0aCBkPSJtOSAyMCAzLTYgMyA2Ii8+PHBhdGggZD0ibTYgOCA2IDIgNi0yIi8+PHBhdGggZD0iTTEyIDEwdjQiLz48L3N2Zz4=)](#)
+![Coverage](./coverage.svg)
 
 # streaQ
 
@@ -12,7 +13,6 @@ Fast, async, fully-typed distributed task queue via Redis streams
 
 - Up to [5x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than `arq`
 - Fully typed
-- 99% unit test coverage
 - Comprehensive documentation
 - Support for delayed/scheduled tasks
 - Cron jobs
