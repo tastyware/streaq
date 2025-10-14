@@ -20,19 +20,40 @@ jobs:
       TERM: 'dumb'
     steps:
     - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0  # Fetch all history for all branches
+
     - name: Install uv and Python
       uses: astral-sh/setup-uv@v7
       with:
         enable-cache: true
         python-version: ${{ matrix.python-version }}
+
     - name: Setup uv venv
       run: uv sync --locked --all-extras --dev
+
     - name: Lint with ruff
       run: uv run ruff check streaq/ tests/ example.py
+
     - name: Type check with pyright
       run: uv run pyright streaq/ tests/ example.py
+
     - name: Test with pytest
       run: |
         docker compose run --rm tests uv run --locked --all-extras --dev pytest -n auto --dist=loadgroup --cov=streaq tests/
-    - name: Coverage Badge
+
+    - name: Generate coverage badge
+      if: matrix.python-version == '3.13' && github.event_name == 'push' && github.ref == 'refs/heads/master'
       uses: tj-actions/coverage-badge-py@v2
+
+    - name: Commit and push badge to badges branch
+      if: matrix.python-version == '3.13' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git fetch origin badges || git checkout --orphan badges
+        git checkout badges
+        git checkout ${{ github.sha }} -- coverage.svg
+        git add coverage.svg
+        git diff --staged --quiet || git commit -m "Update coverage badge [skip ci]"
+        git push origin badges
