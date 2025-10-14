@@ -46,16 +46,24 @@ jobs:
       if: matrix.python-version == '3.13' && github.event_name == 'push' && github.ref == 'refs/heads/master'
       uses: tj-actions/coverage-badge-py@v2
 
-    - name: Commit and push badge to badges branch
+    - name: Verify changed files
       if: matrix.python-version == '3.13' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: tj-actions/verify-changed-files@v20
+      id: verify-changed-files
+      with:
+        files: coverage.svg
+
+    - name: Commit files
+      if: matrix.python-version == '3.13' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.verify-changed-files.outputs.files_changed == 'true'
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        cp coverage.svg /tmp/coverage.svg
-        git fetch origin badges:badges || git checkout --orphan badges
-        git checkout badges
-        git checkout ${{ github.sha }} -- coverage.svg
-        cp /tmp/coverage.svg coverage.svg
         git add coverage.svg
-        git diff --staged --quiet || git commit -m "Update coverage badge [skip ci]"
-        git push origin badges
+        git commit -m "Update badge"
+
+    - name: Push changes
+      if: matrix.python-version == '3.13' && github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.verify-changed-files.outputs.files_changed == 'true'
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: badges
