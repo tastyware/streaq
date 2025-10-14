@@ -51,9 +51,11 @@ jobs:
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git fetch origin badges || git checkout --orphan badges
+        cp coverage.svg /tmp/coverage.svg
+        git fetch origin badges:badges || git checkout --orphan badges
         git checkout badges
         git checkout ${{ github.sha }} -- coverage.svg
+        cp /tmp/coverage.svg coverage.svg
         git add coverage.svg
         git diff --staged --quiet || git commit -m "Update coverage badge [skip ci]"
         git push origin badges
