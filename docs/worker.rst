@@ -96,6 +96,7 @@ Other configuration options
 - ``anyio_backend``: either trio or asyncio, defaults to asyncio
 - ``anyio_kwargs``: extra arguments for anyio, see documentation `here <https://anyio.readthedocs.io/en/stable/basics.html#backend-specific-options>`_
 - ``sentinel_kwargs``: extra arguments to pass to sentinel connections (see below)
+- ``id``: a custom worker ID. You must ensure that it is unique for the specified queue name.
 
 Deploying with Redis Sentinel
 -----------------------------

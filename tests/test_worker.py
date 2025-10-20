@@ -316,3 +316,10 @@ async def test_enqueue_many(worker: Worker):
 async def test_invalid_task_context(worker: Worker):
     with pytest.raises(StreaqError):
         worker.task_context()
+
+
+async def test_custom_worker_id(redis_url: str):
+    worker_id = uuid4().hex
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex, id=worker_id)
+
+    assert worker.id == worker_id
