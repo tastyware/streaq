@@ -206,6 +206,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         sentinel_nodes: list[tuple[str, int]] | None = None,
         sentinel_master: str = "mymaster",
         sentinel_kwargs: dict[str, Any] | None = None,
+        id: str | None = None,
     ):
         # Redis connection
         redis_kwargs = redis_kwargs or {}
@@ -242,7 +243,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         #: mapping of task name -> next execution time in ms
         self.cron_schedule: dict[str, int] = defaultdict(int)
         #: unique ID of worker
-        self.id = uuid4().hex[:8]
+        self.id = id or uuid4().hex[:8]
         self.serializer = serializer
         self.deserializer = deserializer
         self.tz = tz
