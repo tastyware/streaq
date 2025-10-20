@@ -117,3 +117,52 @@ In production environments, high availability guarantees are often needed, which
 If you pass in the ``redis_sentinel_nodes`` parameter, you no longer need to pass ``redis_url``. For a simple Docker Compose script to get a cluster running, see `here <https://gist.github.com/Graeme22/f54800a410757242dbce8e745fca6316>`_.
 
 Redis Cluster is not supported, since streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on Redis Cluster. For scaling beyond a single Redis instance, it's recommended to use a separate queue for each instance and assign workers to each queue.
+
+Modularizing workers
+--------------------
+
+Sometimes in large apps, having a single ``Worker`` instance is not feasible (or at the very least, cumbersome). streaQ solves this problem by allowing you to "combine" workers together, which copies all tasks and cron jobs from one worker to another:
+
+.. code-block:: python
+   :caption: other.py
+
+   from streaq import Worker
+
+   other = Worker()
+
+   @other.task()
+   async def foobar() -> bool: ...
+
+.. code-block:: python
+   :caption: main.py
+
+   from anyio import run
+
+   from other import foobar, other
+   from streaq import Worker
+
+   worker = Worker()
+   worker.include(other)
+
+   @worker.task()
+   async def barfoo() -> bool: ...
+
+   async def main():
+       async with worker:
+           await foobar.enqueue()
+           await barfoo.enqueue()
+
+   if __name__ == "__main__":
+       run(main)
+
+This allows for grouping tasks in whatever way you choose. You can run just ``other`` like this:
+
+.. code-block:: bash
+
+   $ streaq other:other
+
+Or the main worker which will be able to run both ``foobar`` and ``barfoo``:
+
+.. code-block:: bash
+
+   $ streaq main:worker

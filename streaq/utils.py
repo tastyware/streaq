@@ -43,7 +43,7 @@ def import_string(dotted_path: str) -> Any:
     """
 
     try:
-        module_path, class_name = dotted_path.strip(" ").rsplit(".", 1)
+        module_path, class_name = dotted_path.strip(" ").rsplit(":", 1)
     except ValueError as e:
         raise ImportError(f"'{dotted_path}' doesn't look like a module path") from e
 

@@ -55,7 +55,7 @@ Put this all together in a script and spin up a worker:
 
 .. code-block:: bash
 
-   $ streaq script.worker
+   $ streaq script:worker
 
 and queue up some tasks like so:
 

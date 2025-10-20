@@ -69,7 +69,7 @@ async with worker:
 
 Putting this all together gives us [example.py](https://github.com/tastyware/streaq/blob/master/example.py). Let's spin up a worker:
 ```
-$ streaq example.worker
+$ streaq example:worker
 ```
 and queue up some tasks like so:
 ```

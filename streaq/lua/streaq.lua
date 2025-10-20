@@ -183,3 +183,17 @@ redis.register_function('update_dependents', function(keys, argv)
 
   return runnable
 end)
+
+redis.register_function('refresh_timeout', function(keys, argv)
+  local stream_key = keys[1]
+  local group_name = keys[2]
+
+  local consumer = argv[1]
+  local message_id = argv[2]
+
+  if #redis.call('xpending', stream_key, group_name, message_id, message_id, 1, consumer) > 0 then
+    redis.call('xclaim', stream_key, group_name, consumer, 0, message_id, 'justid')
+    return true
+  end
+  return false
+end)

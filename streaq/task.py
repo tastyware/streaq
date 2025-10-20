@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from hashlib import sha256
 from time import time
-from typing import TYPE_CHECKING, Any, Generator, Generic
+from typing import TYPE_CHECKING, Any, Generator, Generic, Iterable
 from uuid import UUID, uuid4
 
 from anyio import fail_after
@@ -124,7 +124,7 @@ class Task(Generic[R]):
 
     def start(
         self,
-        after: str | list[str] | None = None,
+        after: str | Iterable[str] | None = None,
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
         priority: str | None = None,
@@ -287,8 +287,8 @@ class RegisteredTask(Generic[C, P, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
+    fn_name: str
     worker: Worker[C]
-    _fn_name: str | None = None
 
     def enqueue(
         self,
@@ -310,10 +310,6 @@ class RegisteredTask(Generic[C, P, R]):
         with fail_after(to_seconds(self.timeout)):
             return await self.fn(*args, **kwargs)
 
-    @property
-    def fn_name(self) -> str:
-        return self._fn_name or self.fn.__qualname__
-
 
 @dataclass
 class RegisteredCron(Generic[C, R]):
@@ -324,9 +320,9 @@ class RegisteredCron(Generic[C, R]):
     timeout: timedelta | int | None
     ttl: timedelta | int | None
     unique: bool
+    fn_name: str
     worker: Worker[C]
     expire: timedelta | int | None = None
-    _fn_name: str | None = None
 
     def enqueue(self) -> Task[R]:
         """
@@ -347,10 +343,6 @@ class RegisteredCron(Generic[C, R]):
         """
         with fail_after(to_seconds(self.timeout)):
             return await self.fn()
-
-    @property
-    def fn_name(self) -> str:
-        return self._fn_name or self.fn.__qualname__
 
     def schedule(self) -> datetime:
         """

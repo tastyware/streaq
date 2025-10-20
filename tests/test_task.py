@@ -91,6 +91,12 @@ async def test_task_cron(worker: Worker):
         assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cron2.fn_name)
         tg.cancel_scope.cancel()
 
+    with pytest.raises(StreaqError):
+
+        @worker.cron("* * * * *", timeout=None)
+        async def cron3() -> None:
+            await sleep(0)
+
 
 async def test_task_info(worker: Worker):
     @worker.task()
@@ -300,6 +306,23 @@ async def test_task_dependency_failed(worker: Worker):
         tg.cancel_scope.cancel()
 
 
+async def test_task_dependency_aborted(worker: Worker):
+    @worker.task()
+    async def foobar() -> None:
+        pass
+
+    async with create_task_group() as tg:
+        async with worker:
+            dep = await foobar.enqueue()
+            task = await foobar.enqueue().start(after=dep.id)
+            await dep.abort(timeout=0)
+        await tg.start(worker.run_async)
+        res = await task.result(3)
+        assert not res.success
+        assert isinstance(res.exception, StreaqError)
+        tg.cancel_scope.cancel()
+
+
 async def test_sync_task(worker: Worker):
     @worker.task()
     def foobar() -> None:
@@ -423,6 +446,12 @@ async def test_enqueue_unique_task(worker: Worker):
         assert any(r.success and r.result is None for r in results)
         tg.cancel_scope.cancel()
 
+    with pytest.raises(StreaqError):
+
+        @worker.task(unique=True)
+        async def barfoo() -> None:
+            await sleep(0)
+
 
 @pytest.mark.parametrize("wait", [1, 0])
 async def test_failed_abort(worker: Worker, wait: int):
@@ -529,6 +558,22 @@ async def test_task_pipeline_shorthand(worker: Worker):
         res = await task.result(3)
         assert res.success and res.result == 8
         tg.cancel_scope.cancel()
+
+
+async def test_task_pipeline_multiple(worker: Worker):
+    @worker.task()
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task()
+    async def is_even(val: int) -> bool:
+        return val % 2 == 0
+
+    async with worker:
+        task1 = double.enqueue(1).then(double).then(is_even)
+        task2 = double.enqueue(1) | double | double
+        with pytest.raises(StreaqError):
+            await worker.enqueue_many([task1, task2])
 
 
 async def test_task_with_custom_name(worker: Worker):

@@ -10,4 +10,4 @@ def test_bad_path():
 
 def test_bad_worker_name():
     with pytest.raises(ImportError):
-        _ = import_string("example.asdf")
+        _ = import_string("example:asdf")
