@@ -26,7 +26,7 @@ R = TypeVar("R", bound=Optional[object])
 ROther = TypeVar("ROther", bound=Optional[object])
 
 
-@dataclass
+@dataclass(frozen=True)
 class StreamMessage:
     """
     Dataclass wrapping data stored in the Redis stream.
@@ -37,7 +37,7 @@ class StreamMessage:
     priority: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskContext:
     """
     Dataclass containing task-specific information like the try count.

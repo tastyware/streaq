@@ -680,3 +680,14 @@ async def test_cron_deterministic_id(worker: Worker):
         assert await task.status() == TaskStatus.SCHEDULED
         await task
         tg.cancel_scope.cancel()
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
+    @worker.task()
+    async def foobar(val: int) -> int: ...
+
+    import asyncio
+
+    async with worker:
+        await asyncio.gather(*[foobar.enqueue(i) for i in range(5)])

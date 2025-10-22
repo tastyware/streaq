@@ -121,7 +121,7 @@ patch = ["subprocess"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 95
+fail_under = 100
 
 [tool.coverage.paths]
 streaq = ["streaq", "/app/streaq"]

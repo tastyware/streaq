@@ -54,7 +54,7 @@ class TaskStatus(str, Enum):
     DONE = "done"
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskInfo:
     """
     Dataclass containing information about a running or enqueued task.
@@ -68,7 +68,7 @@ class TaskInfo:
     dependents: set[str]
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskResult(Generic[R]):
     """
     Dataclass wrapping the result of a task with additional information
@@ -207,6 +207,9 @@ class Task(Generic[R]):
             await self._after
         return await self._enqueue()
 
+    def __hash__(self) -> int:
+        return hash(self.id)
+
     def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
 
@@ -278,7 +281,7 @@ class Task(Generic[R]):
         return await self.parent.worker.info_by_id(self.id)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RegisteredTask(Generic[C, P, R]):
     fn: AsyncTask[P, R]
     expire: timedelta | int | None
@@ -311,7 +314,7 @@ class RegisteredTask(Generic[C, P, R]):
             return await self.fn(*args, **kwargs)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RegisteredCron(Generic[C, R]):
     fn: AsyncCron[R]
     crontab: CronTab
