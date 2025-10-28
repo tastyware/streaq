@@ -11,7 +11,7 @@ from streaq import VERSION
 from streaq.utils import StreaqError, default_log_config, import_string
 from streaq.worker import Worker
 
-cli = Typer()
+cli = Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 
 
 def version_callback(value: bool) -> None:

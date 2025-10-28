@@ -290,8 +290,8 @@ wheels = [
 
 [[package]]
 name = "coredis"
-version = "5.0.1.post1.dev22"
-source = { git = "https://github.com/Graeme22/coredis.git?rev=anyio#c618d0e09013541d994ba0466ce8bc6c6c694dfd" }
+version = "5.0.1.post1.dev36"
+source = { git = "https://github.com/Graeme22/coredis.git?rev=anyio#97657aabcbd7facb7d00c46ea87ac9d50dbec923" }
 dependencies = [
     { name = "anyio" },
     { name = "beartype" },
