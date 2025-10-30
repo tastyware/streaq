@@ -3,7 +3,7 @@ import typer
 
 from streaq import Worker
 
-worker = Worker(concurrency=32, redis_kwargs={"blocking": False})
+worker = Worker(concurrency=32)
 N_TASKS = 20_000
 
 
