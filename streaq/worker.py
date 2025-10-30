@@ -1312,33 +1312,45 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :return: whether the task was aborted successfully
         """
-        async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.sadd(self._abort_key, [task_id])
-            delayed = [
-                pipe.zrem(self.queue_key + priority, [task_id])
-                for priority in self.priorities
-            ]
-        if any(await gather(*delayed)):
-            # task was in delayed queue, we need to handle deps
+
+        # pubsub should be open when we call SADD or we might miss the message
+        async with self.redis.pubsub(
+            channels=[self._channel_key + task_id], ignore_subscribe_messages=True
+        ) as pubsub:
+            # check for result, add to abort set, check delayed queue(s)
             async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.delete([self.prefix + REDIS_TASK + task_id])
-                command = pipe.fcall(
-                    "fail_dependents",
-                    keys=[
-                        self.prefix + REDIS_DEPENDENTS,
-                        self.prefix + REDIS_DEPENDENCIES,
-                        task_id,
-                    ],
-                )
-            if res := await command:
-                await self.fail_task_dependents(res)  # type: ignore
-            return True
-        if timeout is not None and not timeout:  # check for 0, works with timedelta
-            return False
-        try:
-            result = await self.result_by_id(task_id, timeout=timeout)
-            return not result.success and isinstance(result.exception, StreaqCancelled)
-        except TimeoutError:
+                val = pipe.get(self.results_key + task_id)
+                pipe.sadd(self._abort_key, [task_id])
+                delayed = [
+                    pipe.zrem(self.queue_key + priority, [task_id])
+                    for priority in self.priorities
+                ]
+            # task was in delayed queue, we need to handle deps
+            if any(await gather(*delayed)):
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    pipe.delete([self.prefix + REDIS_TASK + task_id])
+                    command = pipe.fcall(
+                        "fail_dependents",
+                        keys=[
+                            self.prefix + REDIS_DEPENDENTS,
+                            self.prefix + REDIS_DEPENDENCIES,
+                            task_id,
+                        ],
+                    )
+                if res := await command:
+                    await self.fail_task_dependents(res)  # type: ignore
+                return True
+            if not (raw := await val):
+                # check for 0, works with timedelta
+                if timeout is not None and not timeout:
+                    return False
+                # wait for result if not available
+                with move_on_after(to_seconds(timeout)):
+                    msg = await pubsub.__anext__()
+                    raw = msg["data"]  # type: ignore
+                    # build result
+                    data = self.deserialize(raw)
+                    return not data["s"] and isinstance(data["r"], StreaqCancelled)
             return False
 
     async def info_by_id(self, task_id: str) -> TaskInfo | None:
