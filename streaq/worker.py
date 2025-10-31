@@ -1214,9 +1214,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Periodically stores info about the worker in Redis.
         """
         while True:
-            await sleep(self._delay_for(self._health_tab))
             ttl = int(self._delay_for(self._health_tab)) + 5
             await self.redis.set(f"{self._health_key}:{self.id}", str(self), ex=ttl)
+            await sleep(self._delay_for(self._health_tab))
 
     async def signal_handler(self, scope: CancelScope) -> None:
         """
