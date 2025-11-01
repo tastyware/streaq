@@ -162,6 +162,36 @@ Enqueued tasks return a ``Task`` object which can be used to wait for task resul
 
 The ``TaskResult`` object contains information about the task, such as start/end time. The ``success`` flag will tell you whether the object stored in ``result`` is the result of task execution (if ``True``) or an exception raised during execution (if ``False``).
 
+Task exceptions
+---------------
+
+If an exception occurs while performing the task, the result.success flag will be set to ``False``. The exception object itself will be available in the ``exception`` property of ``TaskResult``.
+
+.. code-block:: python
+
+    async with worker:
+        result = await task.result()
+
+        if not result.success:
+            print(result.exception)
+
+.. important::
+
+    If you're using the default serialization (pickle), the exception object won't contain traceback information, since pickle doesn't natively support serializing traceback objects — this information will be lost during serialization and deserialization.
+
+    To keep the full traceback details for exceptions, you can use the `python-tblib <https://github.com/ionelmc/python-tblib>`_ package. This package makes it easy to serialize traceback objects with pickle. In most cases just two lines of code are needed to add this support:
+
+    .. code-block:: python
+
+        from tblib import pickling_support
+
+        # Declare your own custom Exceptions
+        ...
+
+        # Finally, install tblib
+        pickling_support.install()
+
+
 Task context
 ------------
 
