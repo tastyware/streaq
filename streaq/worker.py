@@ -1196,14 +1196,23 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     args=[task.id, data, task.priority, score, expire] + task.after,
                 )
 
-    async def queue_size(self) -> int:
+    async def queue_size(self, include_scheduled: bool = True) -> int:
         """
         Returns the number of tasks currently queued in Redis.
+
+        :param include_scheduled: whether to include tasks in the delayed queue also
         """
         async with self.redis.pipeline(transaction=True) as pipe:
             commands = [
                 pipe.xlen(self.stream_key + priority) for priority in self.priorities
-            ] + [pipe.zcard(self.queue_key + priority) for priority in self.priorities]
+            ]
+            if include_scheduled:
+                commands.extend(
+                    [
+                        pipe.zcard(self.queue_key + priority)
+                        for priority in self.priorities
+                    ]
+                )
         return sum(await gather(*commands))
 
     def _delay_for(self, tab: CronTab) -> float:
