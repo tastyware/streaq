@@ -17,7 +17,8 @@ You can define middleware to wrap task execution. This has a host of potential a
        async def wrapper(*args, **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
+           tid = worker.task_context().task_id
+           print(f"Executed task {tid} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper
@@ -38,7 +39,8 @@ You can register as many middleware as you like to a worker, which will run them
        async def wrapper(*args, **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
+           tid = worker.task_context().task_id
+           print(f"Executed task {tid} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper
