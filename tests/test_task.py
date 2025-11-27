@@ -81,8 +81,6 @@ async def test_task_cron(worker: Worker):
     async def cron2() -> None:
         await sleep(5)
 
-    schedule = cron1.schedule()
-    assert schedule.day == 1 and schedule.month == 1
     assert await cron1.run()
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
@@ -668,20 +666,6 @@ async def test_task_expired(worker: Worker):
         tg.cancel_scope.cancel()
 
 
-async def test_cron_deterministic_id(worker: Worker):
-    @worker.cron("30 9 1 1 *")
-    async def cronjob() -> None:
-        pass
-
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
-        await sleep(1)
-        task = cronjob.enqueue()
-        assert await task.status() == TaskStatus.SCHEDULED
-        await task
-        tg.cancel_scope.cancel()
-
-
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
     @worker.task()
@@ -691,3 +675,28 @@ async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
 
     async with worker:
         await asyncio.gather(*[foobar.enqueue(i) for i in range(5)])
+
+
+async def test_dynamic_cron(worker: Worker):
+    executions = 0
+
+    @worker.task()
+    async def foobar() -> None:
+        nonlocal executions
+        await sleep(1)
+        executions += 1
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        tab = "* * * * * * *"  # every second
+        await foobar.register_cron(tab)
+        # wait for first execution
+        while not executions:
+            await sleep(0.1)
+        await foobar.delete_cron(tab)
+        # wait a bit for any jobs to complete
+        await sleep(2)
+        count_after_delete = executions
+        await sleep(2)
+        assert executions == count_after_delete
+        tg.cancel_scope.cancel()

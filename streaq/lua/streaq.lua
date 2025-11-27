@@ -71,7 +71,7 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
   end
 end)
 
-redis.register_function('publish_task', function(keys, argv)
+local function publish_task(keys, argv)
   local stream_key = keys[1]
   local queue_key = keys[2]
   local task_key = keys[3]
@@ -118,6 +118,10 @@ redis.register_function('publish_task', function(keys, argv)
   end
 
   return 1
+end
+
+redis.register_function('publish_task', function(keys, argv)
+  return publish_task(keys, argv)
 end)
 
 redis.register_function('read_streams', function(keys, argv)
@@ -196,4 +200,15 @@ redis.register_function('refresh_timeout', function(keys, argv)
     return true
   end
   return false
+end)
+
+redis.register_function('schedule_cron_job', function(keys, argv)
+  local cron_key = keys[7]
+  local member = argv[6]
+  local next_run = argv[7]
+
+  -- check if another worker already handled this
+  if redis.call('zadd', cron_key, 'gt', 'ch', next_run, member) ~= 0 then
+    publish_task({unpack(keys, 1, 6)}, {unpack(argv, 1, 5)})
+  end
 end)

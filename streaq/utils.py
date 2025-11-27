@@ -62,10 +62,10 @@ def to_seconds(timeout: timedelta | int | None) -> float | None:
     return float(timeout) if timeout is not None else None
 
 
-def to_ms(timeout: timedelta | int) -> int:
+def to_ms(timeout: timedelta | int | float) -> int:
     if isinstance(timeout, timedelta):
         return round(timeout.total_seconds() * 1000)
-    return timeout * 1000
+    return round(timeout * 1000)
 
 
 def now_ms() -> int:
@@ -201,6 +201,8 @@ async def gather(*awaitables: Awaitable[T1]) -> tuple[T1, ...]: ...
 
 
 async def gather(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
+    if not awaitables:
+        return ()
     if len(awaitables) == 1:  # optimize for this case
         return (await awaitables[0],)
     results: list[Any] = [None] * len(awaitables)
