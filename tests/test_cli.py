@@ -33,7 +33,7 @@ def test_verbose(worker: Worker):
     setattr(test_module, "test_worker", worker)
     result = runner.invoke(cli, ["tests.test_cli:test_worker", "--burst", "--verbose"])
     assert result.exit_code == 0
-    assert "enqueuing" in result.stderr
+    assert "established" in result.stderr
 
 
 def test_version(worker: Worker):

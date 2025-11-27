@@ -7,11 +7,12 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
-from anyio import create_task_group, sleep
+from anyio import create_task_group, move_on_after, sleep
 
 from streaq.constants import REDIS_TASK
 from streaq.utils import StreaqError, gather
@@ -211,32 +212,6 @@ async def test_reclaim_idle_task(redis_url: str):
         tg.cancel_scope.cancel()
 
 
-async def test_change_cron_schedule(redis_url: str):
-    async def foo() -> None:
-        pass
-
-    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
-    foo1 = worker.cron("0 0 1 1 *")(foo)
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
-        await sleep(2)
-        task1 = foo1.enqueue()
-        info = await task1.info()
-        assert info and foo1.schedule() == info.scheduled
-        tg.cancel_scope.cancel()
-
-    worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
-    foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
-    async with create_task_group() as tg:
-        await tg.start(worker2.run_async)
-        await sleep(2)
-        task2 = foo2.enqueue()
-        info2 = await task2.info()
-        assert info2 and foo2.schedule() == info2.scheduled
-        assert foo1.schedule() != foo2.schedule()
-        tg.cancel_scope.cancel()
-
-
 async def test_signed_data(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
@@ -307,8 +282,11 @@ async def test_enqueue_many(worker: Worker):
     async with worker:
         tasks = [foobar.enqueue(i) for i in range(10)]
         delayed = foobar.enqueue(1).start(delay=1)
+        scheduled = foobar.enqueue(1).start(
+            schedule=datetime.now(worker.tz) + timedelta(seconds=3)
+        )
         depends = foobar.enqueue(1).start(after=delayed.id)
-        tasks.extend([delayed, depends])
+        tasks.extend([delayed, depends, scheduled])
         await worker.enqueue_many(tasks)
         assert await worker.queue_size() >= 10
 
@@ -444,3 +422,34 @@ async def test_include_different_queues(redis_url: str, worker: Worker):
 
     with pytest.raises(StreaqError):
         worker.include(worker2)
+
+
+async def test_cron_missing(redis_url: str, worker: Worker):
+    if worker._sentinel:
+        worker2 = Worker(
+            sentinel_nodes=[
+                ("sentinel-1", 26379),
+                ("sentinel-2", 26379),
+                ("sentinel-3", 26379),
+            ],
+            sentinel_master="mymaster",
+            queue_name=worker.queue_name,
+            anyio_backend=worker.anyio_backend,  # type: ignore
+        )
+    else:
+        worker2 = Worker(
+            redis_url=redis_url,
+            queue_name=worker.queue_name,
+            anyio_backend=worker.anyio_backend,  # type: ignore
+        )
+
+    @worker.cron("* * * * * * *")
+    async def cronjob() -> None:
+        await sleep(0)
+
+    with move_on_after(1):
+        await worker.run_async()  # get cronjob registered
+    with move_on_after(2):
+        await worker2.run_async()
+
+    assert worker2.counters["failed"] > 0
