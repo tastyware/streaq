@@ -578,6 +578,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 limiter = CapacityLimiter(self.concurrency)
                 self._shutdown_event = Event()
                 async with create_task_group() as tg:
+                    # supervisor will orchestrate graceful shutdown
+                    tg.start_soon(
+                        self.shutdown_supervisor,
+                        self._shutdown_event,
+                        limiter,
+                        tg.cancel_scope,
+                    )
+
                     # register signal handler
                     tg.start_soon(self.signal_handler, self._shutdown_event)
                     tg.start_soon(self.health_check)
@@ -631,7 +639,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         # Step 2: if still running, cancel them via their per-task scopes
         if self._running_tasks or limiter.borrowed_tokens > 0:
             logger.warning(
-                f"grace period over, cancelling {sum(len(s) for s in self._running_tasks.values())} "
+                "grace period over, "
+                f"cancelling {sum(len(s) for s in self._running_tasks.values())} "
                 f"running tasks on worker {self.id}"
             )
             for scope in list(self._cancel_scopes.values()):
