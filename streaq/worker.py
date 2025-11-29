@@ -18,6 +18,7 @@ from anyio import (
     AsyncContextManagerMixin,
     CancelScope,
     CapacityLimiter,
+    Event,
     Path,
     create_memory_object_stream,
     create_task_group,
@@ -121,6 +122,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     :param serializer: function to serialize task data for Redis
     :param deserializer: function to deserialize task data from Redis
     :param tz: timezone to use for cron jobs
+    :param shutdown_grace_period: grace period for graceful shutdown
+    :param cancellation_hard_deadline:
+        deadline for cancellation of tasks when shutting down
     :param handle_signals: whether to handle signals for graceful shutdown
     :param health_crontab: crontab for frequency to store health info
     :param signing_secret:
@@ -156,6 +160,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_cancel_scopes",
         "_running_tasks",
         "tz",
+        "shutdown_grace_period",
+        "cancellation_hard_deadline",
         "burst",
         "trio",
         "_handle_signals",
@@ -198,6 +204,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         serializer: Callable[[Any], Any] = pickle.dumps,
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
+        shutdown_grace_period: timedelta | int = 0,
+        cancellation_hard_deadline: timedelta | int = 0,
         handle_signals: bool = True,
         health_crontab: str = "*/5 * * * *",
         signing_secret: str | None = None,
@@ -283,6 +291,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._abort_key = self.prefix + REDIS_ABORT
         self._health_key = self.prefix + REDIS_HEALTH
         self._channel_key = self.prefix + REDIS_CHANNEL
+
+        # shutdown controls
+        self._shutdown_event: Event | None = None
+        self.shutdown_grace_period = to_seconds(shutdown_grace_period) or 0.0
+        self.cancellation_hard_deadline = to_seconds(cancellation_hard_deadline) or 0.0
 
         @self.cron(health_crontab, silent=True, ttl=0, name="redis_health_check")
         async def _() -> None:
@@ -563,9 +576,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     max_buffer_size=self.prefetch
                 )
                 limiter = CapacityLimiter(self.concurrency)
+                self._shutdown_event = Event()
                 async with create_task_group() as tg:
                     # register signal handler
-                    tg.start_soon(self.signal_handler, tg.cancel_scope)
+                    tg.start_soon(self.signal_handler, self._shutdown_event)
                     tg.start_soon(self.health_check)
                     tg.start_soon(self.producer, send, limiter, tg.cancel_scope)
                     tg.start_soon(self.renew_idle_timeouts)
@@ -574,6 +588,69 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             finally:
                 run_time = round((current_time() - start_time) * 1000)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
+
+    async def request_shutdown(self) -> None:
+        """
+        Request a graceful shutdown. Idempotent.
+        """
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
+
+    async def shutdown_supervisor(
+        self,
+        shutdown_event: Event,
+        limiter: CapacityLimiter,
+        tg_scope: CancelScope,
+    ) -> None:
+        """
+        Coordinates graceful shutdown:
+
+        1. Wait for shutdown_event (signal or external call).
+        2. Stop accepting new work.
+        3. Wait up to shutdown_grace_period for in-flight tasks to finish.
+        4. After grace, cancel remaining tasks via their CancelScopes.
+        5. Wait up to cancellation_hard_deadline for them to respond.
+        6. Finally, cancel the worker task group.
+        """
+        await shutdown_event.wait()
+        logger.info(f"shutdown requested for worker {self.id}")
+        # Duplicated but still fine, we set it in the signal handler as well
+        # for a tighter window
+        self._block_new_tasks = True  # stops producer from accepting more tasks
+
+        # Step 1: soft wait for current tasks to finish
+        if self.shutdown_grace_period > 0:
+            logger.info(
+                f"waiting up to {self.shutdown_grace_period}s for tasks to finish "
+                f"on worker {self.id}"
+            )
+            with move_on_after(self.shutdown_grace_period):
+                while self._running_tasks or limiter.borrowed_tokens > 0:
+                    await sleep(0.1)
+
+        # Step 2: if still running, cancel them via their per-task scopes
+        if self._running_tasks or limiter.borrowed_tokens > 0:
+            logger.warning(
+                f"grace period over, cancelling {sum(len(s) for s in self._running_tasks.values())} "
+                f"running tasks on worker {self.id}"
+            )
+            for scope in list(self._cancel_scopes.values()):
+                if not scope.cancel_called:
+                    scope.cancel()
+
+            # Step 3: wait for hard deadline
+            if self.cancellation_hard_deadline > 0:
+                logger.info(
+                    f"waiting up to {self.cancellation_hard_deadline}s for "
+                    f"tasks to respond to cancellation on worker {self.id}"
+                )
+                with move_on_after(self.cancellation_hard_deadline):
+                    while self._running_tasks or limiter.borrowed_tokens > 0:
+                        await sleep(0.1)
+
+        # Step 4: tear down the task group (producer/consumers/health/etc)
+        logger.info(f"cancelling worker task group for {self.id}")
+        tg_scope.cancel()
 
     async def consumer(
         self, queue: MemoryObjectReceiveStream[StreamMessage], limiter: CapacityLimiter
@@ -1227,7 +1304,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             await self.redis.set(f"{self._health_key}:{self.id}", str(self), ex=ttl)
             await sleep(self._delay_for(self._health_tab))
 
-    async def signal_handler(self, scope: CancelScope) -> None:
+    async def signal_handler(self, shutdown_event: Event) -> None:
         """
         Gracefully shutdown the worker when a signal is received.
         Doesn't work on Windows!
@@ -1238,7 +1315,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     f"received signal {signum.name}, shutting down worker {self.id}"
                 )
                 self._block_new_tasks = True
-                scope.cancel()
+                shutdown_event.set()
                 return
 
     async def status_by_id(self, task_id: str) -> TaskStatus:
