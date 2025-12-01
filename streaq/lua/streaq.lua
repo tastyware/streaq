@@ -197,3 +197,20 @@ redis.register_function('refresh_timeout', function(keys, argv)
   end
   return false
 end)
+
+redis.register_function('schedule_cron_job', function(keys, argv)
+  local cron_key = keys[1]
+  local queue_key = keys[2]
+  local data_key = keys[3]
+  local task_key = keys[4]
+
+  local task_id = argv[1]
+  local score = argv[2]
+  local member = argv[3]
+
+  -- check if another worker already handled this
+  if redis.call('zadd', cron_key, 'gt', 'ch', score, member) ~= 0 then
+    redis.call('zadd', queue_key, score, task_id)
+    redis.call('copy', data_key, task_key)
+  end
+end)

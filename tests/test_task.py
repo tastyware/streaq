@@ -10,7 +10,7 @@ from streaq import StreaqError, Worker
 from streaq.constants import REDIS_UNIQUE
 from streaq.task import StreaqRetry, TaskStatus
 from streaq.types import ReturnCoroutine
-from streaq.utils import gather
+from streaq.utils import gather, next_datetime
 
 pytestmark = pytest.mark.anyio
 
@@ -81,7 +81,7 @@ async def test_task_cron(worker: Worker):
     async def cron2() -> None:
         await sleep(5)
 
-    schedule = cron1.schedule()
+    schedule = next_datetime(cron1.crontab)  # type: ignore
     assert schedule.day == 1 and schedule.month == 1
     assert await cron1.run()
     async with create_task_group() as tg:
@@ -668,20 +668,6 @@ async def test_task_expired(worker: Worker):
         tg.cancel_scope.cancel()
 
 
-async def test_cron_deterministic_id(worker: Worker):
-    @worker.cron("30 9 1 1 *")
-    async def cronjob() -> None:
-        pass
-
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
-        await sleep(1)
-        task = cronjob.enqueue()
-        assert await task.status() == TaskStatus.SCHEDULED
-        await task
-        tg.cancel_scope.cancel()
-
-
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
     @worker.task()
@@ -691,3 +677,23 @@ async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
 
     async with worker:
         await asyncio.gather(*[foobar.enqueue(i) for i in range(5)])
+
+
+async def test_dynamic_cron(worker: Worker):
+    vals: list[int] = []
+
+    @worker.task()
+    async def foobar(val: int) -> None:
+        vals.append(val)
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue(1).start(schedule="* * * * * * *")
+        await sleep(2)
+        assert vals
+        await task.unschedule()
+        await sleep(2)
+        last_len = len(vals)
+        await sleep(2)
+        assert last_len == len(vals)
+        tg.cancel_scope.cancel()

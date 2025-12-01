@@ -14,8 +14,8 @@ import pytest
 from anyio import create_task_group, sleep
 
 from streaq.constants import REDIS_TASK
-from streaq.utils import StreaqError, gather
-from streaq.worker import Worker
+from streaq.utils import StreaqError, gather, next_run
+from streaq.worker import Worker, _deterministic_id
 
 NAME_STR = "Freddy"
 pytestmark = pytest.mark.anyio
@@ -217,23 +217,23 @@ async def test_change_cron_schedule(redis_url: str):
 
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
     foo1 = worker.cron("0 0 1 1 *")(foo)
+    tid = _deterministic_id(foo1.fn_name)
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         await sleep(2)
-        task1 = foo1.enqueue()
-        info = await task1.info()
-        assert info and foo1.schedule() == info.scheduled
+        assert next_run(foo1.crontab) == int(  # type: ignore
+            (await worker.redis.zscore(worker.cron_schedule_key, tid)) or 0
+        )
         tg.cancel_scope.cancel()
 
     worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
-    foo2 = worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
+    worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
     async with create_task_group() as tg:
         await tg.start(worker2.run_async)
         await sleep(2)
-        task2 = foo2.enqueue()
-        info2 = await task2.info()
-        assert info2 and foo2.schedule() == info2.scheduled
-        assert foo1.schedule() != foo2.schedule()
+        assert next_run(foo1.crontab) != int(  # type: ignore
+            (await worker2.redis.zscore(worker2.cron_schedule_key, tid)) or 0
+        )
         tg.cancel_scope.cancel()
 
 
@@ -308,7 +308,8 @@ async def test_enqueue_many(worker: Worker):
         tasks = [foobar.enqueue(i) for i in range(10)]
         delayed = foobar.enqueue(1).start(delay=1)
         depends = foobar.enqueue(1).start(after=delayed.id)
-        tasks.extend([delayed, depends])
+        cron = foobar.enqueue(1).start(schedule="0 0 1 1 *")
+        tasks.extend([delayed, depends, cron])
         await worker.enqueue_many(tasks)
         assert await worker.queue_size() >= 10
 

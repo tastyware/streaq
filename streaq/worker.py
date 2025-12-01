@@ -7,11 +7,12 @@ from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
+from hashlib import sha256
 from inspect import iscoroutinefunction
 from sys import platform
 from textwrap import shorten
 from typing import Any, AsyncGenerator, Callable, Generic, Iterable, Literal, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from anyio import (
     TASK_STATUS_IGNORED,
@@ -34,7 +35,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from coredis import PureToken, Redis
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
-from coredis.typing import KeyT
+from coredis.typing import KeyT, StringT
 from crontab import CronTab
 from typing_extensions import Self
 
@@ -43,6 +44,7 @@ from streaq.constants import (
     DEFAULT_QUEUE_NAME,
     REDIS_ABORT,
     REDIS_CHANNEL,
+    REDIS_CRON,
     REDIS_DEPENDENCIES,
     REDIS_DEPENDENTS,
     REDIS_GROUP,
@@ -58,7 +60,6 @@ from streaq.constants import (
     REDIS_UNIQUE,
 )
 from streaq.task import (
-    RegisteredCron,
     RegisteredTask,
     StreaqRetry,
     Task,
@@ -86,11 +87,15 @@ from streaq.utils import (
     asyncify,
     datetime_ms,
     gather,
+    next_datetime,
+    next_run,
     now_ms,
     to_ms,
     to_seconds,
     to_tuple,
 )
+
+HEALTH_CHECK = "redis_health_check"
 
 
 @asynccontextmanager
@@ -99,6 +104,11 @@ async def _lifespan() -> AsyncGenerator[None]:
 
 
 async def _placeholder() -> None: ...
+
+
+def _deterministic_id(fn_name: str) -> str:
+    deterministic_hash = sha256(fn_name.encode()).hexdigest()
+    return UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
 
 
 class Worker(AsyncContextManagerMixin, Generic[C]):
@@ -148,8 +158,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "counters",
         "_worker_context",
         "registry",
-        "cron_jobs",
-        "cron_schedule",
         "id",
         "serializer",
         "deserializer",
@@ -161,6 +169,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_handle_signals",
         "_block_new_tasks",
         "lifespan",
+        "cron_data_key",
+        "cron_registry_key",
+        "cron_schedule_key",
         "queue_key",
         "stream_key",
         "dependents_key",
@@ -236,13 +247,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
         self.counters: dict[str, int] = defaultdict(int)
         #: mapping of task name -> task wrapper
-        self.registry: dict[
-            str, RegisteredCron[Any, Any] | RegisteredTask[Any, Any, Any]
-        ] = {}
-        #: mapping of task name -> cron wrapper
-        self.cron_jobs: dict[str, RegisteredCron[Any, Any]] = {}
-        #: mapping of task name -> next execution time in ms
-        self.cron_schedule: dict[str, int] = defaultdict(int)
+        self.registry: dict[str, RegisteredTask[Any, Any, Any]] = {}
         #: unique ID of worker
         self.id = id or uuid4().hex[:8]
         self.serializer = serializer
@@ -275,6 +280,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._coworkers: list[Worker[C]] = []
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
+        self.cron_data_key = self.prefix + REDIS_CRON + "data:"
+        self.cron_registry_key = self.prefix + REDIS_CRON + "jobs"
+        self.cron_schedule_key = self.prefix + REDIS_CRON + "schedule"
         self.queue_key = self.prefix + REDIS_QUEUE
         self.stream_key = self.prefix + REDIS_STREAM
         self.dependents_key = self.prefix + REDIS_DEPENDENTS
@@ -284,7 +292,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._health_key = self.prefix + REDIS_HEALTH
         self._channel_key = self.prefix + REDIS_CHANNEL
 
-        @self.cron(health_crontab, silent=True, ttl=0, name="redis_health_check")
+        @self.cron(health_crontab, silent=True, ttl=0, name=HEALTH_CHECK)
         async def _() -> None:
             """
             Saves Redis health in Redis.
@@ -311,7 +319,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "  # type: ignore
                 f"queued: {queued}, scheduled: {scheduled}}}"
             )
-            ttl = int(self._delay_for(self._health_tab)) + 5
+            ttl = self._delay_for(self._health_tab)
             await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
     def include(self, worker: Worker[C]) -> None:
@@ -324,12 +332,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         if worker.queue_name != self.queue_name:
             raise StreaqError("Included workers must listen to the same queue!")
-        for k, v in worker.cron_jobs.items():
-            if k != "redis_health_check" and k in self.cron_jobs:
-                raise StreaqError(f"Duplicate cron job {k} in worker {worker.id}!")
-            self.cron_jobs[k] = v
         for k, v in worker.registry.items():
-            if k != "redis_health_check" and k in self.registry:
+            if k != HEALTH_CHECK and k in self.registry:
                 raise StreaqError(f"Duplicate task {k} in worker {worker.id}!")
             self.registry[k] = v
         self._coworkers.append(worker)
@@ -350,6 +354,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     self._sentinel.__asynccontextmanager__()
                 )
             await stack.enter_async_context(self._redis.__asynccontextmanager__())
+            logger.debug(f"Redis connection established in worker {self.id}")
             for worker in self._coworkers:
                 await stack.enter_async_context(worker.__asynccontextmanager__())
             # register lua scripts from library
@@ -395,7 +400,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     def build_context(
         self,
         fn_name: str,
-        registered_task: RegisteredCron[Any, Any] | RegisteredTask[Any, Any, Any],
+        registered_task: RegisteredTask[Any, Any, Any],
         id: str,
         tries: int = 1,
     ) -> TaskContext:
@@ -437,16 +442,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
-        def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredCron[C, R]:
+        def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredTask[C, [], R]:
             if iscoroutinefunction(fn):
                 _fn = fn
             else:
                 _fn = asyncify(fn, self._limiter)
             if unique and timeout is None:
                 raise StreaqError("Unique tasks must have a timeout set!")
-            task = RegisteredCron(
+            task = RegisteredTask(
                 fn=cast(AsyncCron[R], _fn),
-                crontab=CronTab(tab),
+                expire=None,
                 max_tries=max_tries,
                 silent=silent,
                 timeout=timeout,
@@ -454,12 +459,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 unique=unique,
                 fn_name=name or fn.__qualname__,
                 worker=self,
+                crontab=tab,
             )
             if task.fn_name in self.registry:
                 raise StreaqError(
                     f"A task named {task.fn_name} has already been registered!"
                 )
-            self.cron_jobs[task.fn_name] = task
             self.registry[task.fn_name] = task
             return task
 
@@ -545,17 +550,35 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Groups together and runs worker tasks.
         """
         logger.info(f"starting worker {self.id} for queue {self.queue_name}")
-        start_time = current_time()
         # run user-defined initialization code
         async with self, self.lifespan as context:
             self._worker_context = context
             self._running = True
-            # create consumer group if it doesn't exist
-            await self.redis.fcall(
-                "create_groups",
-                keys=[self.stream_key, self._group_name],
-                args=self.priorities,  # type: ignore
-            )
+            now = now_ms()
+            async with self.redis.pipeline(transaction=False) as pipe:
+                # create consumer group if it doesn't exist
+                pipe.fcall(
+                    "create_groups",
+                    keys=[self.stream_key, self._group_name],
+                    args=self.priorities,  # type: ignore
+                )
+                # initial cron schedules
+                cron_registry: dict[StringT, str] = {}
+                cron_schedule: dict[StringT, int] = {}
+                tasks: list[Task[Any]] = []
+                for cj in self.registry.values():
+                    if not cj.crontab:
+                        continue
+                    task = cj.enqueue().start(schedule=next_datetime(cj.crontab))
+                    task.id = _deterministic_id(cj.fn_name)
+                    cron_registry[task.id] = cj.crontab
+                    cron_schedule[task.id] = next_run(cj.crontab)
+                    tasks.append(task)
+                    pipe.set(self.cron_data_key + task.id, task.serialize(now))
+                pipe.hset(self.cron_registry_key, cron_registry)
+                pipe.zadd(self.cron_schedule_key, cron_schedule)
+            await self.enqueue_many(tasks)
+            start_time = current_time()
             task_status.started()
             # start tasks
             try:
@@ -572,7 +595,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     for _ in range(self.concurrency):
                         tg.start_soon(self.consumer, receive.clone(), limiter)
             finally:
-                run_time = round((current_time() - start_time) * 1000)
+                run_time = to_ms(current_time() - start_time)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
 
     async def consumer(
@@ -647,7 +670,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     entries = MultiStreamRangeCallback[str]()(res)
                     # blocking second if nothing fetched
                     if not entries:
-                        elapsed_ms = 500 - round((current_time() - start_time) * 1000)
+                        elapsed_ms = 500 - to_ms(current_time() - start_time)
                         if elapsed_ms > 0:
                             entries = await self.redis.xreadgroup(
                                 self._group_name,
@@ -680,18 +703,22 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                             queue.send_nowait(msg)
                 # schedule delayed tasks
                 async with self.redis.pipeline(transaction=False) as pipe:
+                    now = now_ms()
                     pipe.fcall(
                         "publish_delayed_tasks",
                         keys=[self.queue_key, self.stream_key],
-                        args=[now_ms(), *self.priorities],
+                        args=[now, *self.priorities],
                     )
-                    command = pipe.smembers(self._abort_key)
-                aborted = await command
+                    aborted = pipe.smembers(self._abort_key)
+                    cron_jobs = pipe.zrange(
+                        self.cron_schedule_key, 0, now, sortby=PureToken.BYSCORE
+                    )
+                    cron_registry = pipe.hgetall(self.cron_registry_key)
                 # aborted tasks
-                if aborted:
-                    await self.abort_tasks(aborted)
+                await self.abort_tasks(await aborted)
                 # cron jobs
-                await self.schedule_cron_jobs()
+                if ready := await cron_jobs:
+                    await self.schedule_cron_jobs(ready, await cron_registry)
                 # wrap things up if we burstin'
                 if self.burst and not messages and limiter.borrowed_tokens == 0:
                     self._block_new_tasks = True
@@ -711,19 +738,26 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     f"task ⊘ {task_id} marked for abortion in worker {self.id}"
                 )
 
-    async def schedule_cron_jobs(self) -> None:
+    async def schedule_cron_jobs(
+        self, ready: tuple[str, ...], registry: dict[str, str]
+    ) -> None:
         """
         Schedules any pending cron jobs for future execution.
         """
-        cron_jobs: list[Task[Any]] = []
-        ts = now_ms()
-        for name, cron_job in self.cron_jobs.items():
-            if ts - 500 > self.cron_schedule[name]:
-                self.cron_schedule[name] = cron_job.next()
-                cron_jobs.append(cron_job.enqueue().start(schedule=cron_job.schedule()))
-        if cron_jobs:
-            await self.enqueue_many(cron_jobs)
-            logger.debug(f"enqueuing {len(cron_jobs)} cron jobs in worker {self.id}")
+        logger.debug(f"enqueuing cron jobs in worker {self.id}")
+        async with self.redis.pipeline(transaction=False) as pipe:
+            for task_id in ready:
+                tab, new_id = registry[task_id], uuid4().hex
+                pipe.fcall(
+                    "schedule_cron_job",
+                    keys=[
+                        self.cron_schedule_key,
+                        self.queue_key + self.priorities[-1],
+                        self.cron_data_key + task_id,
+                        self.prefix + REDIS_TASK + new_id,
+                    ],
+                    args=[new_id, next_run(tab), task_id],
+                )
 
     async def finish_failed_task(
         self,
@@ -732,7 +766,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         tries: int,
         enqueue_time: int = 0,
         fn_name: str = "Unknown",
-        silent: bool = False,
         ttl: timedelta | int | None = 300,
     ) -> None:
         """
@@ -867,7 +900,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self, msg: StreamMessage
     ) -> (
         tuple[
-            RegisteredCron[Any, Any] | RegisteredTask[Any, Any, Any],
+            RegisteredTask[Any, Any, Any],
             dict[str, Any],
             int,
             tuple[Any, ...],
@@ -932,7 +965,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=fn_name,
-                silent=task.silent,
                 ttl=task.ttl,
             )
         if task.max_tries and task_try > task.max_tries:
@@ -946,7 +978,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 task_try,
                 enqueue_time=data["t"],
                 fn_name=fn_name,
-                silent=task.silent,
                 ttl=task.ttl,
             )
 
@@ -983,7 +1014,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     task_try,
                     enqueue_time=data["t"],
                     fn_name=fn_name,
-                    silent=task.silent,
                     ttl=task.ttl,
                 )
 
@@ -1174,13 +1204,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             for task in tasks:
                 if task._after:  # type: ignore
                     raise StreaqError("Pipelined tasks can't be enqueued in batches!")
+                data = task.serialize(enqueue_time)
                 if task.schedule:
-                    score = datetime_ms(task.schedule)
+                    if isinstance(task.schedule, str):
+                        score = next_run(task.schedule)
+                        # add to cron registry
+                        pipe.set(self.cron_data_key + self.id, data)
+                        pipe.hset(self.cron_registry_key, {self.id: task.schedule})
+                        pipe.zadd(self.cron_schedule_key, {self.id: score})
+                    else:
+                        score = datetime_ms(task.schedule)
                 elif task.delay is not None:
                     score = enqueue_time + to_ms(task.delay)
                 else:
                     score = 0
-                data = task.serialize(enqueue_time)
                 task.priority = task.priority or self.priorities[-1]
                 expire = to_ms(task.parent.expire or 0)
                 pipe.fcall(
@@ -1215,17 +1252,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
         return sum(await gather(*commands))
 
-    def _delay_for(self, tab: CronTab) -> float:
-        return tab.next(now=datetime.now(self.tz))  # type: ignore
+    def _delay_for(self, tab: CronTab) -> int:
+        return to_ms(tab.next(now=datetime.now(self.tz)) + 1)  # type: ignore
 
     async def health_check(self) -> None:
         """
         Periodically stores info about the worker in Redis.
         """
         while True:
-            ttl = int(self._delay_for(self._health_tab)) + 5
-            await self.redis.set(f"{self._health_key}:{self.id}", str(self), ex=ttl)
-            await sleep(self._delay_for(self._health_tab))
+            ttl = self._delay_for(self._health_tab)
+            await self.redis.set(f"{self._health_key}:{self.id}", str(self), px=ttl)
+            await sleep(ttl / 1000)
 
     async def signal_handler(self, scope: CancelScope) -> None:
         """
@@ -1401,6 +1438,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             dependencies=dependencies,
             dependents=dependents,
         )
+
+    async def unschedule_by_id(self, task_id: str) -> None:
+        """
+        Stop scheduling the task at the given interval if registered.
+
+        :param task_id: ID of the task to unregister
+        """
+        async with self.redis.pipeline(transaction=False) as pipe:
+            pipe.hdel(self.cron_registry_key, [task_id])
+            pipe.zrem(self.cron_schedule_key, [task_id])
+            pipe.delete([self.cron_data_key + task_id])
 
     def serialize(self, data: Any) -> Any:
         """
