@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from functools import partial, wraps
 from importlib import import_module
 from logging import Formatter
@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, TypeVar, overload
 
 from anyio import CapacityLimiter, create_task_group
 from anyio.to_thread import run_sync
+from crontab import CronTab
 
 from streaq.types import P, R, TypedCoroutine
 
@@ -56,16 +57,24 @@ def import_string(dotted_path: str) -> Any:
         ) from e
 
 
+def next_datetime(tab: str) -> datetime:
+    return CronTab(tab).next(now=datetime.now(timezone.utc), return_datetime=True)  # type: ignore
+
+
+def next_run(tab: str) -> int:
+    return datetime_ms(next_datetime(tab))
+
+
 def to_seconds(timeout: timedelta | int | None) -> float | None:
     if isinstance(timeout, timedelta):
         return timeout.total_seconds()
     return float(timeout) if timeout is not None else None
 
 
-def to_ms(timeout: timedelta | int) -> int:
+def to_ms(timeout: timedelta | int | float) -> int:
     if isinstance(timeout, timedelta):
         return round(timeout.total_seconds() * 1000)
-    return timeout * 1000
+    return round(timeout * 1000)
 
 
 def now_ms() -> int:
@@ -201,6 +210,8 @@ async def gather(*awaitables: Awaitable[T1]) -> tuple[T1, ...]: ...
 
 
 async def gather(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
+    if not awaitables:
+        return ()
     if len(awaitables) == 1:  # optimize for this case
         return (await awaitables[0],)
     results: list[Any] = [None] * len(awaitables)

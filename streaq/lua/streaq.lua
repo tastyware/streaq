@@ -65,7 +65,7 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
       local stream = stream_key .. priority
       -- add ready tasks to live queue
       for j=1, #tids do
-        redis.call('xadd', stream, '*', 'task_id', tids[j])
+        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', current_time)
       end
     end
   end
@@ -84,6 +84,7 @@ redis.register_function('publish_task', function(keys, argv)
   local priority = argv[3]
   local score = argv[4]
   local expire = argv[5]
+  local current_time = argv[6]
 
   local args
   if expire ~= '0' then
@@ -96,7 +97,7 @@ redis.register_function('publish_task', function(keys, argv)
 
   local modified = 0
   -- additional args are dependencies for task
-  for i=6, #argv do
+  for i=7, #argv do
     local dep_id = argv[i]
     -- update dependency DAG if dependency exists
     if redis.call('exists', results_key .. dep_id) ~= 1 then
@@ -113,7 +114,7 @@ redis.register_function('publish_task', function(keys, argv)
       redis.call('zadd', queue_key .. priority, score, task_id)
     -- live queue
     else
-      return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id)
+      return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id, 'enqueue_time', current_time)
     end
   end
 
@@ -196,4 +197,21 @@ redis.register_function('refresh_timeout', function(keys, argv)
     return true
   end
   return false
+end)
+
+redis.register_function('schedule_cron_job', function(keys, argv)
+  local cron_key = keys[1]
+  local queue_key = keys[2]
+  local data_key = keys[3]
+  local task_key = keys[4]
+
+  local task_id = argv[1]
+  local score = argv[2]
+  local member = argv[3]
+
+  -- check if another worker already handled this
+  if redis.call('zadd', cron_key, 'gt', 'ch', score, member) ~= 0 then
+    redis.call('zadd', queue_key, score, task_id)
+    redis.call('copy', data_key, task_key)
+  end
 end)

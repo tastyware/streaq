@@ -17,7 +17,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    from streaq.task import RegisteredCron, RegisteredTask
+    from streaq.task import RegisteredTask
 
 C = TypeVar("C", bound=Optional[object])
 P = ParamSpec("P")
@@ -35,6 +35,7 @@ class StreamMessage:
     message_id: str
     task_id: str
     priority: str
+    enqueue_time: int
 
 
 @dataclass(frozen=True)
@@ -64,10 +65,10 @@ SyncTask: TypeAlias = Callable[P, R]
 
 class CronDefinition(Protocol, Generic[C]):
     @overload
-    def __call__(self, fn: AsyncCron[R]) -> RegisteredCron[C, R]: ...
+    def __call__(self, fn: AsyncCron[R]) -> RegisteredTask[C, [], R]: ...
 
     @overload
-    def __call__(self, fn: SyncCron[R]) -> RegisteredCron[C, R]: ...  # type: ignore
+    def __call__(self, fn: SyncCron[R]) -> RegisteredTask[C, [], R]: ...  # type: ignore
 
 
 class TaskDefinition(Protocol, Generic[C]):

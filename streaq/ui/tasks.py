@@ -26,6 +26,7 @@ from streaq.ui.deps import (
 from streaq.utils import gather
 
 router = APIRouter()
+_fmt = "%Y-%m-%d %H:%M:%S"
 
 
 class TaskData(BaseModel):
@@ -89,13 +90,13 @@ async def _get_context(
             status = TaskStatus.QUEUED
             color = "info"
             text_color = "dark"
-        ts = td.get("et") or td.get("t") or 0
+        ts = td.get("ft") or td.get("t") or 0
         dt = datetime.fromtimestamp(ts / 1000, tz=worker.tz)
         tasks.append(
             TaskData(
                 color=color,
                 text_color=text_color,
-                enqueue_time=dt.strftime("%Y-%m-%d %H:%M:%S"),
+                enqueue_time=dt.strftime(_fmt),
                 status=status,
                 task_id=task_id,
                 fn_name=td["f"],
@@ -179,7 +180,7 @@ async def get_task(
     if status == TaskStatus.DONE:
         result = await worker.result_by_id(task_id)
         function = result.fn_name
-        enqueue_time = result.enqueue_time
+        created_time = result.created_time
         is_done = True
         start_dt = datetime.fromtimestamp(result.start_time / 1000, tz=worker.tz)
         end_dt = datetime.fromtimestamp(result.finish_time / 1000, tz=worker.tz)
@@ -189,11 +190,13 @@ async def get_task(
             output = exception_formatter(result.exception)
         task_try = result.tries
         worker_id = result.worker_id
+        enqueue_dt = datetime.fromtimestamp(result.enqueue_time / 1000, tz=worker.tz)
         extra = {
+            "enqueue_time": enqueue_dt.strftime(_fmt),
             "success": result.success,
             "result": output,
-            "start_time": start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "finish_time": end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "start_time": start_dt.strftime(_fmt),
+            "finish_time": end_dt.strftime(_fmt),
         }
     else:
         info = await worker.info_by_id(task_id)
@@ -202,11 +205,11 @@ async def get_task(
                 status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
             )
         function = info.fn_name
-        enqueue_time = info.enqueue_time
+        created_time = info.created_time
         worker_id = None
         is_done = False
         if info.scheduled:
-            schedule = info.scheduled.strftime("%Y-%m-%d %H:%M:%S")
+            schedule = info.scheduled.strftime(_fmt)
         else:
             schedule = None
         task_try = info.tries
@@ -228,7 +231,7 @@ async def get_task(
         color = "info"
         text_color = "dark"
 
-    enqueue_dt = datetime.fromtimestamp(enqueue_time / 1000, tz=worker.tz)
+    created_dt = datetime.fromtimestamp(created_time / 1000, tz=worker.tz)
     return templates.TemplateResponse(
         request,
         "task.j2",
@@ -236,7 +239,7 @@ async def get_task(
             "color": color,
             "function": function,
             "is_done": is_done,
-            "enqueue_time": enqueue_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "created_time": created_dt.strftime(_fmt),
             "text_color": text_color,
             "title": "task",
             "status": status.value,

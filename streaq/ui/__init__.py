@@ -1,5 +1,6 @@
 import os
 import sys
+from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, cast
 
 from streaq import Worker
@@ -19,12 +20,18 @@ def run_web(host: str, port: int, worker_path: str) -> None:  # pragma: no cover
     import uvicorn
     from fastapi import FastAPI
 
+    sys.path.append(os.getcwd())
+    worker = cast(Worker[Any], import_string(worker_path))
+
     async def _get_worker() -> AsyncGenerator[Worker[Any], None]:
-        sys.path.append(os.getcwd())
-        worker = cast(Worker[Any], import_string(worker_path))
         yield worker
 
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        async with worker:
+            yield
+
+    app = FastAPI(lifespan=lifespan)
     app.dependency_overrides[get_worker] = _get_worker
     app.include_router(router)
     uvicorn.run(app, host=host, port=port)

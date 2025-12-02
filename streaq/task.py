@@ -3,18 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from hashlib import sha256
-from time import time
 from typing import TYPE_CHECKING, Any, Generator, Generic, Iterable
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from anyio import fail_after
-from crontab import CronTab
 
-from streaq import logger
 from streaq.constants import REDIS_TASK
-from streaq.types import AsyncCron, AsyncTask, C, P, POther, R, ROther
-from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
+from streaq.types import AsyncTask, C, P, POther, R, ROther
+from streaq.utils import StreaqError, datetime_ms, next_run, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
@@ -61,7 +57,7 @@ class TaskInfo:
     """
 
     fn_name: str
-    enqueue_time: int
+    created_time: int
     tries: int
     scheduled: datetime | None
     dependencies: set[str]
@@ -76,6 +72,7 @@ class TaskResult(Generic[R]):
     """
 
     fn_name: str
+    created_time: int
     enqueue_time: int
     success: bool
     start_time: int
@@ -113,12 +110,12 @@ class Task(Generic[R]):
 
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    parent: RegisteredCron[Any, R] | RegisteredTask[Any, Any, R]
+    parent: RegisteredTask[Any, Any, R]
     id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any] | None = None
     after: list[str] = field(default_factory=lambda: [])
     delay: timedelta | int | None = None
-    schedule: datetime | None = None
+    schedule: datetime | str | None = None
     priority: str | None = None
     _triggers: Task[Any] | None = None
 
@@ -126,7 +123,7 @@ class Task(Generic[R]):
         self,
         after: str | Iterable[str] | None = None,
         delay: timedelta | int | None = None,
-        schedule: datetime | None = None,
+        schedule: datetime | str | None = None,
         priority: str | None = None,
     ) -> Task[R]:
         """
@@ -134,7 +131,10 @@ class Task(Generic[R]):
 
         :param after: task ID(s) to wait for before running this task
         :param delay: duration to wait before running the task
-        :param schedule: datetime at which to run the task
+        :param schedule:
+            datetime at which to run the task, or crontab for repeated scheduling,
+            follows the specification
+            `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param priority: priority queue to insert the task
 
         :return: self
@@ -161,16 +161,39 @@ class Task(Generic[R]):
         if self._after:
             self.after.append(self._after.id)
         enqueue_time = now_ms()
+        data = self.serialize(enqueue_time)
+        self.priority = self.priority or self.parent.worker.priorities[-1]
+        expire = to_ms(self.parent.expire or 0)
         if self.schedule:
+            if isinstance(self.schedule, str):
+                score = next_run(self.schedule)
+                # add to cron registry
+                async with self.parent.worker.redis.pipeline(transaction=False) as pipe:
+                    pipe.set(self.parent.worker.cron_data_key + self.id, data)
+                    pipe.hset(
+                        self.parent.worker.cron_registry_key, {self.id: self.schedule}
+                    )
+                    pipe.zadd(self.parent.worker.cron_schedule_key, {self.id: score})
+                    pipe.fcall(
+                        "publish_task",
+                        keys=[
+                            self.parent.worker.stream_key,
+                            self.parent.worker.queue_key,
+                            self.task_key(REDIS_TASK),
+                            self.parent.worker.dependents_key,
+                            self.parent.worker.dependencies_key,
+                            self.parent.worker.results_key,
+                        ],
+                        args=[self.id, data, self.priority, score, expire, enqueue_time]
+                        + self.after,
+                    )
+                return self
             score = datetime_ms(self.schedule)
         elif self.delay is not None:
             score = enqueue_time + to_ms(self.delay)
         else:
             score = 0
-        data = self.serialize(enqueue_time)
-        self.priority = self.priority or self.parent.worker.priorities[-1]
-        expire = to_ms(self.parent.expire or 0)
-        if not await self.parent.worker.redis.fcall(
+        await self.parent.worker.redis.fcall(
             "publish_task",
             keys=[
                 self.parent.worker.stream_key,
@@ -180,9 +203,9 @@ class Task(Generic[R]):
                 self.parent.worker.dependencies_key,
                 self.parent.worker.results_key,
             ],
-            args=[self.id, data, self.priority, score, expire] + self.after,
-        ):
-            logger.debug("Task is unique and already exists, not enqueuing!")
+            args=[self.id, data, self.priority, score, expire, enqueue_time]
+            + self.after,
+        )
         return self
 
     def then(
@@ -280,6 +303,12 @@ class Task(Generic[R]):
         """
         return await self.parent.worker.info_by_id(self.id)
 
+    async def unschedule(self) -> None:
+        """
+        Stop scheduling the repeating task if registered.
+        """
+        await self.parent.worker.unschedule_by_id(self.id)
+
 
 @dataclass(frozen=True)
 class RegisteredTask(Generic[C, P, R]):
@@ -292,6 +321,7 @@ class RegisteredTask(Generic[C, P, R]):
     unique: bool
     fn_name: str
     worker: Worker[C]
+    crontab: str | None = None
 
     def enqueue(
         self,
@@ -312,53 +342,3 @@ class RegisteredTask(Generic[C, P, R]):
         """
         with fail_after(to_seconds(self.timeout)):
             return await self.fn(*args, **kwargs)
-
-
-@dataclass(frozen=True)
-class RegisteredCron(Generic[C, R]):
-    fn: AsyncCron[R]
-    crontab: CronTab
-    max_tries: int | None
-    silent: bool
-    timeout: timedelta | int | None
-    ttl: timedelta | int | None
-    unique: bool
-    fn_name: str
-    worker: Worker[C]
-    expire: timedelta | int | None = None
-
-    def enqueue(self) -> Task[R]:
-        """
-        Serialize the task and send it to the queue for later execution by an
-        active worker. Though this isn't async, it should be awaited as it
-        returns an object that should be.
-        """
-        task = Task((), {}, self)
-        uid_bytes = f"{self.fn_name}@{datetime_ms(self.schedule())}".encode()
-        deterministic_hash = sha256(uid_bytes).hexdigest()
-        task.id = UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
-        return task
-
-    async def run(self) -> R:
-        """
-        Run the task in the local event loop and return the result.
-        This skips enqueuing and result storing in Redis.
-        """
-        with fail_after(to_seconds(self.timeout)):
-            return await self.fn()
-
-    def schedule(self) -> datetime:
-        """
-        Datetime of next run.
-        """
-        return datetime.fromtimestamp(self.next() / 1000, tz=self.worker.tz)
-
-    def next(self) -> int:
-        """
-        Timestamp in milliseconds of next run.
-        """
-        return round((time() + self.delay) * 1000)
-
-    @property
-    def delay(self) -> float:
-        return self.crontab.next(now=datetime.now(self.worker.tz))  # type: ignore

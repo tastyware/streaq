@@ -166,3 +166,17 @@ Or the main worker which will be able to run both ``foobar`` and ``barfoo``:
 .. code-block:: bash
 
    $ streaq main:worker
+
+Task-related functions
+----------------------
+
+Sometimes you'll want to abort tasks, fetch task info, etc. without having access to the original task object. This can be done easily:
+
+.. code-block:: python
+
+   async with worker:
+       print(await worker.status_by_id(my_task_id))
+       print(await worker.result_by_id(my_task_id))
+       print(await worker.info_by_id(my_task_id))
+       print(await worker.abort_by_id(my_task_id))
+       await worker.unschedule_by_id(my_task_id)

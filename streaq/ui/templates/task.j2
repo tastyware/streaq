@@ -21,8 +21,8 @@
               </td>
             </tr>
             <tr>
-              <th scope="row">Enqueue time</th>
-              <td>{{ enqueue_time }}</td>
+              <th scope="row">Created time</th>
+              <td>{{ created_time }}</td>
             </tr>
             {% if not is_done %}
             <tr>
@@ -56,11 +56,15 @@
                 </td>
             </tr>
             <tr>
-              <th scope="row">Start Time</th>
+              <th scope="row">Enqueued time</th>
+              <td>{{ enqueue_time }}</td>
+            </tr>
+            <tr>
+              <th scope="row">Start time</th>
               <td>{{ start_time }}</td>
             </tr>
             <tr>
-              <th scope="row">End Time</th>
+              <th scope="row">End time</th>
               <td>{{ finish_time }}</td>
             </tr>
             <tr>
