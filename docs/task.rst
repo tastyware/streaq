@@ -251,6 +251,23 @@ The ``cron`` decorator has one required parameter, the crontab to use which foll
 
 The timezone used for the scheduler can be controlled via the worker's ``tz`` parameter.
 
+Dynamic cron jobs
+-----------------
+
+Aside from defining cron jobs with the decorator, you can also schedule tasks dynamically:
+
+.. code-block:: python
+
+   task = await sleeper.enqueue(1).start(schedule="*/5 * * * *")  # every 5 minutes
+
+This causes the task to be ran repeatedly with the given arguments at the given schedule. To stop scheduling a repeating task, you can use:
+
+.. code-block:: python
+
+   await task.unschedule()
+   # OR
+   await worker.unschedule_by_id(task.id)
+
 Synchronous functions
 ---------------------
 

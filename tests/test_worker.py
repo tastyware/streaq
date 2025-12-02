@@ -15,7 +15,7 @@ from anyio import create_task_group, sleep
 
 from streaq.constants import REDIS_TASK
 from streaq.utils import StreaqError, gather, next_run
-from streaq.worker import Worker, _deterministic_id
+from streaq.worker import Worker
 
 NAME_STR = "Freddy"
 pytestmark = pytest.mark.anyio
@@ -217,12 +217,11 @@ async def test_change_cron_schedule(redis_url: str):
 
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
     foo1 = worker.cron("0 0 1 1 *")(foo)
-    tid = _deterministic_id(foo1.fn_name)
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         await sleep(2)
         assert next_run(foo1.crontab) == int(  # type: ignore
-            (await worker.redis.zscore(worker.cron_schedule_key, tid)) or 0
+            (await worker.redis.zscore(worker.cron_schedule_key, foo1.fn_name)) or 0
         )
         tg.cancel_scope.cancel()
 
@@ -232,7 +231,7 @@ async def test_change_cron_schedule(redis_url: str):
         await tg.start(worker2.run_async)
         await sleep(2)
         assert next_run(foo1.crontab) != int(  # type: ignore
-            (await worker2.redis.zscore(worker2.cron_schedule_key, tid)) or 0
+            (await worker2.redis.zscore(worker.cron_schedule_key, foo1.fn_name)) or 0
         )
         tg.cancel_scope.cancel()
 

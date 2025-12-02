@@ -33,10 +33,9 @@ from anyio import (
 from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
-from coredis.commands import CommandRequest
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
-from coredis.typing import KeyT, StringT
+from coredis.typing import KeyT
 from crontab import CronTab
 from typing_extensions import Self
 
@@ -107,8 +106,8 @@ async def _lifespan() -> AsyncGenerator[None]:
 async def _placeholder() -> None: ...
 
 
-def _deterministic_id(fn_name: str) -> str:
-    deterministic_hash = sha256(fn_name.encode()).hexdigest()
+def _deterministic_id(identifier: str) -> str:
+    deterministic_hash = sha256(identifier.encode()).hexdigest()
     return UUID(bytes=bytes.fromhex(deterministic_hash[:32]), version=4).hex
 
 
@@ -556,7 +555,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._worker_context = context
             self._running = True
             now = now_ms()
-            valid: list[CommandRequest[str | None]] = []
+            tasks: list[Task[Any]] = []
             async with self.redis.pipeline(transaction=False) as pipe:
                 # create consumer group if it doesn't exist
                 pipe.fcall(
@@ -565,26 +564,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     args=self.priorities,  # type: ignore
                 )
                 # initial cron schedules
-                cron_registry: dict[StringT, str] = {}
-                cron_schedule: dict[StringT, int] = {}
-                tasks: list[Task[Any]] = []
                 for cj in self.registry.values():
                     if not cj.crontab:
                         continue
+                    ts = next_run(cj.crontab)
                     task = cj.enqueue().start(schedule=next_datetime(cj.crontab))
-                    task.id = _deterministic_id(cj.fn_name)
-                    cron_registry[task.id] = cj.crontab
-                    cron_schedule[task.id] = next_run(cj.crontab)
+                    task.id = _deterministic_id(cj.fn_name + str(ts))
                     tasks.append(task)
-                    valid.append(
-                        pipe.set(
-                            self.cron_data_key + task.id, task.serialize(now), get=True
-                        )
-                    )
-                pipe.hset(self.cron_registry_key, cron_registry)
-                pipe.zadd(self.cron_schedule_key, cron_schedule)
-            res = await gather(*valid)
-            tasks = [t for i, t in enumerate(tasks) if not res[i]]
+                    pipe.set(self.cron_data_key + cj.fn_name, task.serialize(now))
+                    pipe.hset(self.cron_registry_key, {cj.fn_name: cj.crontab})
+                    pipe.zadd(self.cron_schedule_key, {cj.fn_name: ts})
             await self.enqueue_many(tasks)
             start_time = current_time()
             task_status.started()
@@ -1458,7 +1447,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     async def unschedule_by_id(self, task_id: str) -> None:
         """
-        Stop scheduling the task at the given interval if registered.
+        Stop scheduling the repeating task if registered.
 
         :param task_id: ID of the task to unregister
         """

@@ -305,7 +305,7 @@ class Task(Generic[R]):
 
     async def unschedule(self) -> None:
         """
-        Stop scheduling the task at the given interval if registered.
+        Stop scheduling the repeating task if registered.
         """
         await self.parent.worker.unschedule_by_id(self.id)
 
