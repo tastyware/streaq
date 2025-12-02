@@ -57,7 +57,7 @@ class TaskInfo:
     """
 
     fn_name: str
-    enqueue_time: int
+    created_time: int
     tries: int
     scheduled: datetime | None
     dependencies: set[str]
@@ -72,6 +72,7 @@ class TaskResult(Generic[R]):
     """
 
     fn_name: str
+    created_time: int
     enqueue_time: int
     success: bool
     start_time: int
@@ -183,7 +184,8 @@ class Task(Generic[R]):
                             self.parent.worker.dependencies_key,
                             self.parent.worker.results_key,
                         ],
-                        args=[self.id, data, self.priority, score, expire] + self.after,
+                        args=[self.id, data, self.priority, score, expire, enqueue_time]
+                        + self.after,
                     )
                 return self
             score = datetime_ms(self.schedule)
@@ -201,7 +203,8 @@ class Task(Generic[R]):
                 self.parent.worker.dependencies_key,
                 self.parent.worker.results_key,
             ],
-            args=[self.id, data, self.priority, score, expire] + self.after,
+            args=[self.id, data, self.priority, score, expire, enqueue_time]
+            + self.after,
         )
         return self
 

@@ -35,6 +35,7 @@ class StreamMessage:
     message_id: str
     task_id: str
     priority: str
+    enqueue_time: int
 
 
 @dataclass(frozen=True)

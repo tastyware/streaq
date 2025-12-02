@@ -33,6 +33,7 @@ from anyio import (
 from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
+from coredis.commands import CommandRequest
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT, StringT
@@ -555,6 +556,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._worker_context = context
             self._running = True
             now = now_ms()
+            valid: list[CommandRequest[str | None]] = []
             async with self.redis.pipeline(transaction=False) as pipe:
                 # create consumer group if it doesn't exist
                 pipe.fcall(
@@ -574,9 +576,15 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     cron_registry[task.id] = cj.crontab
                     cron_schedule[task.id] = next_run(cj.crontab)
                     tasks.append(task)
-                    pipe.set(self.cron_data_key + task.id, task.serialize(now))
+                    valid.append(
+                        pipe.set(
+                            self.cron_data_key + task.id, task.serialize(now), get=True
+                        )
+                    )
                 pipe.hset(self.cron_registry_key, cron_registry)
                 pipe.zadd(self.cron_schedule_key, cron_schedule)
+            res = await gather(*valid)
+            tasks = [t for i, t in enumerate(tasks) if not res[i]]
             await self.enqueue_many(tasks)
             start_time = current_time()
             task_status.started()
@@ -690,6 +698,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                                         message_id=msg_id,  # type: ignore
                                         task_id=msg["task_id"],  # type: ignore
                                         priority=priority,
+                                        enqueue_time=int(msg.get("enqueue_time", 0)),
                                     )
                                     for msg_id, msg in msgs
                                 ]
@@ -764,7 +773,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         msg: StreamMessage,
         exc: BaseException,
         tries: int,
-        enqueue_time: int = 0,
+        created_time: int,
         fn_name: str = "Unknown",
         ttl: timedelta | int | None = 300,
     ) -> None:
@@ -775,7 +784,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_id = msg.task_id
         data = {
             "f": fn_name,
-            "et": enqueue_time,
+            "ct": created_time,
+            "et": msg.enqueue_time,
             "s": False,
             "r": exc,
             "st": now,
@@ -817,7 +827,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         return_value: Any,
         start_time: int,
         finish_time: int,
-        enqueue_time: int,
+        created_time: int,
         fn_name: str,
         success: bool,
         silent: bool,
@@ -841,7 +851,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         if finish:
             data = {
                 "f": fn_name,
-                "et": enqueue_time,
+                "ct": created_time,
+                "et": msg.enqueue_time,
                 "s": success,
                 "r": return_value,
                 "st": start_time,
@@ -884,9 +895,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             if res := cast(list[str], await command):
                 if success:
                     async with self.redis.pipeline(transaction=False) as pipe:
+                        now = now_ms()
                         for dep_id in res:
                             logger.info(f"↳ dependent {dep_id} triggered")
-                            pipe.xadd(stream_key, {"task_id": dep_id})
+                            pipe.xadd(
+                                stream_key, {"task_id": dep_id, "enqueue_time": now}
+                            )
                 else:
                     await self.fail_task_dependents(res)
         elif schedule:
@@ -932,7 +946,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         if not raw:
             logger.warning(f"task † {task_id} expired")
             return await self.finish_failed_task(
-                msg, StreaqError("Task expired!"), task_try
+                msg, StreaqError("Task expired!"), task_try, 0
             )
         if not active:
             logger.warning(f"task ↩ {task_id} reclaimed from worker {self.id}")
@@ -943,7 +957,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             data = self.deserialize(raw)
         except StreaqError as e:
             logger.error(f"task ☒ {task_id} failed to deserialize")
-            return await self.finish_failed_task(msg, e, task_try)
+            return await self.finish_failed_task(msg, e, task_try, 0)
 
         if (fn_name := data["f"]) not in self.registry:
             logger.error(f"task {fn_name} ⊘ {task_id} skipped, missing function")
@@ -951,7 +965,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 msg,
                 StreaqError(f"Missing function {fn_name}!"),
                 task_try,
-                enqueue_time=data["t"],
+                data["t"],
                 fn_name=data["f"],
             )
         task = self.registry[fn_name]
@@ -963,7 +977,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 msg,
                 StreaqCancelled("Task aborted prior to run!"),
                 task_try,
-                enqueue_time=data["t"],
+                data["t"],
                 fn_name=fn_name,
                 ttl=task.ttl,
             )
@@ -976,7 +990,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 msg,
                 StreaqError("Max retry attempts reached for task!"),
                 task_try,
-                enqueue_time=data["t"],
+                data["t"],
                 fn_name=fn_name,
                 ttl=task.ttl,
             )
@@ -1012,7 +1026,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         "already running!"
                     ),
                     task_try,
-                    enqueue_time=data["t"],
+                    data["t"],
                     fn_name=fn_name,
                     ttl=task.ttl,
                 )
@@ -1113,7 +1127,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 return_value=result,
                 start_time=start_time,
                 finish_time=finish_time or now_ms(),
-                enqueue_time=data["t"],
+                created_time=data["t"],
                 fn_name=data["f"],
                 success=success,
                 silent=task.silent,
@@ -1132,6 +1146,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         failure = {
             "s": False,
             "r": StreaqError("Dependency failed, not running task!"),
+            "ct": now,
             "st": now,
             "ft": now,
             "et": 0,
@@ -1230,7 +1245,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         self.dependencies_key,
                         self.results_key,
                     ],
-                    args=[task.id, data, task.priority, score, expire] + task.after,
+                    args=[task.id, data, task.priority, score, expire, enqueue_time]
+                    + task.after,
                 )
 
     async def queue_size(self, include_scheduled: bool = True) -> int:
@@ -1336,6 +1352,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         data = self.deserialize(raw)
         return TaskResult(
             fn_name=data["f"],
+            created_time=data["ct"],
             enqueue_time=data["et"],
             success=data["s"],
             start_time=data["st"],
@@ -1432,7 +1449,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
         return TaskInfo(
             fn_name=data["f"],
-            enqueue_time=data["t"],
+            created_time=data["t"],
             tries=int(try_count or 0),
             scheduled=dt,
             dependencies=dependencies,
