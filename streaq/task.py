@@ -10,7 +10,7 @@ from anyio import fail_after
 
 from streaq.constants import REDIS_TASK
 from streaq.types import AsyncTask, C, P, POther, R, ROther
-from streaq.utils import StreaqError, datetime_ms, next_run, now_ms, to_ms, to_seconds
+from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
@@ -166,7 +166,7 @@ class Task(Generic[R]):
         expire = to_ms(self.parent.expire or 0)
         if self.schedule:
             if isinstance(self.schedule, str):
-                score = next_run(self.schedule)
+                score = self.parent.worker.next_run(self.schedule)
                 # add to cron registry
                 async with self.parent.worker.redis.pipeline(transaction=False) as pipe:
                     pipe.set(self.parent.worker.cron_data_key + self.id, data)

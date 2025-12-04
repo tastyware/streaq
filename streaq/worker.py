@@ -87,8 +87,6 @@ from streaq.utils import (
     asyncify,
     datetime_ms,
     gather,
-    next_datetime,
-    next_run,
     now_ms,
     to_ms,
     to_seconds,
@@ -567,8 +565,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 for cj in self.registry.values():
                     if not cj.crontab:
                         continue
-                    ts = next_run(cj.crontab)
-                    task = cj.enqueue().start(schedule=next_datetime(cj.crontab))
+                    dt = self._next_datetime(cj.crontab)
+                    ts = datetime_ms(dt)
+                    task = cj.enqueue().start(schedule=dt)
                     task.id = _deterministic_id(cj.fn_name + str(ts))
                     tasks.append(task)
                     pipe.set(self.cron_data_key + cj.fn_name, task.serialize(now))
@@ -754,7 +753,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         self.cron_data_key + task_id,
                         self.prefix + REDIS_TASK + new_id,
                     ],
-                    args=[new_id, next_run(tab), task_id],
+                    args=[new_id, self.next_run(tab), task_id],
                 )
 
     async def finish_failed_task(
@@ -1211,7 +1210,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 data = task.serialize(enqueue_time)
                 if task.schedule:
                     if isinstance(task.schedule, str):
-                        score = next_run(task.schedule)
+                        score = self.next_run(task.schedule)
                         # add to cron registry
                         pipe.set(self.cron_data_key + self.id, data)
                         pipe.hset(self.cron_registry_key, {self.id: task.schedule})
@@ -1259,6 +1258,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     def _delay_for(self, tab: CronTab) -> int:
         return to_ms(tab.next(now=datetime.now(self.tz)) + 1)  # type: ignore
+
+    def _next_datetime(self, tab: str) -> datetime:
+        return CronTab(tab).next(now=datetime.now(self.tz), return_datetime=True)  # type: ignore
+
+    def next_run(self, tab: str) -> int:
+        """
+        Given a cron tab, get the next run time in ms.
+
+        :param tab: cron tab to calculate next run for
+        """
+        return datetime_ms(self._next_datetime(tab))
 
     async def health_check(self) -> None:
         """

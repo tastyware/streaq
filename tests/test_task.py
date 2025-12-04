@@ -10,7 +10,7 @@ from streaq import StreaqError, Worker
 from streaq.constants import REDIS_UNIQUE
 from streaq.task import StreaqRetry, TaskStatus
 from streaq.types import ReturnCoroutine
-from streaq.utils import gather, next_datetime
+from streaq.utils import gather
 
 pytestmark = pytest.mark.anyio
 
@@ -81,7 +81,7 @@ async def test_task_cron(worker: Worker):
     async def cron2() -> None:
         await sleep(5)
 
-    schedule = next_datetime(cron1.crontab)  # type: ignore
+    schedule = worker._next_datetime(cron1.crontab)  # type: ignore
     assert schedule.day == 1 and schedule.month == 1
     assert await cron1.run()
     async with create_task_group() as tg:
