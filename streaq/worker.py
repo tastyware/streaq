@@ -1391,6 +1391,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             if any(await gather(*delayed)):
                 async with self.redis.pipeline(transaction=True) as pipe:
                     pipe.delete([self.prefix + REDIS_TASK + task_id])
+                    pipe.srem(self._abort_key, [task_id])
                     command = pipe.fcall(
                         "fail_dependents",
                         keys=[
