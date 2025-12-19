@@ -275,7 +275,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._health_tab = CronTab(health_crontab)
         self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
         self._initialized = False
-        self._coworkers: list[Worker[C]] = []
+        self._coworkers: list[Worker[C | None]] = []
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
         self.cron_data_key = self.prefix + REDIS_CRON + "data:"
@@ -320,11 +320,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             ttl = self._delay_for(self._health_tab)
             await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
-    def include(self, worker: Worker[C]) -> None:
+    def include(self, worker: Worker[C | None]) -> None:
         """
         Copy another worker's tasks to the current worker. Both workers must use the
         same queue on the same Redis instance or you may have weird issues. If there
-        are any duplicate tasks or cron jobs, this will fail.
+        are any duplicate tasks or cron jobs, this will fail. If you use a signing
+        secret, make sure both workers have the same one.
 
         :param worker: worker to copy tasks and cron jobs from
         """
