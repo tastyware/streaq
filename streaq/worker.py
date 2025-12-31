@@ -33,7 +33,6 @@ from anyio import (
 from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from coredis import PureToken, Redis
-from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
 from crontab import CronTab
@@ -76,6 +75,7 @@ from streaq.types import (
     P,
     R,
     StreamMessage,
+    Streaq,
     SyncCron,
     SyncTask,
     TaskContext,
@@ -180,6 +180,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_channel_key",
         "idle_timeout",
         "_running",
+        "_lib",
         "prefix",
         "sync_concurrency",
         "_limiter",
@@ -358,7 +359,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 await stack.enter_async_context(worker.__asynccontextmanager__())
             # register lua scripts from library
             text = await (Path(__file__).parent / "lua/streaq.lua").read_text()
-            await self._redis.register_library("streaq", text, replace=True)
+            self._lib = await Streaq(self._redis, code=text, replace=True)
             self._cancelled_class = get_cancelled_exc_class()
             self._initialized = True
             yield self
@@ -369,6 +370,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         if not self._initialized:
             raise StreaqError("Worker not initialized, use the async context manager!")
         return self._redis
+
+    @property
+    def lib(self) -> Streaq:
+        if not self._initialized:
+            raise StreaqError("Worker not initialized, use the async context manager!")
+        return self._lib
 
     def task_context(self) -> TaskContext:
         """
@@ -557,10 +564,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             tasks: list[Task[Any]] = []
             async with self.redis.pipeline(transaction=False) as pipe:
                 # create consumer group if it doesn't exist
-                pipe.fcall(
-                    "create_groups",
-                    keys=[self.stream_key, self._group_name],
-                    args=self.priorities,  # type: ignore
+                Streaq(pipe).create_groups(
+                    self.stream_key, self._group_name, *self.priorities
                 )
                 # initial cron schedules
                 for cj in self.registry.values():
@@ -659,12 +664,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 # Fetch new messages
                 if count > 0:
                     # non-blocking, priority ordered first
-                    res = await self.redis.fcall(
-                        "read_streams",
-                        keys=[self.stream_key, self._group_name, self.id],
-                        args=[count, self.idle_timeout, *self.priorities],
+                    entries = await self.lib.read_streams(
+                        self.stream_key,
+                        self._group_name,
+                        self.id,
+                        count,
+                        self.idle_timeout,
+                        *self.priorities,
                     )
-                    entries = MultiStreamRangeCallback[str]()(res)
                     # blocking second if nothing fetched
                     if not entries:
                         elapsed_ms = 500 - to_ms(current_time() - start_time)
@@ -702,10 +709,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 # schedule delayed tasks
                 async with self.redis.pipeline(transaction=False) as pipe:
                     now = now_ms()
-                    pipe.fcall(
-                        "publish_delayed_tasks",
-                        keys=[self.queue_key, self.stream_key],
-                        args=[now, *self.priorities],
+                    Streaq(pipe).publish_delayed_tasks(
+                        self.queue_key, self.stream_key, now, *self.priorities
                     )
                     aborted = pipe.smembers(self._abort_key)
                     cron_jobs = pipe.zrange(
@@ -744,17 +749,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         logger.debug(f"enqueuing cron jobs in worker {self.id}")
         async with self.redis.pipeline(transaction=False) as pipe:
+            lib = Streaq(pipe)
             for task_id in ready:
                 tab, new_id = registry[task_id], uuid4().hex
-                pipe.fcall(
-                    "schedule_cron_job",
-                    keys=[
-                        self.cron_schedule_key,
-                        self.queue_key + self.priorities[-1],
-                        self.cron_data_key + task_id,
-                        self.prefix + REDIS_TASK + new_id,
-                    ],
-                    args=[new_id, self.next_run(tab), task_id],
+                lib.schedule_cron_job(
+                    self.cron_schedule_key,
+                    self.queue_key + self.priorities[-1],
+                    self.cron_data_key + task_id,
+                    self.prefix + REDIS_TASK + new_id,
+                    new_id,
+                    self.next_run(tab),
+                    task_id,
                 )
 
     async def finish_failed_task(
@@ -797,16 +802,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.xdel(stream_key, [msg.message_id])
             if raw is not None and ttl:
                 pipe.set(key(REDIS_RESULT), raw, ex=ttl)
-            command = pipe.fcall(
-                "fail_dependents",
-                keys=[
-                    self.prefix + REDIS_DEPENDENTS,
-                    self.prefix + REDIS_DEPENDENCIES,
-                    task_id,
-                ],
+            command = Streaq(pipe).fail_dependents(
+                self.prefix + REDIS_DEPENDENTS,
+                self.prefix + REDIS_DEPENDENCIES,
+                task_id,
             )
         if res := await command:
-            await self.fail_task_dependents(res)  # type: ignore
+            await self.fail_task_dependents(res)
 
     async def finish_task(
         self,
@@ -870,18 +872,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     if triggers:
                         args = self.serialize(to_tuple(return_value))
                         pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
-                    script = "update_dependents"
-                else:
-                    script = "fail_dependents"
-                command = pipe.fcall(
-                    script,
-                    keys=[
+                    command = Streaq(pipe).update_dependents(
                         self.prefix + REDIS_DEPENDENTS,
                         self.prefix + REDIS_DEPENDENCIES,
                         task_id,
-                    ],
-                )
-            if res := cast(list[str], await command):
+                    )
+                else:
+                    command = Streaq(pipe).fail_dependents(
+                        self.prefix + REDIS_DEPENDENTS,
+                        self.prefix + REDIS_DEPENDENCIES,
+                        task_id,
+                    )
+            if res := await command:
                 if success:
                     async with self.redis.pipeline(transaction=False) as pipe:
                         now = now_ms()
@@ -925,10 +927,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 pipe.get(key(REDIS_TASK)),
                 pipe.incr(key(REDIS_RETRY)),
                 pipe.srem(self._abort_key, [task_id]),
-                pipe.fcall(
-                    "refresh_timeout",
-                    keys=[self.stream_key + msg.priority, self._group_name],
-                    args=[self.id, msg.message_id],
+                Streaq(pipe).refresh_timeout(
+                    self.stream_key + msg.priority,
+                    self._group_name,
+                    self.id,
+                    msg.message_id,
                 ),
             )
         raw, task_try, abort, active = await gather(*commands)
@@ -1224,18 +1227,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     score = 0
                 task.priority = task.priority or self.priorities[-1]
                 expire = to_ms(task.parent.expire or 0)
-                pipe.fcall(
-                    "publish_task",
-                    keys=[
-                        self.stream_key,
-                        self.queue_key,
-                        task.task_key(REDIS_TASK),
-                        self.dependents_key,
-                        self.dependencies_key,
-                        self.results_key,
-                    ],
-                    args=[task.id, data, task.priority, score, expire, enqueue_time]
-                    + task.after,
+                Streaq(pipe).publish_task(
+                    self.stream_key,
+                    self.queue_key,
+                    task.task_key(REDIS_TASK),
+                    self.dependents_key,
+                    self.dependencies_key,
+                    self.results_key,
+                    task.id,
+                    data,
+                    task.priority,
+                    score,
+                    expire,
+                    enqueue_time,
+                    *task.after,
                 )
 
     async def queue_size(self, include_scheduled: bool = True) -> int:
@@ -1393,16 +1398,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 async with self.redis.pipeline(transaction=True) as pipe:
                     pipe.delete([self.prefix + REDIS_TASK + task_id])
                     pipe.srem(self._abort_key, [task_id])
-                    command = pipe.fcall(
-                        "fail_dependents",
-                        keys=[
-                            self.prefix + REDIS_DEPENDENTS,
-                            self.prefix + REDIS_DEPENDENCIES,
-                            task_id,
-                        ],
+                    command = Streaq(pipe).fail_dependents(
+                        self.prefix + REDIS_DEPENDENTS,
+                        self.prefix + REDIS_DEPENDENCIES,
+                        task_id,
                     )
                 if res := await command:
-                    await self.fail_task_dependents(res)  # type: ignore
+                    await self.fail_task_dependents(res)
                 return True
             if not (raw := await val):
                 # check for 0, works with timedelta

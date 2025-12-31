@@ -16,6 +16,11 @@ from typing import (
     overload,
 )
 
+from coredis.commands import Library, wraps
+from coredis.response._callbacks.streams import MultiStreamRangeCallback
+from coredis.response.types import StreamEntry
+from coredis.typing import KeyT, ResponseType
+
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.task import RegisteredTask
 
@@ -77,3 +82,85 @@ class TaskDefinition(Protocol, Generic[C]):
 
     @overload
     def __call__(self, fn: SyncTask[P, R]) -> RegisteredTask[C, P, R]: ...  # type: ignore
+
+
+class ReadStreamsCallback(MultiStreamRangeCallback[str]):
+    def transform_3(
+        self,
+        response: ResponseType,
+    ) -> dict[str, tuple[StreamEntry, ...]] | None:
+        return super().transform(response)
+
+
+class Streaq(Library[str]):
+    """
+    FFI stubs for Lua functions in streaq.lua
+    """
+
+    NAME = "streaq"
+
+    @wraps()
+    def create_groups(
+        self, stream_key: KeyT, group_name: KeyT, *priorities: str
+    ) -> None: ...
+
+    @wraps()
+    def fail_dependents(
+        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: KeyT
+    ) -> list[str]: ...
+
+    @wraps()
+    def publish_delayed_tasks(
+        self, queue_key: KeyT, stream_key: KeyT, current_time: int, *priorities: str
+    ) -> None: ...
+
+    @wraps()
+    def publish_task(
+        self,
+        stream_key: KeyT,
+        queue_key: KeyT,
+        task_key: KeyT,
+        dependents_key: KeyT,
+        dependencies_key: KeyT,
+        results_key: KeyT,
+        task_id: str,
+        task_data: Any,
+        priority: str,
+        score: int,
+        expire: int,
+        current_time: int,
+        *dependencies: str,
+    ) -> None: ...
+
+    @wraps(callback=ReadStreamsCallback())
+    def read_streams(
+        self,
+        stream_key: KeyT,
+        group_name: KeyT,
+        consumer_name: KeyT,
+        count: int,
+        idle: int,
+        *priorities: str,
+    ) -> Any: ...
+
+    @wraps()
+    def update_dependents(
+        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: KeyT
+    ) -> list[str]: ...
+
+    @wraps()
+    def refresh_timeout(
+        self, stream_key: KeyT, group_name: KeyT, consumer: str, message_id: str
+    ) -> bool: ...
+
+    @wraps()
+    def schedule_cron_job(
+        self,
+        cron_key: KeyT,
+        queue_key: KeyT,
+        data_key: KeyT,
+        task_key: KeyT,
+        task_id: str,
+        score: int,
+        member: str,
+    ) -> None: ...

@@ -130,6 +130,8 @@ async def test_uninitialized_worker(worker: Worker):
         await foobar.run()
     with pytest.raises(StreaqError):
         await worker.redis.ping()
+    with pytest.raises(StreaqError):
+        await foobar.enqueue()
 
 
 async def test_active_tasks(worker: Worker):

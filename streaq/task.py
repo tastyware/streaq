@@ -9,7 +9,7 @@ from uuid import uuid4
 from anyio import fail_after
 
 from streaq.constants import REDIS_TASK
-from streaq.types import AsyncTask, C, P, POther, R, ROther
+from streaq.types import AsyncTask, C, P, POther, R, ROther, Streaq
 from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -174,18 +174,20 @@ class Task(Generic[R]):
                         self.parent.worker.cron_registry_key, {self.id: self.schedule}
                     )
                     pipe.zadd(self.parent.worker.cron_schedule_key, {self.id: score})
-                    pipe.fcall(
-                        "publish_task",
-                        keys=[
-                            self.parent.worker.stream_key,
-                            self.parent.worker.queue_key,
-                            self.task_key(REDIS_TASK),
-                            self.parent.worker.dependents_key,
-                            self.parent.worker.dependencies_key,
-                            self.parent.worker.results_key,
-                        ],
-                        args=[self.id, data, self.priority, score, expire, enqueue_time]
-                        + self.after,
+                    Streaq(pipe).publish_task(
+                        self.parent.worker.stream_key,
+                        self.parent.worker.queue_key,
+                        self.task_key(REDIS_TASK),
+                        self.parent.worker.dependents_key,
+                        self.parent.worker.dependencies_key,
+                        self.parent.worker.results_key,
+                        self.id,
+                        data,
+                        self.priority,
+                        score,
+                        expire,
+                        enqueue_time,
+                        *self.after,
                     )
                 return self
             score = datetime_ms(self.schedule)
@@ -193,18 +195,20 @@ class Task(Generic[R]):
             score = enqueue_time + to_ms(self.delay)
         else:
             score = 0
-        await self.parent.worker.redis.fcall(
-            "publish_task",
-            keys=[
-                self.parent.worker.stream_key,
-                self.parent.worker.queue_key,
-                self.task_key(REDIS_TASK),
-                self.parent.worker.dependents_key,
-                self.parent.worker.dependencies_key,
-                self.parent.worker.results_key,
-            ],
-            args=[self.id, data, self.priority, score, expire, enqueue_time]
-            + self.after,
+        await self.parent.worker.lib.publish_task(
+            self.parent.worker.stream_key,
+            self.parent.worker.queue_key,
+            self.task_key(REDIS_TASK),
+            self.parent.worker.dependents_key,
+            self.parent.worker.dependencies_key,
+            self.parent.worker.results_key,
+            self.id,
+            data,
+            self.priority,
+            score,
+            expire,
+            enqueue_time,
+            *self.after,
         )
         return self
 
