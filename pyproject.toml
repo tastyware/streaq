@@ -58,8 +58,8 @@ authors = [
     { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
-    "anyio>=4.11.0",
-    "coredis @ git+https://github.com/Graeme22/coredis.git@anyio",
+    "anyio>=4.12.1",
+    "coredis",
     "crontab>=1.0.5",
     "typer>=0.19.2",
     "uvloop>=0.21.0; sys_platform != 'win32'",
@@ -125,3 +125,6 @@ fail_under = 100
 
 [tool.coverage.paths]
 streaq = ["streaq", "/app/streaq"]
+
+[tool.uv.sources]
+coredis = { git = "https://github.com/Graeme22/coredis.git", rev = "multiplexing" }

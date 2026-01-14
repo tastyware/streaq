@@ -13,11 +13,13 @@ from typing import (
     Protocol,
     TypeAlias,
     TypeVar,
+    cast,
     overload,
 )
 
 from coredis.commands import Library, wraps
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
+from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT, ResponseType
 
@@ -85,11 +87,18 @@ class TaskDefinition(Protocol, Generic[C]):
 
 
 class ReadStreamsCallback(MultiStreamRangeCallback[str]):
-    def transform_3(
+    def transform(
         self,
         response: ResponseType,
     ) -> dict[str, tuple[StreamEntry, ...]] | None:
-        return super().transform(response)
+        if response:
+            mapping: dict[str, tuple[StreamEntry, ...]] = {}
+            for stream_id, entries in cast(Any, response):
+                mapping[stream_id] = tuple(
+                    StreamEntry(r[0], flat_pairs_to_ordered_dict(r[1])) for r in entries
+                )
+            return mapping
+        return None
 
 
 class Streaq(Library[str]):
