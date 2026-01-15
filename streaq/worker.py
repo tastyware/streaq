@@ -296,7 +296,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             """
             Saves Redis health in Redis.
             """
-            async with self.redis.pipeline(transaction=False) as pipe:
+            async with self.redis.pipeline(
+                transaction=False, allow_watch=False
+            ) as pipe:
                 streams = [
                     pipe.xlen(self.stream_key + priority)
                     for priority in self.priorities
@@ -562,7 +564,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._running = True
             now = now_ms()
             tasks: list[Task[Any]] = []
-            async with self.redis.pipeline(transaction=False) as pipe:
+            async with self.redis.pipeline(
+                transaction=False, allow_watch=False
+            ) as pipe:
                 # create consumer group if it doesn't exist
                 Streaq(pipe).create_groups(
                     self.stream_key, self._group_name, *self.priorities
@@ -619,7 +623,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
         while True:
             await sleep(timeout)
-            async with self.redis.pipeline(transaction=True) as pipe:
+            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
                 for priority, tasks in self._running_tasks.items():
                     if tasks:
                         pipe.xclaim(
@@ -707,7 +711,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                             # this will succeed since we manually compute quantity
                             queue.send_nowait(msg)
                 # schedule delayed tasks
-                async with self.redis.pipeline(transaction=False) as pipe:
+                async with self.redis.pipeline(
+                    transaction=False, allow_watch=False
+                ) as pipe:
                     now = now_ms()
                     Streaq(pipe).publish_delayed_tasks(
                         self.queue_key, self.stream_key, now, *self.priorities
@@ -748,7 +754,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Schedules any pending cron jobs for future execution.
         """
         logger.debug(f"enqueuing cron jobs in worker {self.id}")
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
             lib = Streaq(pipe)
             for task_id in ready:
                 tab, new_id = registry[task_id], uuid4().hex
@@ -794,7 +800,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         self.counters["failed"] += 1
         stream_key = self.stream_key + msg.priority
-        async with self.redis.pipeline(transaction=True) as pipe:
+        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
             pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
             pipe.publish(self._channel_key + task_id, raw)
             pipe.srem(self._abort_key, [task_id])
@@ -852,7 +858,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 "w": self.id,
             }
             result = self.serialize(data)
-            async with self.redis.pipeline(transaction=True) as pipe:
+            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
                 pipe.xack(stream_key, self._group_name, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.publish(self._channel_key + task_id, result)
@@ -885,7 +891,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     )
             if res := await command:
                 if success:
-                    async with self.redis.pipeline(transaction=False) as pipe:
+                    async with self.redis.pipeline(
+                        transaction=False, allow_watch=False
+                    ) as pipe:
                         now = now_ms()
                         for dep_id in res:
                             logger.info(f"↳ dependent {dep_id} triggered")
@@ -895,7 +903,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 else:
                     await self.fail_task_dependents(res)
         elif schedule:
-            async with self.redis.pipeline(transaction=True) as pipe:
+            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
                 pipe.xack(stream_key, self._group_name, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.delete(to_delete)
@@ -922,7 +930,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        async with self.redis.pipeline(transaction=True) as pipe:
+        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
             commands = (
                 pipe.get(key(REDIS_TASK)),
                 pipe.incr(key(REDIS_RETRY)),
@@ -991,7 +999,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             None if task.timeout is None else self.idle_timeout + to_ms(task.timeout)
         )
         after = data.get("A")
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
             if task.unique:
                 lock_key = self.prefix + REDIS_UNIQUE + fn_name
                 locked = pipe.set(
@@ -1149,7 +1157,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         result = self.serialize(failure)
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
             for dep_id in dependents:
                 logger.info(f"task dependent × {dep_id} failed")
                 to_delete.append(self.prefix + REDIS_TASK + dep_id)
@@ -1207,7 +1215,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         """
         enqueue_time = now_ms()
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
             for task in tasks:
                 if task._after:  # type: ignore
                     raise StreaqError("Pipelined tasks can't be enqueued in batches!")
@@ -1249,7 +1257,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :param include_scheduled: whether to include tasks in the delayed queue also
         """
-        async with self.redis.pipeline(transaction=True) as pipe:
+        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
             commands = [
                 pipe.xlen(self.stream_key + priority) for priority in self.priorities
             ]
@@ -1311,7 +1319,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        async with self.redis.pipeline(transaction=True) as pipe:
+        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
             delayed = [
                 pipe.zscore(self.queue_key + priority, task_id)
                 for priority in self.priorities
@@ -1386,7 +1394,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             channels=[self._channel_key + task_id], ignore_subscribe_messages=True
         ) as pubsub:
             # check for result, add to abort set, check delayed queue(s)
-            async with self.redis.pipeline(transaction=True) as pipe:
+            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
                 val = pipe.get(self.results_key + task_id)
                 pipe.sadd(self._abort_key, [task_id])
                 delayed = [
@@ -1395,7 +1403,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 ]
             # task was in delayed queue, we need to handle deps
             if any(await gather(*delayed)):
-                async with self.redis.pipeline(transaction=True) as pipe:
+                async with self.redis.pipeline(
+                    transaction=True, allow_watch=False
+                ) as pipe:
                     pipe.delete([self.prefix + REDIS_TASK + task_id])
                     pipe.srem(self._abort_key, [task_id])
                     command = Streaq(pipe).fail_dependents(
@@ -1431,7 +1441,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
             delayed = [
                 pipe.zscore(self.queue_key + priority, task_id)
                 for priority in self.priorities
@@ -1465,7 +1475,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :param task_id: ID of the task to unregister
         """
-        async with self.redis.pipeline(transaction=False) as pipe:
+        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
             pipe.hdel(self.cron_registry_key, [task_id])
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])

@@ -289,8 +289,8 @@ wheels = [
 
 [[package]]
 name = "coredis"
-version = "5.0.1.post1.dev47"
-source = { git = "https://github.com/Graeme22/coredis.git?rev=multiplexing#b64d1fef24a843b3384b97331fd24c96b660850b" }
+version = "5.0.1.post1.dev46"
+source = { git = "https://github.com/Graeme22/coredis.git?rev=multiplexing#61aa560bcd9f5c2a1c8bb6ce6bf5b9aa9d9a64e4" }
 dependencies = [
     { name = "anyio" },
     { name = "beartype" },
@@ -1678,7 +1678,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", specifier = ">=4.11.0" },
+    { name = "anyio", specifier = ">=4.12.1" },
     { name = "arq", marker = "extra == 'benchmark'", git = "https://github.com/Graeme22/arq.git" },
     { name = "coredis", git = "https://github.com/Graeme22/coredis.git?rev=multiplexing" },
     { name = "crontab", specifier = ">=1.0.5" },

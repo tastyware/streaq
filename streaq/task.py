@@ -168,7 +168,9 @@ class Task(Generic[R]):
             if isinstance(self.schedule, str):
                 score = self.parent.worker.next_run(self.schedule)
                 # add to cron registry
-                async with self.parent.worker.redis.pipeline(transaction=False) as pipe:
+                async with self.parent.worker.redis.pipeline(
+                    transaction=False, allow_watch=False
+                ) as pipe:
                     pipe.set(self.parent.worker.cron_data_key + self.id, data)
                     pipe.hset(
                         self.parent.worker.cron_registry_key, {self.id: self.schedule}
