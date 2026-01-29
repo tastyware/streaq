@@ -11,14 +11,6 @@ from anyio.to_thread import run_sync
 from streaq.types import P, R, TypedCoroutine
 
 
-class StreaqError(Exception):
-    pass
-
-
-class StreaqCancelled(StreaqError):
-    pass
-
-
 class TimezoneFormatter(Formatter):
     def __init__(
         self,
@@ -69,6 +61,9 @@ def to_ms(timeout: timedelta | int | float) -> int:
 
 
 def now_ms() -> int:
+    """
+    Get current time in milliseconds.
+    """
     return round(time.time() * 1000)
 
 
@@ -77,6 +72,10 @@ def datetime_ms(dt: datetime) -> int:
 
 
 def to_tuple(val: Any) -> tuple[Any, ...]:
+    """
+    Turn the given value into a tuple of one element, unless it's already a tuple, in
+    which case it's left untouched.
+    """
     return val if isinstance(val, tuple) else (val,)  # type: ignore
 
 
@@ -113,7 +112,7 @@ def default_log_config(tz: tzinfo, verbose: bool) -> dict[str, Any]:
 
 
 def asyncify(
-    fn: Callable[P, R], limiter: CapacityLimiter
+    fn: Callable[P, R], limiter: CapacityLimiter | None = None
 ) -> Callable[P, TypedCoroutine[R]]:
     """
     Taken from asyncer v0.0.8
@@ -201,10 +200,12 @@ async def gather(*awaitables: Awaitable[T1]) -> tuple[T1, ...]: ...
 
 
 async def gather(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
+    """
+    anyio-compatible implementation of asyncio.gather that runs tasks in a task group
+    and collects the results.
+    """
     if not awaitables:
         return ()
-    if len(awaitables) == 1:  # optimize for this case
-        return (await awaitables[0],)
     results: list[Any] = [None] * len(awaitables)
 
     async def runner(awaitable: Awaitable[Any], i: int) -> None:

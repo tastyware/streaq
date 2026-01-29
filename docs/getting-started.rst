@@ -1,15 +1,13 @@
 Getting started
 ===============
 
-To start, you'll need to create a ``Worker`` object. At worker creation, you can provide an async context manager "lifespan" which will initialize any global dependencies you want to have access to in your tasks:
+To start, you'll need to define your global dependencies which your tasks will need access to at run time. This is done with a ``dataclass`` or ``NamedTuple``:
 
 .. code-block:: python
+   :caption: script.py
 
-   from contextlib import asynccontextmanager
    from dataclasses import dataclass
-   from typing import AsyncGenerator
    from httpx import AsyncClient
-   from streaq import Worker
 
    @dataclass
    class WorkerContext:
@@ -19,8 +17,17 @@ To start, you'll need to create a ``Worker`` object. At worker creation, you can
        """
        http_client: AsyncClient
 
+Now, when creating a ``Worker`` object, you can provide an async context manager "lifespan" which will initialize any global dependencies you want to have access to in your tasks:
+
+.. code-block:: python
+   :caption: script.py
+
+   from contextlib import asynccontextmanager
+   from typing import AsyncGenerator
+   from streaq import Worker
+
    @asynccontextmanager
-   async def lifespan() -> AsyncGenerator[WorkerContext]:
+   async def lifespan() -> AsyncGenerator[WorkerContext, None]:
        """
        Here, we initialize the worker's dependencies.
        You can also do any startup/shutdown work here
@@ -30,38 +37,34 @@ To start, you'll need to create a ``Worker`` object. At worker creation, you can
 
    worker = Worker(redis_url="redis://localhost:6379", lifespan=lifespan)
 
-You can then register async tasks with the worker like this:
+You can then register async tasks to the worker like this:
 
 .. code-block:: python
+   :caption: script.py
+
+   from streaq import WorkerDepends
 
    @worker.task(timeout=5)
-   async def fetch(url: str) -> int:
-       # worker.context here is of type WorkerContext
-       res = await worker.context.http_client.get(url)
+   async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
+       res = await ctx.http_client.get(url)
        return len(res.text)
 
-Finally, let's queue up some tasks via the worker's async context manager:
+Finally, let's queue up some tasks via the worker's async context manager (perhaps using a REPL):
 
 .. code-block:: python
 
-    async with worker:
-        await fetch.enqueue("https://tastyware.dev/")
-        # enqueue returns a task object that can be used to get results/info
-        task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
-        print(await task.info())
-        print(await task.result(timeout=5))
+   async with worker:
+       await fetch.enqueue("https://tastyware.dev/")
+       # enqueue returns a task object that can be used to get results/info
+       task = await fetch.enqueue("https://github.com/tastyware/streaq").start(delay=3)
+       print(await task.info())
+       print(await task.result(timeout=5))
 
 Put this all together in a script and spin up a worker:
 
 .. code-block:: bash
 
-   $ streaq script:worker
-
-and queue up some tasks like so:
-
-.. code-block:: bash
-
-   $ python script.py
+   $ streaq run script:worker
 
 Let's see what the output looks like:
 
@@ -75,4 +78,4 @@ Let's see what the output looks like:
 .. code-block:: python
 
    TaskInfo(fn_name='fetch', enqueue_time=1756365588232, tries=0, scheduled=datetime.datetime(2025, 8, 28, 7, 19, 51, 232000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
-   TaskResult(fn_name='fetch', enqueue_time=1756365588232, success=True, result=303659, start_time=1756365591327, finish_time=1756365592081, tries=1, worker_id='12195ce1')
+   TaskResult(fn_name='fetch', enqueue_time=1756365588232, success=True, start_time=1756365591327, finish_time=1756365592081, tries=1, worker_id='12195ce1', _result=303659)

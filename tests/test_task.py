@@ -6,11 +6,17 @@ from uuid import uuid4
 import pytest
 from anyio import create_task_group, sleep
 
-from streaq import StreaqError, Worker
 from streaq.constants import REDIS_UNIQUE
-from streaq.task import StreaqRetry, TaskStatus
-from streaq.types import ReturnCoroutine
+from streaq.task import TaskStatus
+from streaq.types import (
+    ReturnCoroutine,
+    StreaqError,
+    StreaqRetry,
+    TaskContext,
+    TaskDepends,
+)
 from streaq.utils import gather
+from streaq.worker import Worker
 
 pytestmark = pytest.mark.anyio
 
@@ -33,7 +39,7 @@ async def test_run_local(worker: Worker):
     async def foobar() -> bool:
         return True
 
-    assert await foobar.run()
+    assert await foobar()
 
 
 async def test_task_timeout(worker: Worker):
@@ -83,7 +89,6 @@ async def test_task_cron(worker: Worker):
 
     schedule = worker._next_datetime(cron1.crontab)  # type: ignore
     assert schedule.day == 1 and schedule.month == 1
-    assert await cron1.run()
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         await sleep(2)
@@ -117,8 +122,7 @@ async def test_task_info(worker: Worker):
 
 async def test_task_retry(worker: Worker):
     @worker.task()
-    async def foobar() -> int:
-        ctx = worker.task_context()
+    async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries < 3:
             raise StreaqRetry("Retrying!")
         return ctx.tries
@@ -134,8 +138,7 @@ async def test_task_retry(worker: Worker):
 
 async def test_task_retry_with_delay(worker: Worker):
     @worker.task()
-    async def foobar() -> int:
-        ctx = worker.task_context()
+    async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries == 1:
             raise StreaqRetry("Retrying!", delay=timedelta(seconds=3))
         return ctx.tries
@@ -152,8 +155,7 @@ async def test_task_retry_with_delay(worker: Worker):
 
 async def test_task_retry_with_schedule(worker: Worker):
     @worker.task()
-    async def foobar() -> int:
-        ctx = worker.task_context()
+    async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries == 1:
             raise StreaqRetry(
                 "Retrying!", schedule=datetime.now() + timedelta(seconds=2)
@@ -188,8 +190,8 @@ async def test_task_failure(worker: Worker):
 
 async def test_task_retry_no_delay(worker: Worker):
     @worker.task()
-    async def foobar() -> bool:
-        if worker.task_context().tries == 1:
+    async def foobar(ctx: TaskContext = TaskDepends()) -> bool:
+        if ctx.tries == 1:
             raise StreaqRetry("Retrying!", delay=0)
         return True
 
@@ -467,20 +469,6 @@ async def test_failed_abort(worker: Worker, wait: int):
         tg.cancel_scope.cancel()
 
 
-async def test_cron_run(worker: Worker):
-    @worker.cron("* * * * * * *")
-    async def cron1() -> bool:
-        return True
-
-    @worker.cron("* * * * * * *", timeout=1)
-    async def cron2() -> None:
-        await sleep(3)
-
-    assert await cron1.run()
-    with pytest.raises(TimeoutError):
-        await cron2.run()
-
-
 async def test_sync_cron(worker: Worker):
     @worker.cron("* * * * * * *")
     def cronjob() -> None:
@@ -697,3 +685,21 @@ async def test_dynamic_cron(worker: Worker):
         await sleep(2)
         assert last_len == len(vals)
         tg.cancel_scope.cancel()
+
+
+async def test_bad_depends_task():
+    with pytest.raises(StreaqError):
+        ctx = TaskDepends()
+        print(ctx.task_id)
+
+
+async def test_sync_direct(worker: Worker):
+    @worker.task()
+    def sync_sleep() -> bool:
+        time.sleep(1)
+        return True
+
+    with pytest.raises(StreaqError):
+        await sync_sleep.enqueue()
+
+    assert sync_sleep()

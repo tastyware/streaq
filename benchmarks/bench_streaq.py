@@ -15,8 +15,8 @@ async def sleeper(time: int) -> None:
 
 async def main(time: int):
     start = anyio.current_time()
-    tasks = [sleeper.enqueue(time) for _ in range(N_TASKS)]
     async with worker:
+        tasks = [sleeper.enqueue(time) for _ in range(N_TASKS)]
         await worker.enqueue_many(tasks)
     end = anyio.current_time()
     print(f"enqueued {N_TASKS} tasks in {end - start:.2f}s")

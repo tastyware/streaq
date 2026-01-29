@@ -1,14 +1,20 @@
 Installation
 ============
 
-Via pypi
---------
+Via pip
+-------
 
 The easiest way to install streaQ is using pip:
 
 ::
 
    $ pip install streaq
+
+Using uv is similar:
+
+::
+
+   $ uv add streaq
 
 From source
 -----------

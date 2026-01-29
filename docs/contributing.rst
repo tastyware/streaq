@@ -16,7 +16,7 @@ If you need to test individual tests instead of the entire suite, you can do thi
 
 .. code-block:: bash
 
-   UV_PYTHON=3.10 docker compose run --rm tests uv run --locked --all-extras --dev pytest -sk 'test_name'
+   UV_PYTHON=3.11 docker compose run --rm tests uv run --locked --all-extras --dev pytest -sk 'test_name'
 
 Benchmarks
 ----------
@@ -41,7 +41,7 @@ You can run a worker with one of these commands, adjusting the number of workers
 
    arq --workers ? --burst bench_arq.WorkerSettings
    saq --quiet bench_saq.settings --workers ?
-   streaq --burst --workers ? bench_streaq.worker
+   streaq run --burst --workers ? bench_streaq:worker
    taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
 
 Donating
