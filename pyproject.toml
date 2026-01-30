@@ -67,15 +67,10 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-benchmark = [
-    "arq @ git+https://github.com/Graeme22/arq.git",
-    "saq[hiredis]==0.25.2",
-    "taskiq-redis==1.1.0",
-]
 web = [
     "fastapi>=0.117.1",
     "jinja2>=3.1.6",
-    "python-multipart>=0.0.20",
+    "python-multipart>=0.0.22",
     "uvicorn>=0.37.0",
 ]
 

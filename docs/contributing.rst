@@ -25,7 +25,10 @@ If you want to run the benchmarks yourself, first install the dependencies:
 
 .. code-block:: bash
 
-   uv add streaq[benchmark]
+   uv add git+https://github.com/Graeme22/arq.git
+   uv add saq[hiredis] taskiq-redis
+
+(The repo just modifies the arq CLI to allow spawning multiple workers.)
 
 You can enqueue jobs like so:
 
