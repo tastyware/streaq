@@ -47,11 +47,11 @@ worker = Worker(redis_url="redis://localhost:6379")
 You can then register async tasks with the worker like this:
 
 ```python
-import asyncio
+import trio
 
 @worker.task()
 async def sleeper(time: int) -> int:
-    await asyncio.sleep(time)
+    await trio.sleep(time)
     return time
 
 @worker.cron("* * * * mon-fri")  # every minute on weekdays
