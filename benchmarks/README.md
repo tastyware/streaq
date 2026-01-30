@@ -14,7 +14,7 @@ And run a worker with one of these commands, adjusting the number of workers as 
 ```
 $ arq --workers ? --burst bench_arq.WorkerSettings
 $ saq --quiet bench_saq.settings --workers ?
-$ streaq --burst --workers ? bench_streaq.worker
+$ streaq run --burst --workers ? bench_streaq:worker
 $ taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
 ```
 
@@ -27,7 +27,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 1 worker | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | -------- | ---------- | ---------- | ---------- |
-| streaq   | 0.45s     | 8.50s    | 3.84s      | 4.19s      | 5.18s      |
+| streaq   | 0.45s     | 8.66s    | 3.90s      | 4.18s      | 4.84s      |
 | SAQ      | 1.67s     | 9.86s    | 3.46s      | 3.45s      | 3.93s      |
 | taskiq   | 1.68s     | 6.36s    | 3.26s      | 3.38s      | 6.43s      |
 | arq      | 2.31s     | 62.66s   | 28.10s     | 43.33s     | ☠️         |
@@ -39,7 +39,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | ---------- | ---------- | ---------- |
-| streaq   | 0.44s     | 63.89s     | 33.02s     | 17.33s     |
+| streaq   | 0.44s     | 64.56s     | 32.80s     | 17.88s     |
 | SAQ      | 1.69s     | 64.51s     | 33.56s     | 17.74s     |
 | taskiq   | 1.68s     | 67.53s     | 34.42s     | 18.55s     |
 | arq      | 2.27s     | 176.87s    | 169.47s    | ☠️         |

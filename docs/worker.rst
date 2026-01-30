@@ -6,22 +6,21 @@ Worker lifespan
 
 Workers accept a ``lifespan`` parameter, which allows you to define task dependencies in a type-safe way, as well as run code at startup/shutdown if desired.
 
-First, define the dependencies in a custom class:
+First, define the dependencies in a custom ``dataclass`` or ``NamedTuple``:
 
 .. code-block:: python
 
-   from dataclasses import dataclass
+   from typing import NamedTuple
    from httpx import AsyncClient
 
-   @dataclass
-   class WorkerContext:
+   class WorkerContext(NamedTuple):
        """
        Type safe way of defining the dependencies of your tasks.
        e.g. HTTP client, database connection, settings.
        """
        http_client: AsyncClient
 
-Now, tasks will be able to access the ``http_client`` in order to use API endpoints.
+Now, tasks will be able to access the ``http_client`` in order to use make requests.
 
 Next, create an async context manager to run at worker creation/teardown. Use this to set up and tear down your dependencies, as well as run extra code if needed.
 
@@ -32,7 +31,7 @@ Next, create an async context manager to run at worker creation/teardown. Use th
    from streaq import Worker
 
    @asynccontextmanager
-   async def lifespan() -> AsyncGenerator[WorkerContext]:
+   async def lifespan() -> AsyncGenerator[WorkerContext, None]:
        # here we run code if desired after worker start up
        # yield our dependencies as an instance of the class
        async with AsyncClient() as http_client:
@@ -43,12 +42,17 @@ Now, tasks created for the worker will have access to the dependencies like so:
 
 .. code-block:: python
 
+   from streaq import WorkerDepends
+
    worker = Worker(lifespan=lifespan)
 
    @worker.task()
-   async def fetch(url: str) -> int:
-      res = await worker.context.http_client.get(url)
+   async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
+      res = await ctx.http_client.get(url)
       return len(res.text)
+
+.. important::
+   Note that worker dependencies are available in running workers only, **NOT** when using a worker's async context manager, which is for enqueuing tasks.
 
 Custom serializer/deserializer
 ------------------------------
@@ -83,6 +87,7 @@ Other configuration options
 ``Worker`` accepts a variety of other configuration options:
 
 - ``redis_url``: the URI for connecting to your Redis instance
+- ``redis_pool``: `coredis connection pool <https://coredis.readthedocs.io/en/latest/handbook/connections.html#connection-pools>`_ for Redis connections
 - ``redis_kwargs``: additional arguments for Redis connections
 - ``concurrency``: the maximum number of tasks the worker can run concurrently
 - ``sync_concurrency``: the maximum number of tasks the worker can run simultaneously in separate threads; defaults to the same as ``concurrency``
@@ -116,12 +121,12 @@ In production environments, high availability guarantees are often needed, which
 
 If you pass in the ``redis_sentinel_nodes`` parameter, you no longer need to pass ``redis_url``. For a simple Docker Compose script to get a cluster running, see `here <https://gist.github.com/Graeme22/f54800a410757242dbce8e745fca6316>`_.
 
-Redis Cluster is not supported, since streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on Redis Cluster. For scaling beyond a single Redis instance, it's recommended to use a separate queue for each instance and assign workers to each queue.
+Redis Cluster is not currently supported, since streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on Redis Cluster. For scaling beyond a single Redis instance, it's recommended to use a separate queue for each instance and assign workers to each queue.
 
-Modularizing workers
---------------------
+Modularizing task definitions
+-----------------------------
 
-Sometimes in large apps, having a single ``Worker`` instance is not feasible (or at the very least, cumbersome). streaQ solves this problem by allowing you to "combine" workers together, which copies all tasks and cron jobs from one worker to another:
+Sometimes in large apps, registering all tasks to a single, global ``Worker`` instance is not feasible (or at the very least, cumbersome). streaQ solves this problem by allowing you to create multiple separate ``Worker`` instances and eventually combine them together:
 
 .. code-block:: python
    :caption: other.py
@@ -155,17 +160,59 @@ Sometimes in large apps, having a single ``Worker`` instance is not feasible (or
    if __name__ == "__main__":
        run(main)
 
-This allows for grouping tasks in whatever way you choose. You can run just ``other`` like this:
+This allows for grouping tasks in whatever way you choose. We now have a task, ``foobar``, which is defined independently of our main worker and can be enqueued without it as well. Importantly, tasks defined without awareness of the main worker can still access its dependencies thanks to dependency injection:
 
-.. code-block:: bash
+.. code-block:: python
 
-   $ streaq other:other
+   from sqlalchemy.ext.asyncio import AsyncSession
 
-Or the main worker which will be able to run both ``foobar`` and ``barfoo``:
+   class WorkerContext(NamedTuple):
+       db: AsyncSession
 
-.. code-block:: bash
+   @other.task()
+   async def access_database(ctx: WorkerContext = WorkerDepends()) -> None:
+       ...
+       await ctx.db.commit()
 
-   $ streaq main:worker
+Separating enqueuing from task definitions
+------------------------------------------
+
+A common scenario is to have separate codebases for the backend and the worker. For example, if your worker is serving a large LLM, you probably don't want to load the LLM in the backend. There are two ways to handle this:
+
+First, you can simply use type stubs to re-define the task signatures in the backend:
+
+.. code-block:: python
+
+   from streaq import Worker
+
+   # this worker should have the same Redis URL, serializer/deserializer, signing key,
+   # and queue name as the worker defined elsewhere
+   worker = Worker(redis_url="redis://localhost:6379")
+
+   @worker.task()
+   async def fetch(url: str) -> int: ...
+
+Now, tasks can be enqueued in the same way as before:
+
+.. code-block:: python
+
+   async with worker:
+       await fetch.enqueue("https://github.com/tastyware/streaq")
+
+The second way is to use ``Worker.enqueue_unsafe``:
+
+.. code-block:: python
+
+   from streaq import Worker
+
+   # again, this worker should have the same Redis URL, serializer/deserializer,
+   # signing key, and queue name as the worker defined elsewhere
+   worker = Worker(redis_url="redis://localhost:6379")
+
+   async with worker:
+       await worker.enqueue_unsafe("fetch", "https://tastyware.dev")
+
+This method is not type-safe, but it doesn't require you to re-define the task signature in the backend. Here, the first parameter is the ``fn_name`` of the task defined elsewhere, and the rest of the args and kwargs can be passed normally.
 
 Task-related functions
 ----------------------

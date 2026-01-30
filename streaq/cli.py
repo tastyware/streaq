@@ -8,20 +8,26 @@ from typer import Exit, Option, Typer
 from watchfiles import run_process
 
 from streaq import VERSION
-from streaq.utils import StreaqError, default_log_config, import_string
+from streaq.types import StreaqError
+from streaq.utils import default_log_config, import_string
 from streaq.worker import Worker
 
 cli = Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 
 
-def version_callback(value: bool) -> None:
-    if value:
+@cli.callback(invoke_without_command=True)
+def version_callback(
+    version: Annotated[
+        bool, Option("--version", help="Show installed version")
+    ] = False,
+) -> None:
+    if version:
         print(f"streaQ v{VERSION}")
         raise Exit()
 
 
-@cli.command()
-def main(
+@cli.command(help="Run one or more workers with the given options")
+def run(
     worker_path: str,
     workers: Annotated[
         int, Option("--workers", "-w", help="Number of worker processes to spin up")
@@ -46,16 +52,18 @@ def main(
             help="Whether to use logging.DEBUG instead of logging.INFO",
         ),
     ] = False,
-    version: Annotated[
-        bool,
-        Option("--version", callback=version_callback, help="Show installed version"),
-    ] = False,
-    web: Annotated[
-        bool,
-        Option(
-            "--web", help="Run a web UI for monitoring tasks in a separate process."
-        ),
-    ] = False,
+) -> None:
+    for _ in range(workers - 1):
+        Process(
+            target=run_worker,
+            args=(worker_path, burst, reload, verbose),
+        ).start()
+    run_worker(worker_path, burst, reload, verbose)
+
+
+@cli.command(help="Run a web UI for monitoring with the given options")
+def web(
+    worker_path: str,
     host: Annotated[
         str, Option("--host", "-h", help="Host for the web UI server.")
     ] = "0.0.0.0",
@@ -63,30 +71,13 @@ def main(
         int, Option("--port", "-p", help="Port for the web UI server.")
     ] = 8000,
 ) -> None:
-    web_process: Process | None = None
-    if web:
-        try:
-            from streaq.ui import run_web
-        except ModuleNotFoundError as e:  # pragma: no cover
-            raise StreaqError(
-                "web module not installed, try `pip install streaq[web]`"
-            ) from e
-        web_process = Process(
-            target=run_web,
-            args=(host, port, worker_path),
-        )
-        web_process.start()
-    for _ in range(workers - 1):
-        Process(
-            target=run_worker,
-            args=(worker_path, burst, reload, verbose),
-        ).start()
     try:
-        run_worker(worker_path, burst, reload, verbose)
-    finally:
-        if web_process and web_process.is_alive():
-            web_process.terminate()
-            web_process.join()
+        from streaq.ui import run_web
+    except ModuleNotFoundError as e:  # pragma: no cover
+        raise StreaqError(
+            "web module not installed, try `pip install streaq[web]`"
+        ) from e
+    run_web(host, port, worker_path)
 
 
 def run_worker(path: str, burst: bool, watch: bool, verbose: bool) -> None:

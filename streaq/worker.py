@@ -5,13 +5,21 @@ import pickle
 import signal
 from collections import defaultdict
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from hashlib import sha256
 from inspect import iscoroutinefunction
 from sys import platform
 from textwrap import shorten
-from typing import Any, AsyncGenerator, Callable, Generic, Iterable, Literal, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    Callable,
+    Generic,
+    Iterable,
+    Literal,
+    cast,
+    overload,
+)
 from uuid import UUID, uuid4
 
 from anyio import (
@@ -32,7 +40,7 @@ from anyio import (
 )
 from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from coredis import PureToken, Redis
+from coredis import ConnectionPool, PureToken, Redis
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT
 from crontab import CronTab
@@ -41,6 +49,7 @@ from typing_extensions import Self
 from streaq import logger
 from streaq.constants import (
     DEFAULT_QUEUE_NAME,
+    HEALTH_CHECK,
     REDIS_ABORT,
     REDIS_CHANNEL,
     REDIS_CRON,
@@ -59,8 +68,9 @@ from streaq.constants import (
     REDIS_UNIQUE,
 )
 from streaq.task import (
+    AsyncRegisteredTask,
     RegisteredTask,
-    StreaqRetry,
+    SyncRegisteredTask,
     Task,
     TaskInfo,
     TaskResult,
@@ -70,20 +80,22 @@ from streaq.types import (
     AsyncCron,
     AsyncTask,
     C,
-    CronDefinition,
     Middleware,
     P,
     R,
     StreamMessage,
     Streaq,
+    StreaqCancelled,
+    StreaqError,
+    StreaqRetry,
     SyncCron,
     SyncTask,
     TaskContext,
-    TaskDefinition,
+    is_async_task,
+    task_context,
+    worker_context,
 )
 from streaq.utils import (
-    StreaqCancelled,
-    StreaqError,
     asyncify,
     datetime_ms,
     gather,
@@ -92,8 +104,6 @@ from streaq.utils import (
     to_seconds,
     to_tuple,
 )
-
-HEALTH_CHECK = "redis_health_check"
 
 
 @asynccontextmanager
@@ -114,6 +124,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     Worker object that fetches and executes tasks from a queue.
 
     :param redis_url: connection URI for Redis
+    :param redis_pool: coredis connection pool for Redis client
     :param redis_kwargs: additional keyword arguments for Redis client
     :param concurrency: number of tasks the worker can run simultaneously
     :param sync_concurrency:
@@ -145,59 +156,56 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     :param sentinel_kwargs: extra arguments to pass to sentinel (but not instances)
     """
 
-    _worker_context: C
-
     __slots__ = (
-        "_redis",
-        "concurrency",
-        "queue_name",
-        "_group_name",
-        "prefetch",
-        "counters",
-        "_worker_context",
-        "registry",
-        "id",
-        "serializer",
-        "deserializer",
-        "_cancel_scopes",
-        "_running_tasks",
-        "tz",
+        "anyio_backend",
+        "anyio_kwargs",
         "burst",
-        "trio",
-        "_handle_signals",
-        "_block_new_tasks",
-        "lifespan",
+        "concurrency",
+        "counters",
         "cron_data_key",
         "cron_registry_key",
         "cron_schedule_key",
-        "queue_key",
-        "stream_key",
-        "dependents_key",
         "dependencies_key",
-        "results_key",
-        "_abort_key",
-        "_health_key",
-        "_channel_key",
+        "dependents_key",
+        "deserializer",
+        "id",
         "idle_timeout",
-        "_running",
-        "_lib",
-        "prefix",
-        "sync_concurrency",
-        "_limiter",
-        "_sentinel",
-        "_health_tab",
+        "lifespan",
         "middlewares",
-        "signing_secret",
-        "_task_context",
+        "prefetch",
+        "prefix",
         "priorities",
+        "queue_key",
+        "queue_name",
+        "results_key",
+        "serializer",
+        "signing_secret",
+        "stream_key",
+        "sync_concurrency",
+        "tz",
+        "_abort_key",
+        "_block_new_tasks",
+        "_cancel_scopes",
         "_cancelled_class",
+        "_channel_key",
         "_coworkers",
+        "_group_name",
+        "_handle_signals",
+        "_health_key",
+        "_health_tab",
+        "_health_tab_str",
         "_initialized",
+        "_lib",
+        "_limiter",
+        "_redis",
+        "_running_tasks",
+        "_sentinel",
     )
 
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
+        redis_pool: ConnectionPool | None = None,
         redis_kwargs: dict[str, Any] | None = None,
         concurrency: int = 16,
         sync_concurrency: int | None = None,
@@ -233,20 +241,32 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._redis = self._sentinel.primary_for(sentinel_master)
         else:
             self._sentinel = None
-            self._redis = Redis.from_url(
-                redis_url, decode_responses=True, **redis_kwargs
-            )
+            if redis_pool:
+                if not redis_pool.decode_responses:
+                    raise StreaqError(
+                        "Worker can't use a connection pool with"
+                        "`decode_responses=False`!"
+                    )
+                self._redis = Redis(
+                    connection_pool=redis_pool, decode_responses=True, **redis_kwargs
+                )
+            else:
+                self._redis = Redis.from_url(
+                    redis_url, decode_responses=True, **redis_kwargs
+                )
         # user-facing properties
         self.concurrency = concurrency
         self.queue_name = queue_name
         self.priorities = priorities or ["normal"]
         self.priorities.reverse()
         self.prefetch = (prefetch or concurrency) + concurrency
+        #: mapping of task name -> task wrapper
+        self.registry: dict[
+            str, AsyncRegisteredTask[Any, Any] | SyncRegisteredTask[Any, Any]
+        ] = {}
         #: mapping of type of task -> number of tasks of that type
         #: eg ``{"completed": 4, "failed": 1, "retried": 0}``
         self.counters: dict[str, int] = defaultdict(int)
-        #: mapping of task name -> task wrapper
-        self.registry: dict[str, RegisteredTask[Any, Any, Any]] = {}
         #: unique ID of worker
         self.id = id or uuid4().hex[:8]
         self.serializer = serializer
@@ -263,20 +283,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.middlewares: list[Middleware] = []
         self.signing_secret = signing_secret.encode() if signing_secret else None
         self.sync_concurrency = sync_concurrency or concurrency
+        self.lifespan = lifespan()
+        self.idle_timeout = to_ms(idle_timeout)
         # internal objects
         self._group_name = REDIS_GROUP
         self._handle_signals = handle_signals
-        self._running = False
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
         self._limiter = CapacityLimiter(self.sync_concurrency)
         self._block_new_tasks = False
-        self.lifespan = lifespan()
-        self.idle_timeout = to_ms(idle_timeout)
         self._health_tab = CronTab(health_crontab)
-        self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
+        self._health_tab_str = health_crontab
         self._initialized = False
-        self._coworkers: list[Worker[C] | Worker[None]] = []
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
         self.cron_data_key = self.prefix + REDIS_CRON + "data:"
@@ -291,62 +309,62 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._health_key = self.prefix + REDIS_HEALTH
         self._channel_key = self.prefix + REDIS_CHANNEL
 
-        @self.cron(health_crontab, silent=True, ttl=0, name=HEALTH_CHECK)
-        async def _() -> None:
-            """
-            Saves Redis health in Redis.
-            """
-            async with self.redis.pipeline(
-                transaction=False, allow_watch=False
-            ) as pipe:
-                streams = [
-                    pipe.xlen(self.stream_key + priority)
-                    for priority in self.priorities
-                ]
-                queues = [
-                    pipe.zcard(self.queue_key + priority)
-                    for priority in self.priorities
-                ]
-                infos = (
-                    pipe.info("Memory", "Clients"),
-                    pipe.dbsize(),
-                )
-            info, keys = await gather(*infos)
-            mem_usage = info.get("used_memory_human", "?")
-            clients = info.get("connected_clients", "?")
-            queued = sum(await gather(*streams))
-            scheduled = sum(await gather(*queues))
-            health = (
-                f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "  # type: ignore
-                f"queued: {queued}, scheduled: {scheduled}}}"
-            )
-            ttl = self._delay_for(self._health_tab)
-            await self.redis.set(self._health_key + ":redis", health, ex=ttl)
-
-    def include(self, worker: Worker[C] | Worker[None]) -> None:
+    def include(self, other: Worker[Any]) -> None:
         """
-        Copy another worker's tasks to the current worker. Both workers must use the
-        same queue on the same Redis instance or you may have weird issues. If there
-        are any duplicate tasks or cron jobs, this will fail. If you use a signing
-        secret, make sure both workers have the same one.
+        Copy another worker's tasks and cron jobs to the current worker.
 
-        :param worker: worker to copy tasks and cron jobs from
+        This works by modifying the included worker's tasks to point to this worker
+        instead. Since only one worker should be running per process, this generally
+        works as expected. If you want to run a worker that is included in another
+        worker elsewhere, make sure the included worker isn't aware of its parent
+        worker at import time.
+
+        :param other: worker to copy tasks and cron jobs from
         """
-        if worker.queue_name != self.queue_name:
-            raise StreaqError("Included workers must listen to the same queue!")
-        for k, v in worker.registry.items():
-            if k != HEALTH_CHECK and k in self.registry:
-                raise StreaqError(f"Duplicate task {k} in worker {worker.id}!")
-            self.registry[k] = v
-        self._coworkers.append(worker)
+        for name, task in other.registry.items():
+            if name in self.registry:
+                raise StreaqError(f"Duplicate task {name} in worker {self.id}!")
+            task.worker = self
+            self.registry[name] = task
 
-    def __len__(self) -> int:
+    def running(self) -> int:
+        """
+        Get the number of currently running tasks in the worker.
+        """
         return len(self._cancel_scopes)
 
     def __str__(self) -> str:
         counters = {k: v for k, v in self.counters.items() if v}
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
+
+    async def redis_health_check(self) -> None:
+        """
+        Saves Redis health in Redis. This gets registered as a cron job at worker
+        startup to prevent conflicts when combining workers.
+        """
+        async with self.redis.pipeline(transaction=False) as pipe:
+            streams = [
+                pipe.xlen(self.stream_key + priority) for priority in self.priorities
+            ]
+            queues = [
+                pipe.zcard(self.queue_key + priority) for priority in self.priorities
+            ]
+            infos = (
+                pipe.info("Memory", "Clients"),
+                pipe.dbsize(),
+            )
+        info, keys = await gather(*infos)
+        mem_usage = info.get("used_memory_human", "?")
+        clients = info.get("connected_clients", "?")
+        queued = sum(await gather(*streams))
+        scheduled = sum(await gather(*queues))
+        health = (
+            f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "  # type: ignore
+            f"queued: {queued}, scheduled: {scheduled}}}"
+        )
+        ttl = self._delay_for(self._health_tab)
+        await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self]:
@@ -357,15 +375,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
             await stack.enter_async_context(self._redis.__asynccontextmanager__())
             logger.debug(f"Redis connection established in worker {self.id}")
-            for worker in self._coworkers:
-                await stack.enter_async_context(worker.__asynccontextmanager__())
             # register lua scripts from library
             text = await (Path(__file__).parent / "lua/streaq.lua").read_text()
             self._lib = await Streaq(self._redis, code=text, replace=True)
             self._cancelled_class = get_cancelled_exc_class()
             self._initialized = True
             yield self
-        self._initialized = False
 
     @property
     def redis(self) -> Redis[str]:
@@ -379,38 +394,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             raise StreaqError("Worker not initialized, use the async context manager!")
         return self._lib
 
-    def task_context(self) -> TaskContext:
-        """
-        Fetch task information for the currently running task.
-        This can only be called from within a running task or a middleware.
-        """
-        try:
-            return self._task_context.get()
-        except LookupError as e:
-            raise StreaqError(
-                "Worker.task_context() can only be called within a running task or a "
-                "middleware!"
-            ) from e
-
-    @property
-    def context(self) -> C:
-        """
-        Worker dependencies initialized upon worker startup.
-        This can only be called from within a running task or a middleware.
-        """
-        if not self._running:
-            raise StreaqError(
-                "Worker.context can only be accessed within a running task or a "
-                "middleware!"
-            )
-        return self._worker_context
-
     def build_context(
-        self,
-        fn_name: str,
-        registered_task: RegisteredTask[Any, Any, Any],
-        id: str,
-        tries: int = 1,
+        self, fn_name: str, registered_task: RegisteredTask, id: str, tries: int = 1
     ) -> TaskContext:
         """
         Creates the context for a task to be run given task metadata
@@ -433,7 +418,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         timeout: timedelta | int | None = timedelta(hours=1),
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = True,
-    ) -> CronDefinition[C]:
+    ):
         """
         Registers a task to be run at regular intervals as specified.
 
@@ -450,33 +435,52 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
-        def wrapped(fn: AsyncCron[R] | SyncCron[R]) -> RegisteredTask[C, [], R]:
-            if iscoroutinefunction(fn):
-                _fn = fn
-            else:
-                _fn = asyncify(fn, self._limiter)
+        @overload
+        def wrapped(fn: AsyncCron[R]) -> AsyncRegisteredTask[[], R]: ...  # type: ignore
+
+        @overload
+        def wrapped(fn: SyncCron[R]) -> SyncRegisteredTask[[], R]: ...
+
+        def wrapped(
+            fn: AsyncCron[R] | SyncCron[R],
+        ) -> AsyncRegisteredTask[[], R] | SyncRegisteredTask[[], R]:
             if unique and timeout is None:
                 raise StreaqError("Unique tasks must have a timeout set!")
-            task = RegisteredTask(
-                fn=cast(AsyncCron[R], _fn),
+            if (fn_name := name or fn.__qualname__) in self.registry:
+                raise StreaqError(
+                    f"A task named {fn_name} has already been registered!"
+                )
+            if is_async_task(fn):
+                task = AsyncRegisteredTask(
+                    fn=fn,
+                    expire=None,
+                    max_tries=max_tries,
+                    silent=silent,
+                    timeout=timeout,
+                    ttl=ttl,
+                    unique=unique,
+                    fn_name=fn_name,
+                    crontab=tab,
+                    worker=self,
+                )
+                self.registry[fn_name] = task
+                return task
+            task = SyncRegisteredTask(
+                fn=fn,
                 expire=None,
                 max_tries=max_tries,
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
                 unique=unique,
-                fn_name=name or fn.__qualname__,
-                worker=self,
+                fn_name=fn_name,
                 crontab=tab,
+                worker=self,
             )
-            if task.fn_name in self.registry:
-                raise StreaqError(
-                    f"A task named {task.fn_name} has already been registered!"
-                )
-            self.registry[task.fn_name] = task
+            self.registry[fn_name] = task
             return task
 
-        return wrapped  # type: ignore
+        return wrapped
 
     def task(
         self,
@@ -488,7 +492,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
-    ) -> TaskDefinition[C]:
+    ):
         """
         Registers a task with the worker which can later be enqueued by the user.
 
@@ -504,34 +508,52 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param unique: whether multiple instances of the task can exist simultaneously
         """
 
+        @overload
+        def wrapped(fn: AsyncTask[P, R]) -> AsyncRegisteredTask[P, R]: ...  # type: ignore
+
+        @overload
+        def wrapped(fn: SyncTask[P, R]) -> SyncRegisteredTask[P, R]: ...
+
         def wrapped(
             fn: AsyncTask[P, R] | SyncTask[P, R],
-        ) -> RegisteredTask[C, P, R]:
-            if iscoroutinefunction(fn):
-                _fn = fn
-            else:
-                _fn = asyncify(fn, self._limiter)
+        ) -> AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]:
             if unique and timeout is None:
                 raise StreaqError("Unique tasks must have a timeout set!")
-            task = RegisteredTask(
-                fn=cast(AsyncTask[P, R], _fn),
+            if (fn_name := name or fn.__qualname__) in self.registry:
+                raise StreaqError(
+                    f"A task named {fn_name} has already been registered!"
+                )
+            if is_async_task(fn):
+                task = AsyncRegisteredTask(
+                    fn=fn,
+                    expire=expire,
+                    max_tries=max_tries,
+                    silent=silent,
+                    timeout=timeout,
+                    ttl=ttl,
+                    unique=unique,
+                    fn_name=fn_name,
+                    crontab=None,
+                    worker=self,
+                )
+                self.registry[fn_name] = task
+                return task
+            task = SyncRegisteredTask(
+                fn=fn,
                 expire=expire,
                 max_tries=max_tries,
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
                 unique=unique,
-                fn_name=name or fn.__qualname__,
+                fn_name=fn_name,
+                crontab=None,
                 worker=self,
             )
-            if task.fn_name in self.registry:
-                raise StreaqError(
-                    f"A task named {task.fn_name} has already been registered!"
-                )
-            self.registry[task.fn_name] = task
+            self.registry[fn_name] = task
             return task
 
-        return wrapped  # type: ignore
+        return wrapped
 
     def middleware(self, fn: Middleware) -> Middleware:
         """
@@ -560,13 +582,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         logger.info(f"starting worker {self.id} for queue {self.queue_name}")
         # run user-defined initialization code
         async with self, self.lifespan as context:
-            self._worker_context = context
-            self._running = True
+            # register redis health check
+            self.cron(self._health_tab_str, silent=True, ttl=0, name=HEALTH_CHECK)(
+                self.redis_health_check
+            )
+            token = worker_context.set(context)
             now = now_ms()
             tasks: list[Task[Any]] = []
-            async with self.redis.pipeline(
-                transaction=False, allow_watch=False
-            ) as pipe:
+            async with self.redis.pipeline(transaction=False) as pipe:
                 # create consumer group if it doesn't exist
                 Streaq(pipe).create_groups(
                     self.stream_key, self._group_name, *self.priorities
@@ -603,6 +626,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             finally:
                 run_time = to_ms(current_time() - start_time)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
+                worker_context.reset(token)
 
     async def consumer(
         self, queue: MemoryObjectReceiveStream[StreamMessage], limiter: CapacityLimiter
@@ -623,7 +647,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
         while True:
             await sleep(timeout)
-            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+            async with self.redis.pipeline(transaction=True) as pipe:
                 for priority, tasks in self._running_tasks.items():
                     if tasks:
                         pipe.xclaim(
@@ -711,9 +735,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                             # this will succeed since we manually compute quantity
                             queue.send_nowait(msg)
                 # schedule delayed tasks
-                async with self.redis.pipeline(
-                    transaction=False, allow_watch=False
-                ) as pipe:
+                async with self.redis.pipeline(transaction=False) as pipe:
                     now = now_ms()
                     Streaq(pipe).publish_delayed_tasks(
                         self.queue_key, self.stream_key, now, *self.priorities
@@ -754,7 +776,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Schedules any pending cron jobs for future execution.
         """
         logger.debug(f"enqueuing cron jobs in worker {self.id}")
-        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             lib = Streaq(pipe)
             for task_id in ready:
                 tab, new_id = registry[task_id], uuid4().hex
@@ -800,7 +822,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         self.counters["failed"] += 1
         stream_key = self.stream_key + msg.priority
-        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
             pipe.publish(self._channel_key + task_id, raw)
             pipe.srem(self._abort_key, [task_id])
@@ -858,7 +880,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 "w": self.id,
             }
             result = self.serialize(data)
-            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+            async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.xack(stream_key, self._group_name, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.publish(self._channel_key + task_id, result)
@@ -891,9 +913,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     )
             if res := await command:
                 if success:
-                    async with self.redis.pipeline(
-                        transaction=False, allow_watch=False
-                    ) as pipe:
+                    async with self.redis.pipeline(transaction=False) as pipe:
                         now = now_ms()
                         for dep_id in res:
                             logger.info(f"↳ dependent {dep_id} triggered")
@@ -903,34 +923,22 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 else:
                     await self.fail_task_dependents(res)
         elif schedule:
-            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+            async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.xack(stream_key, self._group_name, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.delete(to_delete)
                 pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
 
-    async def prepare_task(
-        self, msg: StreamMessage
-    ) -> (
-        tuple[
-            RegisteredTask[Any, Any, Any],
-            dict[str, Any],
-            int,
-            tuple[Any, ...],
-            str | None,
-        ]
-        | None
-    ):
+    async def run_task(self, msg: StreamMessage) -> None:
         """
-        Prepare task for execution. If something goes wrong, handles failure and
-        returns nothing.
+        Execute the registered task, then store the result in Redis.
         """
         task_id = msg.task_id
 
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=True) as pipe:
             commands = (
                 pipe.get(key(REDIS_TASK)),
                 pipe.incr(key(REDIS_RETRY)),
@@ -999,7 +1007,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             None if task.timeout is None else self.idle_timeout + to_ms(task.timeout)
         )
         after = data.get("A")
-        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             if task.unique:
                 lock_key = self.prefix + REDIS_UNIQUE + fn_name
                 locked = pipe.set(
@@ -1032,17 +1040,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
 
         _args = data["a"] if not after else self.deserialize(await previous)  # type: ignore
-        return task, data, task_try, _args, lock_key
-
-    async def run_task(self, msg: StreamMessage) -> None:
-        """
-        Execute the registered task, then store the result in Redis.
-        """
-        if not (res := await self.prepare_task(msg)):
-            return
-        task, data, task_try, _args, lock_key = res
-
-        task_id = msg.task_id
         start_time = now_ms()
         ctx = self.build_context(task.fn_name, task, task_id, tries=task_try)
         success = True
@@ -1052,7 +1049,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         async def _fn(*args: Any, **kwargs: Any) -> Any:
             with fail_after(to_seconds(task.timeout)):
-                return await task.fn(*args, **kwargs)
+                if iscoroutinefunction(task.fn):
+                    return await task.fn(*args, **kwargs)
+                return await asyncify(task.fn, self._limiter)(*args, **kwargs)
 
         if not task.silent:
             logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
@@ -1060,7 +1059,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         wrapped = _fn
         for middleware in reversed(self.middlewares):
             wrapped = middleware(wrapped)
-        token = self._task_context.set(ctx)
+        token = task_context.set(ctx)
         result: Any = None
         try:
             with CancelScope() as scope:
@@ -1136,7 +1135,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 lock_key=lock_key,
                 tries=task_try,
             )
-            self._task_context.reset(token)
+            task_context.reset(token)
 
     async def fail_task_dependents(self, dependents: list[str]) -> None:
         """
@@ -1157,7 +1156,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         result = self.serialize(failure)
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
-        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             for dep_id in dependents:
                 logger.info(f"task dependent × {dep_id} failed")
                 to_delete.append(self.prefix + REDIS_TASK + dep_id)
@@ -1185,7 +1184,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :return: task object
         """
-        registered = RegisteredTask(
+        registered = AsyncRegisteredTask(
             fn=_placeholder,
             expire=None,
             max_tries=None,
@@ -1194,9 +1193,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             ttl=None,
             unique=False,
             fn_name=fn_name,
+            crontab=None,
             worker=self,
         )
-        return Task(args, kwargs, registered)
+        return Task(args, kwargs, registered, self)
 
     async def enqueue_many(self, tasks: Iterable[Task[Any]]) -> None:
         """
@@ -1215,7 +1215,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         """
         enqueue_time = now_ms()
-        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             for task in tasks:
                 if task._after:  # type: ignore
                     raise StreaqError("Pipelined tasks can't be enqueued in batches!")
@@ -1224,9 +1224,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     if isinstance(task.schedule, str):
                         score = self.next_run(task.schedule)
                         # add to cron registry
-                        pipe.set(self.cron_data_key + self.id, data)
-                        pipe.hset(self.cron_registry_key, {self.id: task.schedule})
-                        pipe.zadd(self.cron_schedule_key, {self.id: score})
+                        pipe.set(self.cron_data_key + task.id, data)
+                        pipe.hset(self.cron_registry_key, {task.id: task.schedule})
+                        pipe.zadd(self.cron_schedule_key, {task.id: score})
                     else:
                         score = datetime_ms(task.schedule)
                 elif task.delay is not None:
@@ -1257,7 +1257,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :param include_scheduled: whether to include tasks in the delayed queue also
         """
-        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=True) as pipe:
             commands = [
                 pipe.xlen(self.stream_key + priority) for priority in self.priorities
             ]
@@ -1319,7 +1319,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=True) as pipe:
             delayed = [
                 pipe.zscore(self.queue_key + priority, task_id)
                 for priority in self.priorities
@@ -1394,7 +1394,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             channels=[self._channel_key + task_id], ignore_subscribe_messages=True
         ) as pubsub:
             # check for result, add to abort set, check delayed queue(s)
-            async with self.redis.pipeline(transaction=True, allow_watch=False) as pipe:
+            async with self.redis.pipeline(transaction=True) as pipe:
                 val = pipe.get(self.results_key + task_id)
                 pipe.sadd(self._abort_key, [task_id])
                 delayed = [
@@ -1403,9 +1403,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 ]
             # task was in delayed queue, we need to handle deps
             if any(await gather(*delayed)):
-                async with self.redis.pipeline(
-                    transaction=True, allow_watch=False
-                ) as pipe:
+                async with self.redis.pipeline(transaction=True) as pipe:
                     pipe.delete([self.prefix + REDIS_TASK + task_id])
                     pipe.srem(self._abort_key, [task_id])
                     command = Streaq(pipe).fail_dependents(
@@ -1441,7 +1439,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
 
-        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             delayed = [
                 pipe.zscore(self.queue_key + priority, task_id)
                 for priority in self.priorities
@@ -1475,7 +1473,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :param task_id: ID of the task to unregister
         """
-        async with self.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+        async with self.redis.pipeline(transaction=False) as pipe:
             pipe.hdel(self.cron_registry_key, [task_id])
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])

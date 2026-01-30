@@ -16,15 +16,12 @@ __all__ = [
 ]
 
 
-def run_web(host: str, port: int, worker_path: str) -> None:  # pragma: no cover
+def run_web(host: str, port: int, worker_path: str) -> None:
     import uvicorn
     from fastapi import FastAPI
 
     sys.path.append(os.getcwd())
     worker = cast(Worker[Any], import_string(worker_path))
-
-    async def _get_worker() -> AsyncGenerator[Worker[Any], None]:
-        yield worker
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -32,6 +29,6 @@ def run_web(host: str, port: int, worker_path: str) -> None:  # pragma: no cover
             yield
 
     app = FastAPI(lifespan=lifespan)
-    app.dependency_overrides[get_worker] = _get_worker
+    app.dependency_overrides[get_worker] = lambda: worker
     app.include_router(router)
     uvicorn.run(app, host=host, port=port)

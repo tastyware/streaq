@@ -19,8 +19,14 @@ streaQ documentation
 
 Fast, async, type-safe job queuing with Redis streams
 
+.. tip::
+   Sick of ``redis-py``? Check out `coredis <https://coredis.readthedocs.io/en/latest/>`_, a fully-typed Redis client that supports Trio!
+
+Feature comparison
+------------------
+
 +----------------------------+--------+-----+-----+--------+
-| Feature comparison         | taskiq | arq | SAQ | streaQ |
+| Library                    | taskiq | arq | SAQ | streaQ |
 +============================+========+=====+=====+========+
 | Startup/shutdown hooks     | ✅     | ✅  | ✅  | ✅     |
 +----------------------------+--------+-----+-----+--------+

@@ -17,34 +17,34 @@ test_module = sys.modules["tests.test_cli"]
 
 def test_burst(worker: Worker):
     setattr(test_module, "test_worker", worker)
-    result = runner.invoke(cli, ["tests.test_cli:test_worker", "--burst"])
+    result = runner.invoke(cli, ["run", "tests.test_cli:test_worker", "--burst"])
     assert result.exit_code == 0
 
 
 def test_multiple_workers(worker: Worker):
     setattr(test_module, "test_worker", worker)
     result = runner.invoke(
-        cli, ["--burst", "--workers", "2", "tests.test_cli:test_worker"]
+        cli, ["run", "--burst", "--workers", "2", "tests.test_cli:test_worker"]
     )
     assert result.exit_code == 0
 
 
 def test_verbose(worker: Worker):
     setattr(test_module, "test_worker", worker)
-    result = runner.invoke(cli, ["tests.test_cli:test_worker", "--burst", "--verbose"])
+    result = runner.invoke(
+        cli, ["run", "tests.test_cli:test_worker", "--burst", "--verbose"]
+    )
     assert result.exit_code == 0
     assert "established" in result.stderr
 
 
-def test_version(worker: Worker):
-    setattr(test_module, "test_worker", worker)
+def test_version():
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
     assert VERSION in result.stdout
 
 
-def test_help(worker: Worker):
-    setattr(test_module, "test_worker", worker)
+def test_help():
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "--help" in result.stdout
@@ -73,8 +73,8 @@ worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"""
             sys.executable,
             "-m",
             "streaq",
+            "web",
             "web:worker",
-            "--web",
             "--port",
             str(free_tcp_port),
         ],
@@ -108,7 +108,7 @@ from streaq import Worker
 worker = Worker(redis_url="{redis_url}", queue_name=uuid4().hex)"""
     )
     p = subprocess.Popen(
-        [sys.executable, "-m", "streaq", "watch:worker", "--reload"],
+        [sys.executable, "-m", "streaq", "run", "watch:worker", "--reload"],
         cwd=str(tmp_path),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

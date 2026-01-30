@@ -1,36 +1,113 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from inspect import iscoroutinefunction
 from typing import (
-    TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Coroutine,
-    Generic,
     Optional,
     ParamSpec,
-    Protocol,
     TypeAlias,
     TypeVar,
+    TypeVarTuple,
     cast,
-    overload,
 )
 
-from coredis.commands import Library, wraps
+from coredis.commands.function import Library, wraps
+from coredis.commands.request import CommandRequest
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT, ResponseType
-
-if TYPE_CHECKING:  # pragma: no cover
-    from streaq.task import RegisteredTask
+from typing_extensions import TypeIs
 
 C = TypeVar("C", bound=Optional[object])
 P = ParamSpec("P")
-POther = ParamSpec("POther")
 R = TypeVar("R", bound=Optional[object])
 ROther = TypeVar("ROther", bound=Optional[object])
+Ts = TypeVarTuple("Ts")
+
+
+class StreaqError(Exception):
+    """
+    Base class for all task queuing errors.
+    """
+
+    pass
+
+
+class StreaqCancelled(StreaqError):
+    """
+    Similar to ``asyncio.CancelledError`` and ``trio.Cancelled``, but can be raised
+    manually.
+    """
+
+    pass
+
+
+class StreaqRetry(StreaqError):
+    """
+    An exception you can manually raise in your tasks to make sure the task
+    is retried.
+
+    :param delay:
+        amount of time to wait before retrying the task; if None and schedule
+        is not passed either, will be the number of tries squared, in seconds
+    :param schedule: specific datetime to retry the task at
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        delay: timedelta | int | None = None,
+        schedule: datetime | None = None,
+    ):
+        super().__init__(*args)
+        self.delay = delay
+        self.schedule = schedule
+
+
+task_context: ContextVar[TaskContext] = ContextVar("_task_context")
+worker_context: ContextVar[Any] = ContextVar("_worker_context")
+
+
+class _TaskDepends:
+    def __getattr__(self, name: str) -> Any:
+        ctx = task_context.get(None)
+        if not ctx:
+            raise StreaqError(
+                "Task context can only be accessed inside a running worker!"
+            )
+        return getattr(ctx, name)
+
+
+class _WorkerDepends:
+    def __getattr__(self, name: str) -> Any:
+        try:
+            ctx = worker_context.get()
+        except LookupError as e:
+            raise StreaqError(
+                "Worker context can only be accessed inside a running worker!"
+            ) from e
+        return getattr(ctx, name)
+
+
+def TaskDepends() -> TaskContext:
+    """
+    Simple dependency injection wrapper for task dependencies.
+    """
+    return _TaskDepends()  # type: ignore
+
+
+def WorkerDepends() -> Any:
+    """
+    Simple dependency injection wrapper for worker dependencies.
+    """
+    return _WorkerDepends()
 
 
 @dataclass(frozen=True)
@@ -58,10 +135,8 @@ class TaskContext:
     ttl: timedelta | int | None
 
 
-AnyCoroutine: TypeAlias = Coroutine[Any, Any, Any]
-ReturnCoroutine: TypeAlias = Callable[..., AnyCoroutine]
+ReturnCoroutine: TypeAlias = Callable[..., Coroutine[Any, Any, Any]]
 TypedCoroutine: TypeAlias = Coroutine[Any, Any, R]
-
 Middleware: TypeAlias = Callable[[ReturnCoroutine], ReturnCoroutine]
 
 AsyncCron: TypeAlias = Callable[[], TypedCoroutine[R]]
@@ -70,20 +145,10 @@ AsyncTask: TypeAlias = Callable[P, TypedCoroutine[R]]
 SyncTask: TypeAlias = Callable[P, R]
 
 
-class CronDefinition(Protocol, Generic[C]):
-    @overload
-    def __call__(self, fn: AsyncCron[R]) -> RegisteredTask[C, [], R]: ...
-
-    @overload
-    def __call__(self, fn: SyncCron[R]) -> RegisteredTask[C, [], R]: ...  # type: ignore
-
-
-class TaskDefinition(Protocol, Generic[C]):
-    @overload
-    def __call__(self, fn: AsyncTask[P, R]) -> RegisteredTask[C, P, R]: ...
-
-    @overload
-    def __call__(self, fn: SyncTask[P, R]) -> RegisteredTask[C, P, R]: ...  # type: ignore
+def is_async_task(
+    fn: Callable[P, Awaitable[R]] | Callable[P, R],
+) -> TypeIs[Callable[P, Awaitable[R]]]:
+    return iscoroutinefunction(fn)
 
 
 class ReadStreamsCallback(MultiStreamRangeCallback[str]):
@@ -108,22 +173,22 @@ class Streaq(Library[str]):
 
     NAME = "streaq"
 
-    @wraps()
+    @wraps(verify_existence=False)
     def create_groups(
         self, stream_key: KeyT, group_name: KeyT, *priorities: str
-    ) -> None: ...
+    ) -> CommandRequest[None]: ...
 
-    @wraps()
+    @wraps(verify_existence=False)
     def fail_dependents(
         self, dependents_key: KeyT, dependencies_key: KeyT, task_id: KeyT
-    ) -> list[str]: ...
+    ) -> CommandRequest[list[str]]: ...
 
-    @wraps()
+    @wraps(verify_existence=False)
     def publish_delayed_tasks(
         self, queue_key: KeyT, stream_key: KeyT, current_time: int, *priorities: str
-    ) -> None: ...
+    ) -> CommandRequest[None]: ...
 
-    @wraps()
+    @wraps(verify_existence=False)
     def publish_task(
         self,
         stream_key: KeyT,
@@ -139,7 +204,7 @@ class Streaq(Library[str]):
         expire: int,
         current_time: int,
         *dependencies: str,
-    ) -> None: ...
+    ) -> CommandRequest[None]: ...
 
     @wraps(callback=ReadStreamsCallback())
     def read_streams(
@@ -150,19 +215,19 @@ class Streaq(Library[str]):
         count: int,
         idle: int,
         *priorities: str,
-    ) -> Any: ...
+    ) -> CommandRequest[Any]: ...
 
-    @wraps()
+    @wraps(verify_existence=False)
     def update_dependents(
         self, dependents_key: KeyT, dependencies_key: KeyT, task_id: KeyT
-    ) -> list[str]: ...
+    ) -> CommandRequest[list[str]]: ...
 
-    @wraps()
+    @wraps(verify_existence=False)
     def refresh_timeout(
         self, stream_key: KeyT, group_name: KeyT, consumer: str, message_id: str
-    ) -> bool: ...
+    ) -> CommandRequest[bool]: ...
 
-    @wraps()
+    @wraps(verify_existence=False)
     def schedule_cron_job(
         self,
         cron_key: KeyT,
@@ -172,4 +237,4 @@ class Streaq(Library[str]):
         task_id: str,
         score: int,
         member: str,
-    ) -> None: ...
+    ) -> CommandRequest[None]: ...

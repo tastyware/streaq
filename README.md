@@ -25,6 +25,9 @@ Fast, async, fully-typed distributed task queue via Redis streams
 - Built-in web UI for monitoring tasks
 - Built with structured concurrency on `anyio`, supports both `asyncio` and `trio`
 
+> [!TIP]
+> Sick of `redis-py`? Check out [coredis](https://coredis.readthedocs.io/en/latest/), a fully-typed Redis client that supports Trio!
+
 ## Installation
 
 ```console
@@ -69,7 +72,7 @@ async with worker:
 
 Putting this all together gives us [example.py](https://github.com/tastyware/streaq/blob/master/example.py). Let's spin up a worker:
 ```
-$ streaq example:worker
+$ streaq run example:worker
 ```
 and queue up some tasks like so:
 ```
@@ -90,7 +93,7 @@ Nobody respects the spammish repetition!
 ```
 ```python
 TaskInfo(fn_name='sleeper', enqueue_time=1751508876961, tries=0, scheduled=datetime.datetime(2025, 7, 3, 2, 14, 39, 961000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
-TaskResult(fn_name='sleeper', enqueue_time=1751508876961, success=True, result=1, start_time=1751508880500, finish_time=1751508881503, tries=1, worker_id='ca5bd9eb')
+TaskResult(fn_name='sleeper', enqueue_time=1751508876961, success=True, start_time=1751508880500, finish_time=1751508881503, tries=1, worker_id='ca5bd9eb', _result=1)
 ```
 
 For more examples, check out the [documentation](https://streaq.readthedocs.io/en/latest/).

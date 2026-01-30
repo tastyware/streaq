@@ -7,14 +7,15 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 from uuid import uuid4
 
 import pytest
 from anyio import create_task_group, sleep
 
 from streaq.constants import REDIS_TASK
-from streaq.utils import StreaqError, gather
+from streaq.types import StreaqError, WorkerDepends
+from streaq.utils import gather
 from streaq.worker import Worker
 
 NAME_STR = "Freddy"
@@ -40,8 +41,8 @@ async def test_lifespan(redis_url: str):
     worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
     @worker.task()
-    async def foobar() -> str:
-        return worker.context.name
+    async def foobar(ctx: WorkerContext = WorkerDepends()) -> str:
+        return ctx.name
 
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
@@ -123,11 +124,11 @@ async def test_custom_serializer(worker: Worker):
 
 async def test_uninitialized_worker(worker: Worker):
     @worker.task()
-    async def foobar() -> None:
-        print(worker.context)
+    async def foobar(ctx: Any = WorkerDepends()) -> None:
+        print(ctx.nonexistent)
 
     with pytest.raises(StreaqError):
-        await foobar.run()
+        await foobar()
     with pytest.raises(StreaqError):
         await worker.redis.ping()
     with pytest.raises(StreaqError):
@@ -140,12 +141,12 @@ async def test_active_tasks(worker: Worker):
         await sleep(10)
 
     n_tasks = 5
-    tasks = [foo.enqueue() for _ in range(n_tasks)]
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
+        tasks = [foo.enqueue() for _ in range(n_tasks)]
         await worker.enqueue_many(tasks)
         await sleep(3)
-        assert len(worker) >= n_tasks
+        assert worker.running() >= n_tasks
         tg.cancel_scope.cancel()
 
 
@@ -158,10 +159,10 @@ async def test_handle_signal(worker: Worker):
         await tg.start(worker.run_async)
         await foo.enqueue()
         await sleep(1)
-        assert len(worker) > 0
+        assert worker.running() > 0
         os.kill(os.getpid(), signal.SIGINT)
         await sleep(1)
-        assert len(worker) == 0
+        assert worker.running() == 0
 
 
 async def test_reclaim_backed_up(redis_url: str):
@@ -177,11 +178,11 @@ async def test_reclaim_backed_up(redis_url: str):
     registered = worker.task()(foo)
     worker2.task()(foo)
 
-    # enqueue tasks
-    tasks = [registered.enqueue() for _ in range(4)]
     async with create_task_group() as tg:
         # run first worker which will pick up all tasks
         await tg.start(worker.run_async)
+        # enqueue tasks
+        tasks = [registered.enqueue() for _ in range(4)]
         await worker.enqueue_many(tasks)
         # run second worker which will pick up prefetched tasks
         await tg.start(worker2.run_async)
@@ -198,8 +199,9 @@ async def test_reclaim_idle_task(redis_url: str):
     async def foo() -> None:
         await sleep(2)
 
-    # enqueue task
-    task = foo.enqueue()
+    async with worker2:
+        # enqueue task
+        task = foo.enqueue()
     # run separate worker which will pick up task
     worker = subprocess.Popen([sys.executable, "tests/failure.py", redis_url, task.id])
     await sleep(1)
@@ -315,9 +317,10 @@ async def test_enqueue_many(worker: Worker):
         assert await worker.queue_size() >= 10
 
 
-async def test_invalid_task_context(worker: Worker):
+async def test_bad_depends_worker():
     with pytest.raises(StreaqError):
-        worker.task_context()
+        ctx = WorkerDepends()
+        print(ctx.nonexistent)
 
 
 async def test_custom_worker_id(redis_url: str):
@@ -325,6 +328,42 @@ async def test_custom_worker_id(redis_url: str):
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex, id=worker_id)
 
     assert worker.id == worker_id
+
+
+async def test_connection_pool(
+    redis_url: str, anyio_backend: Literal["asyncio", "trio"]
+):
+    from coredis import ConnectionPool
+
+    pool = ConnectionPool.from_url(redis_url, decode_responses=True, max_connections=4)
+    worker = Worker(
+        redis_pool=pool, queue_name=uuid4().hex, anyio_backend=anyio_backend
+    )
+    worker2 = Worker(
+        redis_pool=pool, queue_name=worker.queue_name, anyio_backend=anyio_backend
+    )
+    async with pool, worker, worker2:
+        assert await worker.redis.client_id() == await worker2.redis.client_id()
+
+
+async def test_connection_pool_illegal(
+    redis_url: str, anyio_backend: Literal["asyncio", "trio"]
+):
+    from coredis import ConnectionPool
+
+    pool = ConnectionPool.from_url(redis_url, decode_responses=False, max_connections=4)
+    with pytest.raises(StreaqError):
+        _ = Worker(redis_pool=pool, queue_name=uuid4().hex, anyio_backend=anyio_backend)
+
+
+async def test_duplicate_tasks(worker: Worker):
+    @worker.task(name="foobar")
+    async def foobar(): ...
+
+    with pytest.raises(StreaqError):
+
+        @worker.task(name="foobar")
+        async def barfoo(): ...
 
 
 async def test_include_worker(redis_url: str, worker: Worker):
@@ -359,7 +398,7 @@ async def test_include_worker(redis_url: str, worker: Worker):
         tg.cancel_scope.cancel()
 
 
-async def test_bad_include(redis_url: str, worker: Worker):
+async def test_include_duplicate(redis_url: str, worker: Worker):
     if worker._sentinel:
         worker2 = Worker(
             sentinel_nodes=[
@@ -379,70 +418,10 @@ async def test_bad_include(redis_url: str, worker: Worker):
         )
 
     @worker.task(name="foobar")
-    async def foobar() -> None:
-        await sleep(0)
+    async def foobar() -> None: ...
 
     @worker2.task(name="foobar")
-    async def barfoo() -> None:
-        await sleep(0)
-
-    with pytest.raises(StreaqError):
-        worker.include(worker2)
-
-
-async def test_bad_include_cron(redis_url: str, worker: Worker):
-    if worker._sentinel:
-        worker2 = Worker(
-            sentinel_nodes=[
-                ("sentinel-1", 26379),
-                ("sentinel-2", 26379),
-                ("sentinel-3", 26379),
-            ],
-            sentinel_master="mymaster",
-            queue_name=worker.queue_name,
-            anyio_backend=worker.anyio_backend,  # type: ignore
-        )
-    else:
-        worker2 = Worker(
-            redis_url=redis_url,
-            queue_name=worker.queue_name,
-            anyio_backend=worker.anyio_backend,  # type: ignore
-        )
-
-    @worker.cron("* * * * *", name="foobar")
-    async def foobar() -> None:
-        await sleep(0)
-
-    @worker2.cron("* * * * *", name="foobar")
-    async def barfoo() -> None:
-        await sleep(0)
-
-    with pytest.raises(StreaqError):
-        worker.include(worker2)
-
-
-async def test_include_different_queues(redis_url: str, worker: Worker):
-    if worker._sentinel:
-        worker2 = Worker(
-            sentinel_nodes=[
-                ("sentinel-1", 26379),
-                ("sentinel-2", 26379),
-                ("sentinel-3", 26379),
-            ],
-            sentinel_master="mymaster",
-            queue_name="other",
-            anyio_backend=worker.anyio_backend,  # type: ignore
-        )
-    else:
-        worker2 = Worker(
-            redis_url=redis_url,
-            queue_name="other",
-            anyio_backend=worker.anyio_backend,  # type: ignore
-        )
-
-    @worker2.task()
-    async def foobar() -> None:
-        await sleep(0)
+    async def barfoo() -> None: ...
 
     with pytest.raises(StreaqError):
         worker.include(worker2)

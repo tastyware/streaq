@@ -3,39 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Generator, Generic, Iterable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Concatenate,
+    Generator,
+    Generic,
+    Iterable,
+    overload,
+)
 from uuid import uuid4
 
-from anyio import fail_after
-
 from streaq.constants import REDIS_TASK
-from streaq.types import AsyncTask, C, P, POther, R, ROther, Streaq
-from streaq.utils import StreaqError, datetime_ms, now_ms, to_ms, to_seconds
+from streaq.types import (
+    AsyncTask,
+    P,
+    R,
+    ROther,
+    Streaq,
+    StreaqError,
+    SyncTask,
+    Ts,
+    TypedCoroutine,
+)
+from streaq.utils import datetime_ms, now_ms, to_ms
 
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
-
-
-class StreaqRetry(StreaqError):
-    """
-    An exception you can manually raise in your tasks to make sure the task
-    is retried.
-
-    :param delay:
-        amount of time to wait before retrying the task; if None and schedule
-        is not passed either, will be the number of tries squared, in seconds
-    :param schedule: specific datetime to retry the task at
-    """
-
-    def __init__(
-        self,
-        *args: Any,
-        delay: timedelta | int | None = None,
-        schedule: datetime | None = None,
-    ):
-        super().__init__(*args)
-        self.delay = delay
-        self.schedule = schedule
 
 
 class TaskStatus(str, Enum):
@@ -110,7 +105,8 @@ class Task(Generic[R]):
 
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    parent: RegisteredTask[Any, Any, R]
+    parent: RegisteredTask
+    worker: Worker[Any]
     id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any] | None = None
     after: list[str] = field(default_factory=lambda: [])
@@ -162,27 +158,23 @@ class Task(Generic[R]):
             self.after.append(self._after.id)
         enqueue_time = now_ms()
         data = self.serialize(enqueue_time)
-        self.priority = self.priority or self.parent.worker.priorities[-1]
+        self.priority = self.priority or self.worker.priorities[-1]
         expire = to_ms(self.parent.expire or 0)
         if self.schedule:
             if isinstance(self.schedule, str):
-                score = self.parent.worker.next_run(self.schedule)
+                score = self.worker.next_run(self.schedule)
                 # add to cron registry
-                async with self.parent.worker.redis.pipeline(
-                    transaction=False, allow_watch=False
-                ) as pipe:
-                    pipe.set(self.parent.worker.cron_data_key + self.id, data)
-                    pipe.hset(
-                        self.parent.worker.cron_registry_key, {self.id: self.schedule}
-                    )
-                    pipe.zadd(self.parent.worker.cron_schedule_key, {self.id: score})
+                async with self.worker.redis.pipeline(transaction=False) as pipe:
+                    pipe.set(self.worker.cron_data_key + self.id, data)
+                    pipe.hset(self.worker.cron_registry_key, {self.id: self.schedule})
+                    pipe.zadd(self.worker.cron_schedule_key, {self.id: score})
                     Streaq(pipe).publish_task(
-                        self.parent.worker.stream_key,
-                        self.parent.worker.queue_key,
+                        self.worker.stream_key,
+                        self.worker.queue_key,
                         self.task_key(REDIS_TASK),
-                        self.parent.worker.dependents_key,
-                        self.parent.worker.dependencies_key,
-                        self.parent.worker.results_key,
+                        self.worker.dependents_key,
+                        self.worker.dependencies_key,
+                        self.worker.results_key,
                         self.id,
                         data,
                         self.priority,
@@ -197,13 +189,13 @@ class Task(Generic[R]):
             score = enqueue_time + to_ms(self.delay)
         else:
             score = 0
-        await self.parent.worker.lib.publish_task(
-            self.parent.worker.stream_key,
-            self.parent.worker.queue_key,
+        await self.worker.lib.publish_task(
+            self.worker.stream_key,
+            self.worker.queue_key,
             self.task_key(REDIS_TASK),
-            self.parent.worker.dependents_key,
-            self.parent.worker.dependencies_key,
-            self.parent.worker.results_key,
+            self.worker.dependents_key,
+            self.worker.dependencies_key,
+            self.worker.results_key,
             self.id,
             data,
             self.priority,
@@ -214,11 +206,25 @@ class Task(Generic[R]):
         )
         return self
 
+    @overload
     def then(
-        self, task: RegisteredTask[C, POther, ROther], **kwargs: Any
-    ) -> Task[ROther]:
+        self: Task[R],
+        task: AsyncRegisteredTask[Concatenate[R, P], ROther]
+        | SyncRegisteredTask[Concatenate[R, P], ROther],
+        *_: P.args,  # for some reason we have to define this although it's not used
+        **kwargs: P.kwargs,
+    ) -> Task[ROther]: ...
+
+    @overload
+    def then(
+        self: Task[tuple[*Ts]],
+        task: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
+        **kwargs: Any,
+    ) -> Task[ROther]: ...
+
+    def then(self: Task[Any], task: Any, **kwargs: Any) -> Task[Any]:
         """
-        Enqueues the given task as a dependent of this one. Positional arguments will
+        Enqueues the given task as a dependent of this one. Positional arguments must
         come from the previous task's output (tuple outputs will be unpacked), and any
         additional arguments can be passed as kwargs.
 
@@ -226,7 +232,7 @@ class Task(Generic[R]):
 
         :return: task object for newly created, dependent task
         """
-        self._triggers = Task((), kwargs, task)
+        self._triggers = Task((), kwargs, task, self.worker)
         self._triggers._after = self
         return self._triggers
 
@@ -242,13 +248,25 @@ class Task(Generic[R]):
     def __await__(self) -> Generator[Any, None, Task[R]]:
         return self._chain().__await__()
 
-    def __or__(self, other: RegisteredTask[C, POther, ROther]) -> Task[ROther]:
-        self._triggers = Task((), {}, other)
+    @overload
+    def __or__(
+        self: Task[R],
+        other: AsyncRegisteredTask[[R], ROther] | SyncRegisteredTask[[R], ROther],
+    ) -> Task[ROther]: ...
+
+    @overload
+    def __or__(
+        self: Task[tuple[*Ts]],
+        other: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
+    ) -> Task[ROther]: ...
+
+    def __or__(self: Task[Any], other: Any) -> Task[Any]:
+        self._triggers = Task((), {}, other, self.worker)
         self._triggers._after = self
         return self._triggers
 
     def task_key(self, mid: str) -> str:
-        return self.parent.worker.prefix + mid + self.id
+        return self.worker.prefix + mid + self.id
 
     def serialize(self, enqueue_time: int) -> Any:
         """
@@ -269,7 +287,7 @@ class Task(Generic[R]):
                 data["A"] = self._after.id
             if self._triggers:
                 data["T"] = self._triggers.id
-            return self.parent.worker.serialize(data)
+            return self.worker.serialize(data)
         except Exception as e:
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
 
@@ -279,7 +297,7 @@ class Task(Generic[R]):
 
         :return: current task status
         """
-        return await self.parent.worker.status_by_id(self.id)
+        return await self.worker.status_by_id(self.id)
 
     async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R]:
         """
@@ -289,7 +307,7 @@ class Task(Generic[R]):
 
         :return: wrapped result object
         """
-        return await self.parent.worker.result_by_id(self.id, timeout=timeout)
+        return await self.worker.result_by_id(self.id, timeout=timeout)
 
     async def abort(self, timeout: timedelta | int = 5) -> bool:
         """
@@ -299,7 +317,7 @@ class Task(Generic[R]):
 
         :return: whether the task was aborted successfully
         """
-        return await self.parent.worker.abort_by_id(self.id, timeout=timeout)
+        return await self.worker.abort_by_id(self.id, timeout=timeout)
 
     async def info(self) -> TaskInfo | None:
         """
@@ -307,18 +325,17 @@ class Task(Generic[R]):
 
         :return: task info, unless task has finished or doesn't exist
         """
-        return await self.parent.worker.info_by_id(self.id)
+        return await self.worker.info_by_id(self.id)
 
     async def unschedule(self) -> None:
         """
         Stop scheduling the repeating task if registered.
         """
-        await self.parent.worker.unschedule_by_id(self.id)
+        await self.worker.unschedule_by_id(self.id)
 
 
-@dataclass(frozen=True)
-class RegisteredTask(Generic[C, P, R]):
-    fn: AsyncTask[P, R]
+@dataclass(kw_only=True)
+class RegisteredTask:
     expire: timedelta | int | None
     max_tries: int | None
     silent: bool
@@ -326,8 +343,13 @@ class RegisteredTask(Generic[C, P, R]):
     ttl: timedelta | int | None
     unique: bool
     fn_name: str
-    worker: Worker[C]
-    crontab: str | None = None
+    crontab: str | None
+    worker: Worker[Any]
+
+
+@dataclass(kw_only=True)
+class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
+    fn: AsyncTask[P, R]
 
     def enqueue(
         self,
@@ -339,12 +361,27 @@ class RegisteredTask(Generic[C, P, R]):
         active worker. Though this isn't async, it should be awaited as it
         returns an object that should be.
         """
-        return Task(args, kwargs, self)
+        return Task(args, kwargs, self, self.worker)
 
-    async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TypedCoroutine[R]:
+        return self.fn(*args, **kwargs)
+
+
+@dataclass(kw_only=True)
+class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
+    fn: SyncTask[P, R]
+
+    def enqueue(
+        self,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> Task[R]:
         """
-        Run the task in the local event loop with the given params and return the
-        result. This skips enqueuing and result storing in Redis.
+        Serialize the task and send it to the queue for later execution by an
+        active worker. Though this isn't async, it should be awaited as it
+        returns an object that should be.
         """
-        with fail_after(to_seconds(self.timeout)):
-            return await self.fn(*args, **kwargs)
+        return Task(args, kwargs, self, self.worker)
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        return self.fn(*args, **kwargs)

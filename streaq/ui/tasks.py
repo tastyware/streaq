@@ -43,7 +43,7 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:
-    async with worker.redis.pipeline(transaction=False, allow_watch=False) as pipe:
+    async with worker.redis.pipeline(transaction=False) as pipe:
         delayed = [
             pipe.zrange(worker.queue_key + priority, 0, -1)
             for priority in worker.priorities

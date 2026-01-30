@@ -9,16 +9,16 @@ You can define middleware to wrap task execution. This has a host of potential a
 .. code-block:: python
 
    import time
-   from streaq.types import ReturnCoroutine
    from typing import Any
+   from streaq import TaskContext, TaskDepends
+   from streaq.types import ReturnCoroutine
 
    @worker.middleware
    def timer(task: ReturnCoroutine) -> ReturnCoroutine:
-       async def wrapper(*args, **kwargs) -> Any:
+       async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           tid = worker.task_context().task_id
-           print(f"Executed task {tid} in {time.perf_counter() - start_time:.3f}s")
+           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper
@@ -36,11 +36,10 @@ You can register as many middleware as you like to a worker, which will run them
 
    @worker.middleware
    def timer(task: ReturnCoroutine) -> ReturnCoroutine:
-       async def wrapper(*args, **kwargs) -> Any:
+       async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           tid = worker.task_context().task_id
-           print(f"Executed task {tid} in {time.perf_counter() - start_time:.3f}s")
+           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper
@@ -48,13 +47,12 @@ You can register as many middleware as you like to a worker, which will run them
    # retry all exceptions up to a max of 3 tries
    @worker.middleware
    def retry(task: ReturnCoroutine) -> ReturnCoroutine:
-       async def wrapper(*args, **kwargs) -> Any:
+       async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
            try:
                return await task(*args, **kwargs)
            except Exception as e:
-               try_count = worker.task_context().tries
-               if try_count < 3:
-                   raise StreaqRetry("Retrying on error!") from e
+               if ctx.tries <= 3:
+                   raise StreaqRetry("Retrying on error!", delay=1) from e
                else:
                    raise e
 

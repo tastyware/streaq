@@ -5,38 +5,28 @@ Assuming you have a file called ``example.py`` which defines an instance of ``st
 
 .. code-block::
 
-   $ streaq example.worker
+   $ streaq run example:worker
 
 You can always run ``streaq --help`` to see the help page:
 
 .. code-block:: text
 
-   Usage: streaq [OPTIONS] WORKER_PATH
+    Usage: streaq [OPTIONS] COMMAND [ARGS]...
 
-   ╭─ Arguments ─────────────────────────────────────────────────────────────╮
-   │ *    worker_path      TEXT  [default: None] [required]                  │
-   ╰─────────────────────────────────────────────────────────────────────────╯
-   ╭─ Options ───────────────────────────────────────────────────────────────╮
-   │ --workers             -w      INTEGER  Number of worker processes to    │
-   │                                        spin up                          │
-   │                                        [default: 1]                     │
-   │ --burst               -b               Whether to shut down worker when │
-   │                                        the queue is empty               │
-   │ --reload              -r               Whether to reload the worker     │
-   │                                        upon changes detected            │
-   │ --verbose             -v               Whether to use logging.DEBUG     │
-   │                                        instead of logging.INFO          │
-   │ --version                              Show installed version           │
-   │ --web                                  Run a web UI for monitoring      │
-   │                                        tasks in a separate process.     │
-   │ --host                -h      TEXT     Host for the web UI server.      │
-   │                                        [default: 0.0.0.0]               │
-   │ --port                -p      INTEGER  Port for the web UI server.      │
-   │                                        [default: 8000]                  │
-   │ --install-completion                   Install completion for the       │
-   │                                        current shell.                   │
-   │ --show-completion                      Show completion for the current  │
-   │                                        shell, to copy it or customize   │
-   │                                        the installation.                │
-   │ --help                                 Show this message and exit.      │
-   ╰─────────────────────────────────────────────────────────────────────────╯
+   ╭─ Options ──────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ --version                     Show installed version                                                   │
+   │ --install-completion          Install completion for the current shell.                                │
+   │ --show-completion             Show completion for the current shell, to copy it or customize the       │
+   │                               installation.                                                            │
+   │ --help                        Show this message and exit.                                              │
+   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+   ╭─ Commands ─────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ run   Run one or more workers with the given options                                                   │
+   │ web   Run a web UI for monitoring with the given options                                               │
+   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+There's also a helpful web UI for monitoring which you can run with:
+
+.. code-block::
+
+   $ streaq web example:worker

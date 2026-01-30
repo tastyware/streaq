@@ -4,7 +4,7 @@ Tasks
 Task execution
 --------------
 
-streaQ preserves arq's task execution model called "pessimistic execution": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will remain in the queue to be picked up by another worker. ``Worker.idle_timeout`` controls how often task liveness is updated (and consequently, how quickly failed tasks can be retried).
+streaQ uses a task execution model called "pessimistic execution" or "at-least-once": tasks aren’t removed from the queue until they’ve either succeeded or failed. If the worker shuts down, the task will remain in the queue to be picked up by another worker. ``Worker.idle_timeout`` controls how often task liveness is updated (and consequently, how quickly stuck tasks can be retried).
 
 All streaQ tasks should therefore be designed to cope with being called repeatedly if they’re cancelled. If necessary, use database transactions, idempotency keys or Redis to mark when non-repeatable work has completed to avoid doing it twice. Alternatively, you can opt-out of this behavior on a per-task basis by passing ``max_tries=1`` to the task constructor.
 
@@ -15,8 +15,7 @@ streaQ handles exceptions in the following manner:
 
 * ``StreaqRetry`` exceptions result in retrying the task, sometimes after a delay (see below).
 * ``asyncio.CancelledError`` or ``trio.Cancelled`` exceptions result in the task failing if the task was aborted by the user, or being retried if the worker was shut down unexpectedly.
-* ``TimeoutError`` exceptions result in the task failing if the task took too long to run.
-* Any other ``Exception`` will result in the task failing.
+* Any other exception will result in the task failing.
 
 Registering tasks
 -----------------
@@ -135,9 +134,9 @@ Sometimes, you may wish to run a task's underlying function directly and skip en
 
 .. code-block:: python
 
-   await sleeper.run(3)
+   await sleeper(3)
 
-Note that tasks that require access to ``Worker.task_context`` or ``Worker.context`` will fail when run this way as context is initialized upon worker startup.
+Note that tasks that require access to ``WorkerDepends`` or ``TaskDepends`` will fail when run this way as context is handled by running workers.
 
 Task status & results
 ---------------------
@@ -157,15 +156,15 @@ Enqueued tasks return a ``Task`` object which can be used to wait for task resul
 .. code-block:: python
 
    TaskStatus.SCHEDULED
-   TaskResult(fn_name='sleeper', enqueue_time=1740763800091, success=True, result=3, start_time=1740763805099, finish_time=1740763808102, tries=1, worker_id='ca5bd9eb')
+   TaskResult(fn_name='sleeper', enqueue_time=1740763800091, success=True, start_time=1740763805099, finish_time=1740763808102, tries=1, worker_id='ca5bd9eb', _result=3)
    TaskStatus.DONE
 
-The ``TaskResult`` object contains information about the task, such as start/end time. The ``success`` flag will tell you whether the object stored in ``result`` is the result of task execution (if ``True``) or an exception raised during execution (if ``False``).
+The ``TaskResult`` object contains information about the task, such as start/end time. The ``TaskResult.success`` flag will tell you whether the task succeeded or failed. If ``True``, you can access the result via ``TaskResult.result``; otherwise, you can access the exception via ``TaskResult.exception``.
 
 Task exceptions
 ---------------
 
-If an exception occurs while performing the task, the result.success flag will be set to ``False``. The exception object itself will be available in the ``exception`` property of ``TaskResult``.
+If an exception occurs while performing the task, the ``TaskResult.success`` flag will be set to ``False`` and the exception object will be available in the ``TaskResult.exception`` property:
 
 .. code-block:: python
 
@@ -185,8 +184,8 @@ If an exception occurs while performing the task, the result.success flag will b
 
         from tblib import pickling_support
 
-        # Declare your own custom Exceptions
-        ...
+        # Declare your custom exceptions
+        class MyException(Exception): ...
 
         # Finally, install tblib
         pickling_support.install()
@@ -195,16 +194,17 @@ If an exception occurs while performing the task, the result.success flag will b
 Task context
 ------------
 
-As we've already seen, tasks can access the worker context via ``Worker.context`` on a per-worker basis. In addition to this, streaQ provides a per-task context, ``Worker.task_context()``, with task-specific information such as the try count:
+As we've already seen, tasks can access the worker context via ``WorkerDepends``. In addition to this, streaQ provides a per-task context via ``TaskDepends``, with task-specific information such as the try count:
 
 .. code-block:: python
 
+   from streaq import TaskContext, TaskDepends
+
    @worker.task()
-   async def get_id() -> str:
-       ctx = worker.task_context()
+   async def get_id(ctx: TaskContext = TaskDepends()) -> str:
        return ctx.task_id
 
-Calls to ``Worker.task_context()`` anywhere outside of a task or a middleware will result in an error.
+Calls to ``TaskDepends()`` anywhere outside of a task or a middleware will result in an error.
 
 Retrying tasks
 --------------
@@ -213,11 +213,11 @@ streaQ provides a special exception that you can raise manually inside of your t
 
 .. code-block:: python
 
-   from streaq.task import StreaqRetry
+   from streaq import StreaqRetry
 
    @worker.task()
-   async def try_thrice() -> bool:
-       if worker.task_context().tries < 3:
+   async def try_thrice(ctx: TaskContext = TaskDepends()) -> bool:
+       if ctx.tries < 3:
            raise StreaqRetry("Retrying!")
        return True
 
@@ -245,9 +245,9 @@ streaQ also includes cron jobs, which allow you to run code at regular, schedule
    # 9:30 on weekdays
    @worker.cron("30 9 * * mon-fri")
    async def cron() -> None:
-       print("Itsa me, Mario!")
+       print("Kyrie eleison!")
 
-The ``cron`` decorator has one required parameter, the crontab to use which follows the format specified `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_, as well as the same optional parameters as the ``task`` decorator.
+The ``cron`` decorator has one required parameter: the crontab to use, which follows the format specified `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_. It also has the same optional parameters as the ``task`` decorator.
 
 The timezone used for the scheduler can be controlled via the worker's ``tz`` parameter.
 
@@ -260,7 +260,7 @@ Aside from defining cron jobs with the decorator, you can also schedule tasks dy
 
    task = await sleeper.enqueue(1).start(schedule="*/5 * * * *")  # every 5 minutes
 
-This causes the task to be ran repeatedly with the given arguments at the given schedule. To stop scheduling a repeating task, you can use:
+This causes the task to run repeatedly with the given arguments at the given schedule. To stop scheduling a repeating task, you can use:
 
 .. code-block:: python
 
@@ -287,7 +287,7 @@ Note that if the task waiting for its completion is cancelled, the thread will s
    # here we use await, the wrapper does the magic for us!
    async with worker:
        task = await sync_sleep.enqueue(1)
-   print(await task.result(3))
+       print(await task.result(3))
 
 Task dependency graph
 ---------------------
@@ -323,13 +323,13 @@ And the dependency failing will cause dependent tasks to fail as well:
 Task pipelining
 ---------------
 
-streaQ also supports task pipelining via the dependency graph, allowing you to directly feed the results of one task to another. Let's build on the ``fetch`` task defined earlier:
+streaQ also supports task pipelining via the dependency graph, allowing you to directly feed the results of one task to another while maintaining type safety. Let's build on the ``fetch`` task defined earlier:
 
 .. code-block:: python
 
    @worker.task(timeout=5)
-   async def fetch(url: str) -> int:
-       res = await worker.context.http_client.get(url)
+   async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
+       res = await ctx.http_client.get(url)
        return len(res.text)
 
    @worker.task()
@@ -346,17 +346,17 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 
 .. code-block:: python
 
-   TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, result=True, start_time=1743469913901, finish_time=1743469913902, tries=1, worker_id='ca5bd9eb')
+   TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, start_time=1743469913901, finish_time=1743469913902, tries=1, worker_id='ca5bd9eb', _result=True)
 
 This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. With a little work, you can build common pipelining utilities from these building blocks:
 
 .. code-block:: python
 
-   from typing import Any, Sequence
-   from streaq.utils import to_tuple
+   from typing import Any
+   from streaq.utils import gather, to_tuple
 
    @worker.task()
-   async def map(data: Sequence[Any], to: str) -> list[Any]:
+   async def map(data: list[Any], *, to: str) -> list[Any]:
        task = worker.registry[to]
        coros = [task.enqueue(*to_tuple(d)).start() for d in data]
        tasks = await gather(*coros)
@@ -364,7 +364,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        return [r.result for r in results]
 
    @worker.task()
-   async def filter(data: Sequence[Any], by: str) -> list[Any]:
+   async def filter(data: list[Any], *, by: str) -> list[Any]:
        task = worker.registry[by]
        coros = [task.enqueue(*to_tuple(d)).start() for d in data]
        tasks = await gather(*coros)
@@ -380,11 +380,28 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
 .. code-block:: python
 
-   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, result=[0, 2, 4, 6], start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb')
-   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, result=[0, 4], start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb')
+   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb', _result=[0, 2, 4, 6])
+   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb', _result=[0, 4])
 
 .. warning::
    For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
+
+   Here's an example that takes advantage of this behavior:
+
+   .. code-block:: python
+
+      @worker.task()
+      async def tuplify(input: int) -> tuple[int, int]:
+          return (input, input)
+
+      @worker.task()
+      async def untuple(first: int, second: int, *, third: int = 0) -> int:
+          return first + second + third
+
+      async with worker:
+          task = await tuplify.enqueue(3).then(untuple, third=3)
+          res = await task.result(3)
+          print(res.result)  # 9
 
 If you don't need to pass additional arguments, tasks can be pipelined using the ``|`` operator as a convenience:
 
