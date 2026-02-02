@@ -360,7 +360,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         queued = sum(await gather(*streams))
         scheduled = sum(await gather(*queues))
         health = (
-            f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "  # type: ignore
+            f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "
             f"queued: {queued}, scheduled: {scheduled}}}"
         )
         ttl = self._delay_for(self._health_tab)
@@ -671,13 +671,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         streams = {self.stream_key + p: ">" for p in self.priorities}
         priority_order = {self.stream_key + p: i for i, p in enumerate(self.priorities)}
+        stream_priorities = {self.stream_key + p: p for p in self.priorities}
         with queue:
             while not self._block_new_tasks:
                 messages: list[StreamMessage] = []
                 start_time = current_time()
                 # Calculate how many messages to fetch to fill the buffer
                 count = (
-                    self.prefetch - limiter.borrowed_tokens - len(queue._state.buffer)  # type: ignore
+                    self.prefetch
+                    - limiter.borrowed_tokens
+                    - queue.statistics().current_buffer_used
                 )
                 if count == 0:
                     # If we don't have space wait up to half a second for it to free up
@@ -687,7 +690,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                             count = (
                                 self.prefetch
                                 - limiter.borrowed_tokens
-                                - len(queue._state.buffer)  # type: ignore
+                                - queue.statistics().current_buffer_used
                             )
                 # Fetch new messages
                 if count > 0:
@@ -715,13 +718,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         for stream, msgs in sorted(
                             entries.items(), key=lambda item: priority_order[item[0]]
                         ):
-                            priority = stream.split(":")[-1]
                             messages.extend(
                                 [
                                     StreamMessage(
                                         message_id=msg_id,  # type: ignore
                                         task_id=msg["task_id"],  # type: ignore
-                                        priority=priority,
+                                        priority=stream_priorities[stream],
                                         enqueue_time=int(msg.get("enqueue_time", 0)),
                                     )
                                     for msg_id, msg in msgs
@@ -746,7 +748,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     )
                     cron_registry = pipe.hgetall(self.cron_registry_key)
                 # aborted tasks
-                await self.abort_tasks(await aborted)
+                self.abort_tasks(await aborted)
                 # cron jobs
                 if ready := await cron_jobs:
                     await self.schedule_cron_jobs(ready, await cron_registry)
@@ -755,16 +757,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     self._block_new_tasks = True
                     scope.cancel()
 
-    async def abort_tasks(self, tasks: set[str]) -> None:
+    def abort_tasks(self, tasks: set[str]) -> None:
         """
         Aborts tasks scheduled for abortion if they're present on this worker.
         """
         for task_id in tasks:
-            if (
-                task_id in self._cancel_scopes
-                and not self._cancel_scopes[task_id].cancel_called
-            ):
-                self._cancel_scopes[task_id].cancel()
+            if scope := self._cancel_scopes.pop(task_id, None):
+                scope.cancel()
                 logger.debug(
                     f"task ⊘ {task_id} marked for abortion in worker {self.id}"
                 )
@@ -1361,7 +1360,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             ) as pubsub:
                 if not (raw := await self.redis.get(result_key)):
                     msg = await pubsub.__anext__()
-                    raw = msg["data"]  # type: ignore
+                    raw = msg["data"]
         data = self.deserialize(raw)
         return TaskResult(
             fn_name=data["f"],
@@ -1421,7 +1420,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 # wait for result if not available
                 with move_on_after(to_seconds(timeout)):
                     msg = await pubsub.__anext__()
-                    raw = msg["data"]  # type: ignore
+                    raw = msg["data"]
                     # build result
                     data = self.deserialize(raw)
                     return not data["s"] and isinstance(data["r"], StreaqCancelled)

@@ -27,7 +27,7 @@ These results are with 20,000 tasks enqueued, a concurrency of `32`, and a varia
 
 | library  | enqueuing | 1 worker | 10 workers | 20 workers | 40 workers |
 | -------- | --------- | -------- | ---------- | ---------- | ---------- |
-| streaq   | 0.45s     | 8.66s    | 3.90s      | 4.18s      | 4.84s      |
+| streaq   | 0.45s     | 8.61s    | 3.90s      | 4.18s      | 4.84s      |
 | SAQ      | 1.67s     | 9.86s    | 3.46s      | 3.45s      | 3.93s      |
 | taskiq   | 1.68s     | 6.36s    | 3.26s      | 3.38s      | 6.43s      |
 | arq      | 2.31s     | 62.66s   | 28.10s     | 43.33s     | ☠️         |
