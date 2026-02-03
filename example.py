@@ -1,13 +1,13 @@
-from anyio import run, sleep
+import trio
 
 from streaq import Worker
 
-worker = Worker(redis_url="redis://localhost:6379")
+worker = Worker(redis_url="redis://localhost:6379", anyio_backend="trio")
 
 
 @worker.task()
 async def sleeper(time: int) -> int:
-    await sleep(time)
+    await trio.sleep(time)
     return time
 
 
@@ -26,4 +26,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    run(main)
+    trio.run(main)

@@ -41,7 +41,7 @@ To start, you'll need to create a `Worker` object:
 ```python
 from streaq import Worker
 
-worker = Worker(redis_url="redis://localhost:6379")
+worker = Worker(redis_url="redis://localhost:6379", anyio_backend="trio")
 ```
 
 You can then register async tasks with the worker like this:
