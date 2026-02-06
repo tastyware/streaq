@@ -14,6 +14,10 @@
    :target: https://github.com/tastyware/streaq/releases
    :alt: Release
 
+.. image:: https://img.shields.io/gitter/room/:user/tastyware
+   :target: https://matrix.to/#/#tastyware:gitter.im
+   :alt: Gitter
+
 streaQ documentation
 ====================
 
