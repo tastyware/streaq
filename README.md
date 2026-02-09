@@ -26,7 +26,7 @@ Fast, async, fully-typed distributed task queue via Redis streams
 - Built with structured concurrency on `anyio`, supports both `asyncio` and `trio`
 
 > [!TIP]
-> Sick of `redis-py`? Check out [coredis](https://coredis.readthedocs.io/en/latest/), a fully-typed Redis client that supports Trio!
+> Sick of `redis-py`? Check out [coredis](https://coredis.readthedocs.io/en/latest/), a fast, fully-typed Redis client that supports Trio!
 
 ## Installation
 
@@ -59,7 +59,7 @@ async def cronjob() -> None:
     print("Nobody respects the spammish repetition!")
 ```
 
-Finally, let's initialize the worker and queue up some tasks:
+Finally, let's use the worker's async context manager to queue up some tasks:
 
 ```python
 async with worker:

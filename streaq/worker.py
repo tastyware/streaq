@@ -608,13 +608,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     pipe.zadd(self.cron_schedule_key, {cj.fn_name: ts})
             await self.enqueue_many(tasks)
             start_time = current_time()
-            task_status.started()
+            send, receive = create_memory_object_stream[StreamMessage](
+                max_buffer_size=self.prefetch
+            )
+            limiter = CapacityLimiter(self.concurrency)
             # start tasks
             try:
-                send, receive = create_memory_object_stream[StreamMessage](
-                    max_buffer_size=self.prefetch
-                )
-                limiter = CapacityLimiter(self.concurrency)
                 async with create_task_group() as tg:
                     # register signal handler
                     tg.start_soon(self.signal_handler, tg.cancel_scope)
@@ -623,6 +622,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     tg.start_soon(self.renew_idle_timeouts)
                     for _ in range(self.concurrency):
                         tg.start_soon(self.consumer, receive.clone(), limiter)
+                    task_status.started()
             finally:
                 run_time = to_ms(current_time() - start_time)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")

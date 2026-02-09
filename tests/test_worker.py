@@ -17,6 +17,7 @@ from streaq.constants import REDIS_TASK
 from streaq.types import StreaqError, WorkerDepends
 from streaq.utils import gather
 from streaq.worker import Worker
+from tests.conftest import run_worker
 
 NAME_STR = "Freddy"
 pytestmark = pytest.mark.anyio
@@ -44,12 +45,10 @@ async def test_lifespan(redis_url: str):
     async def foobar(ctx: WorkerContext = WorkerDepends()) -> str:
         return ctx.name
 
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         task = await foobar.enqueue()
         res = await task.result(3)
         assert res.success and res.result == NAME_STR
-        tg.cancel_scope.cancel()
 
 
 async def test_health_check(redis_url: str):
@@ -59,14 +58,12 @@ async def test_health_check(redis_url: str):
         health_crontab="* * * * * * *",
         queue_name=uuid4().hex,
     )
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         await sleep(2)
         worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
         redis_health = await worker.redis.get(worker._health_key + ":redis")
         assert worker_health is not None
         assert redis_health is not None
-        tg.cancel_scope.cancel()
 
 
 async def test_queue_size(worker: Worker):
@@ -100,8 +97,7 @@ async def test_bad_deserializer(redis_url: str):
         print("This can't print!")
 
     worker.burst = True
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         task = await foobar.enqueue()
         with pytest.raises(StreaqError):
             await task.result(3)
@@ -115,11 +111,9 @@ async def test_custom_serializer(worker: Worker):
     async def foobar() -> None:
         pass
 
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         task = await foobar.enqueue()
         assert (await task.result(3)).success
-        tg.cancel_scope.cancel()
 
 
 async def test_uninitialized_worker(worker: Worker):
@@ -141,13 +135,11 @@ async def test_active_tasks(worker: Worker):
         await sleep(10)
 
     n_tasks = 5
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         tasks = [foo.enqueue() for _ in range(n_tasks)]
         await worker.enqueue_many(tasks)
         await sleep(3)
         assert worker.running() >= n_tasks
-        tg.cancel_scope.cancel()
 
 
 async def test_handle_signal(worker: Worker):
@@ -155,8 +147,7 @@ async def test_handle_signal(worker: Worker):
     async def foo() -> None:
         await sleep(3)
 
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         await foo.enqueue()
         await sleep(1)
         assert worker.running() > 0
@@ -209,10 +200,8 @@ async def test_reclaim_idle_task(redis_url: str):
     os.kill(worker.pid, signal.SIGKILL)
     worker.wait()
 
-    async with create_task_group() as tg:
-        await tg.start(worker2.run_async)
+    async with run_worker(worker2):
         assert (await task.result(8)).success
-        tg.cancel_scope.cancel()
 
 
 async def test_change_cron_schedule(redis_url: str):
@@ -221,23 +210,19 @@ async def test_change_cron_schedule(redis_url: str):
 
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
     foo1 = worker.cron("0 0 1 1 *")(foo)
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         await sleep(2)
         assert worker.next_run(foo1.crontab) == int(  # type: ignore
             (await worker.redis.zscore(worker.cron_schedule_key, foo1.fn_name)) or 0
         )
-        tg.cancel_scope.cancel()
 
     worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
     worker2.cron("1 0 1 1 *")(foo)  # 1 minute later
-    async with create_task_group() as tg:
-        await tg.start(worker2.run_async)
+    async with run_worker(worker2):
         await sleep(2)
         assert worker.next_run(foo1.crontab) != int(  # type: ignore
             (await worker2.redis.zscore(worker.cron_schedule_key, foo1.fn_name)) or 0
         )
-        tg.cancel_scope.cancel()
 
 
 async def test_signed_data(redis_url: str):
@@ -251,12 +236,10 @@ async def test_signed_data(redis_url: str):
     async def foo() -> str:
         return "bar"
 
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         task = await foo.enqueue()
         res = await task.result(3)
         assert res.success and res.result == "bar"
-        tg.cancel_scope.cancel()
 
 
 async def test_sign_non_binary_data(redis_url: str):
@@ -294,11 +277,9 @@ async def test_corrupt_signed_data(redis_url: str):
             task.task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
         )
 
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         res = await task.result(5)
         assert not res.success and isinstance(res.exception, StreaqError)
-        tg.cancel_scope.cancel()
 
 
 async def test_enqueue_many(worker: Worker):
@@ -390,12 +371,10 @@ async def test_include_worker(redis_url: str, worker: Worker):
         await sleep(0)
 
     worker.include(worker2)
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         task = await foobar.enqueue()
         res = await task.result(3)
         assert res.success
-        tg.cancel_scope.cancel()
 
 
 async def test_include_duplicate(redis_url: str, worker: Worker):

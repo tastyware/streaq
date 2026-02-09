@@ -1,6 +1,8 @@
-from typing import Literal
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Literal
 from uuid import uuid4
 
+from anyio import create_task_group
 from pytest import fixture
 
 from streaq import Worker
@@ -35,3 +37,11 @@ def normal_worker(anyio_backend: Literal["asyncio", "trio"], redis_url: str) -> 
 @fixture(params=["direct", "sentinel"], ids=["redis", "sentinel"])
 def worker(request, normal_worker: Worker, sentinel_worker: Worker) -> Worker:
     return normal_worker if request.param == "direct" else sentinel_worker
+
+
+@asynccontextmanager
+async def run_worker(_worker: Worker) -> AsyncGenerator[None, None]:
+    async with create_task_group() as tg:
+        await tg.start(_worker.run_async)
+        yield
+        tg.cancel_scope.cancel()

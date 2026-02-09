@@ -1,5 +1,5 @@
 import pytest
-from anyio import create_task_group, sleep
+from anyio import sleep
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
@@ -7,6 +7,7 @@ from streaq import TaskStatus, Worker
 from streaq.ui import router
 from streaq.ui.deps import get_worker
 from streaq.utils import gather
+from tests.conftest import run_worker
 
 pytestmark = pytest.mark.anyio
 
@@ -35,8 +36,7 @@ async def test_get_pages(worker: Worker):
         yield worker
 
     app.dependency_overrides[get_worker] = _get_worker
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
+    async with run_worker(worker):
         # queue up some tasks
         failed = fails.enqueue()
         scheduled = sleeper.enqueue(10).start(delay=5)
@@ -81,5 +81,3 @@ async def test_get_pages(worker: Worker):
             assert res.headers["HX-Redirect"] == f"{prefix}/queue"
             res = await client.get(f"{prefix}/task/nonexistent")
             assert res.status_code == 404
-        # cleanup worker
-        tg.cancel_scope.cancel()
