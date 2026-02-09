@@ -13,7 +13,6 @@ from typing import (
     ParamSpec,
     TypeAlias,
     TypeVar,
-    TypeVarTuple,
     cast,
 )
 
@@ -23,7 +22,7 @@ from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT, ResponseType
-from typing_extensions import TypeIs
+from typing_extensions import TypeIs, TypeVarTuple
 
 C = TypeVar("C", bound=Optional[object])
 P = ParamSpec("P")

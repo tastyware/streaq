@@ -15,6 +15,8 @@ from typing import (
 )
 from uuid import uuid4
 
+from typing_extensions import Unpack
+
 from streaq.constants import REDIS_TASK
 from streaq.types import (
     AsyncTask,
@@ -217,8 +219,9 @@ class Task(Generic[R]):
 
     @overload
     def then(
-        self: Task[tuple[*Ts]],
-        task: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
+        self: Task[tuple[Unpack[Ts]]],
+        task: Callable[[Unpack[Ts]], TypedCoroutine[ROther]]
+        | Callable[[Unpack[Ts]], ROther],
         **kwargs: Any,
     ) -> Task[ROther]: ...
 
@@ -256,8 +259,9 @@ class Task(Generic[R]):
 
     @overload
     def __or__(
-        self: Task[tuple[*Ts]],
-        other: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
+        self: Task[tuple[Unpack[Ts]]],
+        other: Callable[[Unpack[Ts]], TypedCoroutine[ROther]]
+        | Callable[[Unpack[Ts]], ROther],
     ) -> Task[ROther]: ...
 
     def __or__(self: Task[Any], other: Any) -> Task[Any]:
