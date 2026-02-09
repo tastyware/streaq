@@ -13,9 +13,6 @@ exclude = ["**/__pycache__/**"]
 include = ["streaq/**/*"]
 exclude = ["**/__pycache__/**"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [project]
 name = "streaq"
 description = "Fast, async, fully-typed distributed task queue via Redis streams"
