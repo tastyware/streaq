@@ -44,4 +44,4 @@ If you want to build the documentation (usually not necessary):
 Windows
 -------
 
-Use on Windows is not recommended as you lose access to signal handling, uvloop, and Make. Consider using WSL instead.
+Use on Windows is not recommended as you lose access to signal handling and Make. Consider using WSL instead.

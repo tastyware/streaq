@@ -3,7 +3,7 @@ import typer
 
 from streaq import Worker
 
-worker = Worker(concurrency=32)
+worker = Worker(concurrency=32, anyio_kwargs={"use_uvloop": True})
 N_TASKS = 20_000
 
 

@@ -1,15 +1,10 @@
 import logging
 
-import coredis
-
-VERSION = "6.0.1"
+VERSION = "6.0.2"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-# disable runtime type checks
-coredis.Config.optimized = True
 
 # ruff: noqa: E402
 

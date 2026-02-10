@@ -227,3 +227,12 @@ Sometimes you'll want to abort tasks, fetch task info, etc. without having acces
        print(await worker.info_by_id(my_task_id))
        print(await worker.abort_by_id(my_task_id))
        await worker.unschedule_by_id(my_task_id)
+
+Worker optimization
+-------------------
+
+If worker performance is important for you, there are a couple optimizations you can make:
+
+* coredis has an `optimized mode <https://coredis.readthedocs.io/en/latest/handbook/optimization.html>`_ that improves performance, mostly by disabling some runtime type checking.
+
+* streaQ supports ``uvloop`` (or ``winloop`` on Windows) for the asyncio backend. In both cases simply install the package and set ``anyio_kwargs={"use_uvloop": True}`` in your worker.

@@ -8,7 +8,6 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from datetime import datetime, timedelta, timezone, tzinfo
 from hashlib import sha256
 from inspect import iscoroutinefunction
-from sys import platform
 from textwrap import shorten
 from typing import (
     Any,
@@ -277,8 +276,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         # save anyio configuration
         self.anyio_backend = anyio_backend
         self.anyio_kwargs = anyio_kwargs or {}
-        if self.anyio_backend == "asyncio" and "use_uvloop" not in self.anyio_kwargs:
-            self.anyio_kwargs["use_uvloop"] = platform != "win32"
         #: list of middlewares added to the worker
         self.middlewares: list[Middleware] = []
         self.signing_secret = signing_secret.encode() if signing_secret else None

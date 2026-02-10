@@ -2,7 +2,10 @@
 
 streaQ's performance significantly improves upon [arq](https://github.com/python-arq/arq), and is on-par with [SAQ](https://github.com/tobymao/saq) and [taskiq](https://github.com/taskiq-python/taskiq). If you want to run these tests yourself, first install the dependencies:
 ```
-$ pip install streaq[benchmark]
+$ uv pip install git+https://github.com/Graeme22/arq.git
+$ uv pip install "saq[hiredis]==0.25.2"
+$ uv pip install "taskiq-redis==1.1.0"
+$ uv pip install uvloop
 ```
 
 You can enqueue jobs like so:

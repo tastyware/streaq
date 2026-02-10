@@ -1,20 +1,31 @@
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Literal
+from typing import AsyncGenerator
 from uuid import uuid4
 
+import pytest
 from anyio import create_task_group
-from pytest import fixture
 
 from streaq import Worker
 
 
-@fixture(scope="session")
+@pytest.fixture(scope="session")
 def redis_url() -> str:
     return "redis://redis-master:6379"
 
 
-@fixture(scope="function")
-def sentinel_worker(anyio_backend: Literal["asyncio", "trio"]) -> Worker:
+@pytest.fixture(
+    params=[
+        pytest.param(("asyncio", {"use_uvloop": False}), id="asyncio"),
+        pytest.param(("asyncio", {"use_uvloop": True}), id="asyncio+uvloop"),
+        pytest.param(("trio", {}), id="trio"),
+    ]
+)
+def anyio_backend(request: pytest.FixtureRequest) -> str:
+    return request.param
+
+
+@pytest.fixture(scope="function")
+def sentinel_worker() -> Worker:
     return Worker(
         sentinel_nodes=[
             ("sentinel-1", 26379),
@@ -23,20 +34,19 @@ def sentinel_worker(anyio_backend: Literal["asyncio", "trio"]) -> Worker:
         ],
         sentinel_master="mymaster",
         queue_name=uuid4().hex,
-        anyio_backend=anyio_backend,
     )
 
 
-@fixture(scope="function")
-def normal_worker(anyio_backend: Literal["asyncio", "trio"], redis_url: str) -> Worker:
-    return Worker(
-        redis_url=redis_url, queue_name=uuid4().hex, anyio_backend=anyio_backend
-    )
+@pytest.fixture(scope="function")
+def normal_worker(redis_url: str) -> Worker:
+    return Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
 
-@fixture(params=["direct", "sentinel"], ids=["redis", "sentinel"])
-def worker(request, normal_worker: Worker, sentinel_worker: Worker) -> Worker:
-    return normal_worker if request.param == "direct" else sentinel_worker
+@pytest.fixture(params=["basic", "sentinel"], ids=["basic", "sentinel"])
+def worker(
+    request: pytest.FixtureRequest, normal_worker: Worker, sentinel_worker: Worker
+) -> Worker:
+    return normal_worker if request.param == "basic" else sentinel_worker
 
 
 @asynccontextmanager

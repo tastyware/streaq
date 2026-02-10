@@ -7,7 +7,7 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
@@ -311,30 +311,22 @@ async def test_custom_worker_id(redis_url: str):
     assert worker.id == worker_id
 
 
-async def test_connection_pool(
-    redis_url: str, anyio_backend: Literal["asyncio", "trio"]
-):
+async def test_connection_pool(redis_url: str):
     from coredis import ConnectionPool
 
     pool = ConnectionPool.from_url(redis_url, decode_responses=True, max_connections=4)
-    worker = Worker(
-        redis_pool=pool, queue_name=uuid4().hex, anyio_backend=anyio_backend
-    )
-    worker2 = Worker(
-        redis_pool=pool, queue_name=worker.queue_name, anyio_backend=anyio_backend
-    )
+    worker = Worker(redis_pool=pool, queue_name=uuid4().hex)
+    worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)
     async with pool, worker, worker2:
         assert await worker.redis.client_id() == await worker2.redis.client_id()
 
 
-async def test_connection_pool_illegal(
-    redis_url: str, anyio_backend: Literal["asyncio", "trio"]
-):
+async def test_connection_pool_illegal(redis_url: str):
     from coredis import ConnectionPool
 
     pool = ConnectionPool.from_url(redis_url, decode_responses=False, max_connections=4)
     with pytest.raises(StreaqError):
-        _ = Worker(redis_pool=pool, queue_name=uuid4().hex, anyio_backend=anyio_backend)
+        _ = Worker(redis_pool=pool, queue_name=uuid4().hex)
 
 
 async def test_duplicate_tasks(worker: Worker):
@@ -357,14 +349,9 @@ async def test_include_worker(redis_url: str, worker: Worker):
             ],
             sentinel_master="mymaster",
             queue_name=worker.queue_name,
-            anyio_backend=worker.anyio_backend,  # type: ignore
         )
     else:
-        worker2 = Worker(
-            redis_url=redis_url,
-            queue_name=worker.queue_name,
-            anyio_backend=worker.anyio_backend,  # type: ignore
-        )
+        worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
 
     @worker2.task()
     async def foobar() -> None:
@@ -387,14 +374,9 @@ async def test_include_duplicate(redis_url: str, worker: Worker):
             ],
             sentinel_master="mymaster",
             queue_name=worker.queue_name,
-            anyio_backend=worker.anyio_backend,  # type: ignore
         )
     else:
-        worker2 = Worker(
-            redis_url=redis_url,
-            queue_name=worker.queue_name,
-            anyio_backend=worker.anyio_backend,  # type: ignore
-        )
+        worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
 
     @worker.task(name="foobar")
     async def foobar() -> None: ...
