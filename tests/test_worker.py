@@ -14,6 +14,7 @@ import pytest
 from anyio import create_task_group, sleep
 
 from streaq.constants import REDIS_TASK
+from streaq.task import TaskStatus
 from streaq.types import StreaqError, WorkerDepends
 from streaq.utils import gather
 from streaq.worker import Worker
@@ -190,18 +191,19 @@ async def test_reclaim_idle_task(redis_url: str):
     async def foo() -> None:
         await sleep(2)
 
-    async with worker2:
-        # enqueue task
-        task = foo.enqueue()
-    # run separate worker which will pick up task
+    # get task ID
+    task = foo.enqueue()
+    # run separate worker which will enqueue and pick up task
     worker = subprocess.Popen([sys.executable, "tests/failure.py", redis_url, task.id])
-    await sleep(1)
+    async with worker2:
+        while (await task.status()) == TaskStatus.NOT_FOUND:
+            await sleep(1)
     # kill worker abruptly to disallow cleanup
     os.kill(worker.pid, signal.SIGKILL)
     worker.wait()
 
     async with run_worker(worker2):
-        assert (await task.result(8)).success
+        assert (await task.result(10)).success
 
 
 async def test_change_cron_schedule(redis_url: str):
