@@ -146,8 +146,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         especially if using pickle. For binary serializers only. You can generate
         a key using secrets, for example: `secrets.token_urlsafe(32)`
     :param idle_timeout:
-        the amount of time to wait before re-enqueuing idle tasks (either prefetched
+        the number of seconds to wait before re-enqueuing idle tasks (either prefetched
         tasks that don't run, or running tasks that become unresponsive)
+    :param grace_period:
+        the number of seconds after receiving SIGINT or SIGTERM to wait for tasks to
+        finish before performing a hard shutdown
     :param anyio_backend: anyio backend to use, either Trio or asyncio
     :param anyio_kwargs: extra arguments to pass to anyio backend
     :param sentinel_nodes: list of (address, port) tuples to create sentinel from
@@ -167,6 +170,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "dependencies_key",
         "dependents_key",
         "deserializer",
+        "grace_period",
+        "handle_signals",
         "id",
         "idle_timeout",
         "lifespan",
@@ -183,13 +188,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "sync_concurrency",
         "tz",
         "_abort_key",
-        "_block_new_tasks",
         "_cancel_scopes",
         "_cancelled_class",
         "_channel_key",
         "_coworkers",
-        "_group_name",
-        "_handle_signals",
         "_health_key",
         "_health_tab",
         "_health_tab_str",
@@ -218,7 +220,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         handle_signals: bool = True,
         health_crontab: str = "*/5 * * * *",
         signing_secret: str | None = None,
-        idle_timeout: timedelta | int = 60,
+        idle_timeout: timedelta | float = 60,
+        grace_period: int = 0,
         anyio_backend: Literal["asyncio", "trio"] = "asyncio",
         anyio_kwargs: dict[str, Any] | None = None,
         sentinel_nodes: list[tuple[str, int]] | None = None,
@@ -259,6 +262,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.priorities = priorities or ["normal"]
         self.priorities.reverse()
         self.prefetch = (prefetch or concurrency) + concurrency
+        self.handle_signals = handle_signals
+        self.grace_period = grace_period
         #: mapping of task name -> task wrapper
         self.registry: dict[
             str, AsyncRegisteredTask[Any, Any] | SyncRegisteredTask[Any, Any]
@@ -283,12 +288,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.lifespan = lifespan()
         self.idle_timeout = to_ms(idle_timeout)
         # internal objects
-        self._group_name = REDIS_GROUP
-        self._handle_signals = handle_signals
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
         self._limiter = CapacityLimiter(self.sync_concurrency)
-        self._block_new_tasks = False
         self._health_tab = CronTab(health_crontab)
         self._health_tab_str = health_crontab
         self._initialized = False
@@ -589,7 +591,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             async with self.redis.pipeline(transaction=False) as pipe:
                 # create consumer group if it doesn't exist
                 Streaq(pipe).create_groups(
-                    self.stream_key, self._group_name, *self.priorities
+                    self.stream_key, REDIS_GROUP, *self.priorities
                 )
                 # initial cron schedules
                 for cj in self.registry.values():
@@ -609,6 +611,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 max_buffer_size=self.prefetch
             )
             limiter = CapacityLimiter(self.concurrency)
+
+            async def _run_consumers(scope: CancelScope) -> None:
+                try:
+                    async with create_task_group() as tg:
+                        for _ in range(self.concurrency):
+                            tg.start_soon(self.consumer, receive.clone(), limiter)
+                finally:
+                    # don't cancel renewal task until consumers finish
+                    scope.cancel()
+
             # start tasks
             try:
                 async with create_task_group() as tg:
@@ -616,9 +628,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     tg.start_soon(self.signal_handler, tg.cancel_scope)
                     tg.start_soon(self.health_check)
                     tg.start_soon(self.producer, send, limiter, tg.cancel_scope)
-                    tg.start_soon(self.renew_idle_timeouts)
-                    for _ in range(self.concurrency):
-                        tg.start_soon(self.consumer, receive.clone(), limiter)
+                    scope = CancelScope(shield=True)
+                    tg.start_soon(self.renew_idle_timeouts, scope)
+                    tg.start_soon(_run_consumers, scope)
                     task_status.started()
             finally:
                 run_time = to_ms(current_time() - start_time)
@@ -636,25 +648,27 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 async with limiter:
                     await self.run_task(msg)
 
-    async def renew_idle_timeouts(self) -> None:
+    async def renew_idle_timeouts(self, scope: CancelScope) -> None:
         """
         Periodically renew idle timeout for running tasks. This allows the queue to
         be resilient to sudden shutdowns.
         """
         timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
-        while True:
-            await sleep(timeout)
-            async with self.redis.pipeline(transaction=True) as pipe:
-                for priority, tasks in self._running_tasks.items():
-                    if tasks:
-                        pipe.xclaim(
-                            self.stream_key + priority,
-                            self._group_name,
-                            self.id,
-                            0,
-                            tasks,
-                            justid=True,
-                        )
+        # prevent cancellation until consumers finish
+        with scope:
+            while True:
+                await sleep(timeout)
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    for priority, tasks in self._running_tasks.items():
+                        if tasks:
+                            pipe.xclaim(
+                                self.stream_key + priority,
+                                REDIS_GROUP,
+                                self.id,
+                                0,
+                                tasks,
+                                justid=True,
+                            )
 
     async def producer(
         self,
@@ -670,7 +684,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priority_order = {self.stream_key + p: i for i, p in enumerate(self.priorities)}
         stream_priorities = {self.stream_key + p: p for p in self.priorities}
         with queue:
-            while not self._block_new_tasks:
+            while True:
                 messages: list[StreamMessage] = []
                 start_time = current_time()
                 # Calculate how many messages to fetch to fill the buffer
@@ -694,7 +708,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     # non-blocking, priority ordered first
                     entries = await self.lib.read_streams(
                         self.stream_key,
-                        self._group_name,
+                        REDIS_GROUP,
                         self.id,
                         count,
                         self.idle_timeout,
@@ -705,7 +719,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         elapsed_ms = 500 - to_ms(current_time() - start_time)
                         if elapsed_ms > 0:
                             entries = await self.redis.xreadgroup(
-                                self._group_name,
+                                REDIS_GROUP,
                                 self.id,
                                 streams=streams,  # type: ignore
                                 block=elapsed_ms,
@@ -751,8 +765,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     await self.schedule_cron_jobs(ready, await cron_registry)
                 # wrap things up if we burstin'
                 if self.burst and not messages and limiter.borrowed_tokens == 0:
-                    self._block_new_tasks = True
-                    scope.cancel()
+                    scope.cancel("No tasks left for worker with --burst")
 
     def abort_tasks(self, tasks: set[str]) -> None:
         """
@@ -760,7 +773,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         for task_id in tasks:
             if scope := self._cancel_scopes.pop(task_id, None):
-                scope.cancel()
+                scope.cancel("Task aborted by user")
                 logger.debug(
                     f"task ⊘ {task_id} marked for abortion in worker {self.id}"
                 )
@@ -822,7 +835,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
             pipe.publish(self._channel_key + task_id, raw)
             pipe.srem(self._abort_key, [task_id])
-            pipe.xack(stream_key, self._group_name, [msg.message_id])
+            pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
             pipe.xdel(stream_key, [msg.message_id])
             if raw is not None and ttl:
                 pipe.set(key(REDIS_RESULT), raw, ex=ttl)
@@ -877,7 +890,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             }
             result = self.serialize(data)
             async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.xack(stream_key, self._group_name, [msg.message_id])
+                pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.publish(self._channel_key + task_id, result)
                 if success:
@@ -920,10 +933,23 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     await self.fail_task_dependents(res)
         elif schedule:
             async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.xack(stream_key, self._group_name, [msg.message_id])
+                pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.delete(to_delete)
                 pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
+        else:
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.delete(to_delete)
+                # mark message as immediately reclaimable
+                pipe.xclaim(
+                    self.stream_key + msg.priority,
+                    REDIS_GROUP,
+                    self.id,
+                    0,
+                    [msg.message_id],
+                    justid=True,
+                    idle=self.idle_timeout,
+                )
 
     async def run_task(self, msg: StreamMessage) -> None:
         """
@@ -941,7 +967,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 pipe.srem(self._abort_key, [task_id]),
                 Streaq(pipe).refresh_timeout(
                     self.stream_key + msg.priority,
-                    self._group_name,
+                    REDIS_GROUP,
                     self.id,
                     msg.message_id,
                 ),
@@ -1041,38 +1067,28 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         success = True
         schedule = None
         done = True
-        finish_time = None
 
         async def _fn(*args: Any, **kwargs: Any) -> Any:
-            with fail_after(to_seconds(task.timeout)):
-                if iscoroutinefunction(task.fn):
-                    return await task.fn(*args, **kwargs)
-                return await asyncify(task.fn, self._limiter)(*args, **kwargs)
+            if iscoroutinefunction(task.fn):
+                return await task.fn(*args, **kwargs)
+            return await asyncify(task.fn, self._limiter)(*args, **kwargs)
 
-        if not task.silent:
-            logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
-
+        # apply middlewares in reverse order
         wrapped = _fn
         for middleware in reversed(self.middlewares):
             wrapped = middleware(wrapped)
-        token = task_context.set(ctx)
         result: Any = None
+        scope = move_on_after(to_seconds(task.timeout), shield=True)
+        original_deadline, token = scope.deadline, task_context.set(ctx)
+        self._cancel_scopes[task_id] = scope
+        self._running_tasks[msg.priority].add(msg.message_id)
+        if not task.silent:
+            logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
         try:
-            with CancelScope() as scope:
-                self._cancel_scopes[task_id] = scope
-                self._running_tasks[msg.priority].add(msg.message_id)
+            with scope:
                 result = await wrapped(*_args, **data["k"])
-            if scope.cancelled_caught:
-                result = StreaqCancelled("Task aborted by user!")
-                success = False
-                done = True
-                if not task.silent:
-                    logger.info(f"task {task.fn_name} ⊘ {task_id} aborted")
-                self.counters["aborted"] += 1
-                self.counters["failed"] -= 1  # this will get incremented later
         except StreaqRetry as e:
-            success = False
-            done = False
+            success, done = False, False
             self.counters["retried"] += 1
             if e.schedule:
                 schedule = datetime_ms(e.schedule)
@@ -1089,39 +1105,50 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     logger.info(
                         f"task {task.fn_name} ↻ {task_id} retrying in {delay}ms"
                     )
-        except TimeoutError as e:
-            if not task.silent:
-                logger.error(f"task {task.fn_name} … {task_id} timed out")
-            result = e
-            success = False
-            done = True
-        except self._cancelled_class:
-            if not task.silent:
-                logger.info(
-                    f"task {task.fn_name} ↻ {task_id} cancelled, will be retried"
-                )
-            success = False
-            done = False
-            self.counters["retried"] += 1
-            raise  # best practice from anyio docs
         except Exception as e:
-            result = e
-            success = False
-            done = True
+            success, done, result = False, True, e
             if not task.silent:
                 logger.exception(f"Task {task_id} failed!")
                 logger.info(f"task {task.fn_name} × {task_id} failed")
+        else:
+            # there are 3 reasons this could happen
+            if scope.cancelled_caught:
+                # this was the result of an abort() call
+                if task_id not in self._cancel_scopes:
+                    result = StreaqCancelled("Task aborted by user!")
+                    success, done = False, True
+                    if not task.silent:
+                        logger.info(f"task {task.fn_name} ⊘ {task_id} aborted")
+                    self.counters["aborted"] += 1
+                    self.counters["failed"] -= 1  # this will get incremented later
+                # task timed out normally
+                elif scope.deadline == original_deadline:
+                    if not task.silent:
+                        logger.error(f"task {task.fn_name} … {task_id} timed out")
+                    result = TimeoutError("Task timed out!")
+                    success, done = False, True
+                # task timed out after grace period
+                else:
+                    self.counters["relinquished"] += 1
+                    if not task.silent:
+                        logger.info(
+                            f"task {task.fn_name} ↻ {task_id} cancelled, will be "
+                            f"retried"
+                        )
+                    success, done = False, False
         finally:
-            finish_time = now_ms()
             self._cancel_scopes.pop(task_id, None)
             self._running_tasks[msg.priority].remove(msg.message_id)
+            task_context.reset(token)
+        # shield is necessary here
+        with CancelScope(shield=True):
             await self.finish_task(
                 msg,
                 finish=done,
                 schedule=schedule,
                 return_value=result,
                 start_time=start_time,
-                finish_time=finish_time or now_ms(),
+                finish_time=now_ms(),
                 created_time=data["t"],
                 fn_name=data["f"],
                 success=success,
@@ -1131,7 +1158,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 lock_key=lock_key,
                 tries=task_try,
             )
-            task_context.reset(token)
 
     async def fail_task_dependents(self, dependents: list[str]) -> None:
         """
@@ -1295,13 +1321,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Doesn't work on Windows!
         """
         with open_signal_receiver(signal.SIGINT, signal.SIGTERM) as signals:
-            async for signum in signals:
+            signum = await anext(signals)
+            logger.info(
+                f"received signal {signum.name}, shutting down worker {self.id}"
+            )
+            scope.cancel(f"Signal handler received {signum.name}")
+            # set running tasks to fail after deadline
+            deadline = current_time() + self.grace_period
+            for _scope in self._cancel_scopes.values():
+                _scope.deadline = min(scope.deadline, deadline)
+            if self.grace_period and self._cancel_scopes:
                 logger.info(
-                    f"received signal {signum.name}, shutting down worker {self.id}"
+                    f"waiting up to {self.grace_period}s for tasks to finish "
+                    f"in worker {self.id}"
                 )
-                self._block_new_tasks = True
-                scope.cancel()
-                return
 
     async def status_by_id(self, task_id: str) -> TaskStatus:
         """
@@ -1356,7 +1389,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 channels=[self._channel_key + task_id], ignore_subscribe_messages=True
             ) as pubsub:
                 if not (raw := await self.redis.get(result_key)):
-                    msg = await pubsub.__anext__()
+                    msg = await anext(pubsub)
                     raw = msg["data"]
         data = self.deserialize(raw)
         return TaskResult(
@@ -1416,7 +1449,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     return False
                 # wait for result if not available
                 with move_on_after(to_seconds(timeout)):
-                    msg = await pubsub.__anext__()
+                    msg = await anext(pubsub)
                     raw = msg["data"]
                     # build result
                     data = self.deserialize(raw)

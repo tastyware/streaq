@@ -1,3 +1,5 @@
+import os
+import signal
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from uuid import uuid4
@@ -54,4 +56,4 @@ async def run_worker(_worker: Worker) -> AsyncGenerator[None, None]:
     async with create_task_group() as tg:
         await tg.start(_worker.run_async)
         yield
-        tg.cancel_scope.cancel()
+        os.kill(os.getpid(), signal.SIGINT)

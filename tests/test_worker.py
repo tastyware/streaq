@@ -143,20 +143,6 @@ async def test_active_tasks(worker: Worker):
         assert worker.running() >= n_tasks
 
 
-async def test_handle_signal(worker: Worker):
-    @worker.task()
-    async def foo() -> None:
-        await sleep(3)
-
-    async with run_worker(worker):
-        await foo.enqueue()
-        await sleep(1)
-        assert worker.running() > 0
-        os.kill(os.getpid(), signal.SIGINT)
-        await sleep(1)
-        assert worker.running() == 0
-
-
 async def test_reclaim_backed_up(redis_url: str):
     queue_name = uuid4().hex
     worker = Worker(
@@ -189,7 +175,7 @@ async def test_reclaim_idle_task(redis_url: str):
 
     @worker2.task(name="foo")
     async def foo() -> None:
-        await sleep(2)
+        await sleep(3)
 
     # get task ID
     task = foo.enqueue()
@@ -388,3 +374,18 @@ async def test_include_duplicate(redis_url: str, worker: Worker):
 
     with pytest.raises(StreaqError):
         worker.include(worker2)
+
+
+async def test_grace_period(worker: Worker):
+    @worker.task()
+    async def foobar() -> None:
+        await sleep(3)
+
+    worker.grace_period = 3
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        task = await foobar.enqueue()
+        await sleep(1)
+        os.kill(os.getpid(), signal.SIGINT)
+        res = await task.result(5)
+        assert res.success

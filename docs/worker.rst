@@ -97,7 +97,8 @@ Other configuration options
 - ``tz``: ``tzinfo`` controlling the time zone for the worker's cron scheduler and logs
 - ``handle_signals``: whether to handle signals for graceful shutdown (unavailable on Windows)
 - ``health_crontab``: crontab for frequency to store worker health in Redis
-- ``idle_timeout``: the amount of time to wait before re-enqueuing idle tasks (either prefetched tasks that don't run, or running tasks that become unresponsive)
+- ``idle_timeout``: the number of seconds to wait before re-enqueuing idle tasks (either prefetched tasks that don't run, or running tasks that become unresponsive)
+- ``grace_period``: the number of seconds after receiving SIGINT or SIGTERM to wait for tasks to finish before performing a hard shutdown
 - ``anyio_backend``: either trio or asyncio, defaults to asyncio
 - ``anyio_kwargs``: extra arguments for anyio, see documentation `here <https://anyio.readthedocs.io/en/stable/basics.html#backend-specific-options>`_
 - ``sentinel_kwargs``: extra arguments to pass to sentinel connections (see below)

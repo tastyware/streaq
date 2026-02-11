@@ -1,8 +1,10 @@
 import anyio
+import coredis
 import typer
 
 from streaq import Worker
 
+coredis.Config.optimized = True
 worker = Worker(concurrency=32, anyio_kwargs={"use_uvloop": True})
 N_TASKS = 20_000
 
