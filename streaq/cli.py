@@ -4,7 +4,7 @@ import sys
 from multiprocessing import Process
 from typing import Annotated, Any, cast
 
-from typer import Exit, Option, Typer
+from typer import Argument, Exit, Option, Typer
 from watchfiles import run_process
 
 from streaq import VERSION
@@ -26,9 +26,13 @@ def version_callback(
         raise Exit()
 
 
-@cli.command(help="Run one or more workers with the given options")
+@cli.command(
+    help="Run one or more workers with the given options", no_args_is_help=True
+)
 def run(
-    worker_path: str,
+    worker_path: Annotated[
+        str, Argument(help="Path to worker of format `module.submodule:object`")
+    ],
     workers: Annotated[
         int, Option("--workers", "-w", help="Number of worker processes to spin up")
     ] = 1,
@@ -61,9 +65,13 @@ def run(
     run_worker(worker_path, burst, reload, verbose)
 
 
-@cli.command(help="Run a web UI for monitoring with the given options")
+@cli.command(
+    help="Run a web UI for monitoring with the given options", no_args_is_help=True
+)
 def web(
-    worker_path: str,
+    worker_path: Annotated[
+        str, Argument(help="Path to worker of format `module.submodule:object`")
+    ],
     host: Annotated[
         str, Option("--host", "-h", help="Host for the web UI server.")
     ] = "0.0.0.0",

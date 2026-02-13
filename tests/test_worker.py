@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pytest
 from anyio import create_task_group, sleep
+from coredis import RedisCluster
+from coredis.typing import Node
 
 from streaq.constants import REDIS_TASK
 from streaq.task import TaskStatus
@@ -299,22 +301,32 @@ async def test_custom_worker_id(redis_url: str):
     assert worker.id == worker_id
 
 
-async def test_connection_pool(redis_url: str):
+def test_connection_pool(redis_url: str):
     from coredis import ConnectionPool
 
-    pool = ConnectionPool.from_url(redis_url, decode_responses=True, max_connections=4)
+    pool = ConnectionPool.from_url(redis_url, decode_responses=True)
     worker = Worker(redis_pool=pool, queue_name=uuid4().hex)
     worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)
-    async with pool, worker, worker2:
-        assert await worker.redis.client_id() == await worker2.redis.client_id()
+    assert worker._redis.connection_pool is worker2._redis.connection_pool
 
 
-async def test_connection_pool_illegal(redis_url: str):
+def test_connection_pool_illegal(redis_url: str):
     from coredis import ConnectionPool
 
     pool = ConnectionPool.from_url(redis_url, decode_responses=False, max_connections=4)
     with pytest.raises(StreaqError):
         _ = Worker(redis_pool=pool, queue_name=uuid4().hex)
+
+
+def test_cluster_connection_pool():
+    from coredis import ClusterConnectionPool
+
+    pool = ClusterConnectionPool(
+        startup_nodes=[Node(host="cluster-1", port=7000)], decode_responses=True
+    )
+    worker = Worker(redis_pool=pool, queue_name=f"{{{uuid4().hex}}}")
+    worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)
+    assert worker._redis.connection_pool is worker2._redis.connection_pool
 
 
 async def test_duplicate_tasks(worker: Worker):
@@ -331,12 +343,16 @@ async def test_include_worker(redis_url: str, worker: Worker):
     if worker._sentinel:
         worker2 = Worker(
             sentinel_nodes=[
-                ("sentinel-1", 26379),
-                ("sentinel-2", 26379),
-                ("sentinel-3", 26379),
+                ("localhost", 26379),
+                ("localhost", 26380),
+                ("localhost", 26381),
             ],
             sentinel_master="mymaster",
             queue_name=worker.queue_name,
+        )
+    elif isinstance(worker._redis, RedisCluster):
+        worker2 = Worker(
+            cluster_nodes=[("localhost", 7000)], queue_name=worker.queue_name
         )
     else:
         worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
@@ -356,12 +372,16 @@ async def test_include_duplicate(redis_url: str, worker: Worker):
     if worker._sentinel:
         worker2 = Worker(
             sentinel_nodes=[
-                ("sentinel-1", 26379),
-                ("sentinel-2", 26379),
-                ("sentinel-3", 26379),
+                ("localhost", 26379),
+                ("localhost", 26380),
+                ("localhost", 26381),
             ],
             sentinel_master="mymaster",
             queue_name=worker.queue_name,
+        )
+    elif isinstance(worker._redis, RedisCluster):
+        worker2 = Worker(
+            cluster_nodes=[("localhost", 7000)], queue_name=worker.queue_name
         )
     else:
         worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
@@ -389,3 +409,20 @@ async def test_grace_period(worker: Worker):
         os.kill(os.getpid(), signal.SIGINT)
         res = await task.result(5)
         assert res.success
+
+
+async def test_grace_period_no_new_tasks(worker: Worker):
+    @worker.task()
+    async def foobar() -> None:
+        await sleep(3)
+
+    worker.grace_period = 5
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        await foobar.enqueue()
+        await sleep(1)
+        os.kill(os.getpid(), signal.SIGINT)
+    async with worker:
+        task = await foobar.enqueue()
+        await sleep(1)
+        assert await task.status() == TaskStatus.QUEUED

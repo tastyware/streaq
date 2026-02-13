@@ -16,7 +16,7 @@ If you need to test individual tests instead of the entire suite, you can do thi
 
 .. code-block:: bash
 
-   UV_PYTHON=3.11 docker compose run --rm tests uv run --locked --all-extras --dev pytest -sk 'test_name'
+   $ PYTHON_VERSION=3.11 docker compose run --rm tests uv run --locked --all-extras --dev pytest -skv 'test_name'
 
 Benchmarks
 ----------
@@ -25,8 +25,8 @@ If you want to run the benchmarks yourself, first install the dependencies:
 
 .. code-block:: bash
 
-   uv add git+https://github.com/Graeme22/arq.git
-   uv add saq[hiredis] taskiq-redis
+   $ uv add git+https://github.com/Graeme22/arq.git
+   $ uv add saq[hiredis] taskiq-redis
 
 (The repo just modifies the arq CLI to allow spawning multiple workers.)
 
@@ -34,7 +34,7 @@ You can enqueue jobs like so:
 
 .. code-block:: bash
 
-   python benchmarks/bench_streaq.py --time 1
+   $ python benchmarks/bench_streaq.py --time 1
 
 Here, ``time`` is the number of seconds to sleep per task.
 
@@ -42,10 +42,10 @@ You can run a worker with one of these commands, adjusting the number of workers
 
 .. code-block:: bash
 
-   arq --workers ? --burst bench_arq.WorkerSettings
-   saq --quiet bench_saq.settings --workers ?
-   streaq run --burst --workers ? bench_streaq:worker
-   taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
+   $ arq --workers ? --burst bench_arq.WorkerSettings
+   $ saq --quiet bench_saq.settings --workers ?
+   $ streaq run --burst --workers ? bench_streaq:worker
+   $ taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
 
 Donating
 --------

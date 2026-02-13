@@ -112,17 +112,28 @@ In production environments, high availability guarantees are often needed, which
 .. code-block:: python
 
    worker = Worker(
-       redis_sentinel_master="mymaster",
-       redis_sentinel_nodes=[
-           ("sentinel-1", 26379),
-           ("sentinel-2", 26379),
-           ("sentinel-3", 26379),
+       sentinel_master="mymaster",
+       sentinel_nodes=[
+           ("localhost", 26379),
+           ("localhost", 26380),
+           ("localhost", 26381),
        ],
    )
 
-If you pass in the ``redis_sentinel_nodes`` parameter, you no longer need to pass ``redis_url``. For a simple Docker Compose script to get a cluster running, see `here <https://gist.github.com/Graeme22/f54800a410757242dbce8e745fca6316>`_.
+For a simple Docker Compose file to get a cluster running, see `here <https://gist.github.com/Graeme22/d2745077ad62a08e3fcf5f71c6b5b431>`_.
 
-Redis Cluster is not currently supported, since streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on Redis Cluster. For scaling beyond a single Redis instance, it's recommended to use a separate queue for each instance and assign workers to each queue.
+Deploying with Redis Cluster
+----------------------------
+
+Redis Cluster support is also provided, with some caveats. streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on cluster. However, it is still possible to use a cluster environment by using a `hash tag <https://redis.io/docs/latest/operate/rc/databases/configuration/clustering/#manage-the-hashing-policy>`_, which guarantees that different keys wind up on the same node. A hash tag is defined with curly braces:
+
+.. code-block:: python
+
+   worker = Worker(cluster_nodes=[("localhost", 7000)], queue_name="{default}")
+
+If you use several queues in the same cluster (which is the only way to scale), you should use different prefixes so that the queues are evenly distributed across cluster nodes to improve performance.
+
+For a simple Docker Compose file to get a cluster running, see `here <https://gist.github.com/Graeme22/d2745077ad62a08e3fcf5f71c6b5b431>`_.
 
 Modularizing task definitions
 -----------------------------

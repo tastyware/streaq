@@ -21,7 +21,7 @@ Fast, async, fully-typed distributed task queue via Redis streams
 - Pipelining
 - Priority queues
 - Support for synchronous tasks (run in separate threads)
-- Redis Sentinel support for production
+- Redis Sentinel & Cluster support for production
 - Built-in web UI for monitoring tasks
 - Built with structured concurrency on `anyio`, supports both `asyncio` and `trio`
 

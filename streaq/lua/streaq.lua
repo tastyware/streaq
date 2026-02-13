@@ -2,9 +2,9 @@
 
 redis.register_function('create_groups', function(keys, argv)
   local stream_key = keys[1]
-  local group_name = keys[2]
+  local group_name = argv[1]
 
-  for i=1, #argv do
+  for i=2, #argv do
     local stream = stream_key .. argv[i]
     -- create group if it doesn't exist
     local ok, groups = pcall(redis.call, 'xinfo', 'groups', stream)
@@ -17,7 +17,8 @@ end)
 redis.register_function('fail_dependents', function(keys, argv)
   local dependents_key = keys[1]
   local dependencies_key = keys[2]
-  local task_id = keys[3]
+
+  local task_id = argv[1]
 
   local visited = {}
   local failed = {}
@@ -123,16 +124,16 @@ end)
 
 redis.register_function('read_streams', function(keys, argv)
   local stream_key = keys[1]
-  local group_name = keys[2]
-  local consumer_name = keys[3]
 
-  local count = tonumber(argv[1])
-  local idle = argv[2]
+  local group_name = argv[1]
+  local consumer_name = argv[2]
+  local count = tonumber(argv[3])
+  local idle = argv[4]
 
   local entries = {}
 
   -- additional arguments are the names of custom priorities
-  for i = 3, #argv do
+  for i = 5, #argv do
     local stream = stream_key .. argv[i]
     local entry_table = {}
     -- first, check for idle messages to reclaim
@@ -166,7 +167,8 @@ end)
 redis.register_function('update_dependents', function(keys, argv)
   local dependents_key = keys[1]
   local dependencies_key = keys[2]
-  local task_id = keys[3]
+
+  local task_id = argv[1]
 
   local runnable = {}
 
@@ -187,10 +189,10 @@ end)
 
 redis.register_function('refresh_timeout', function(keys, argv)
   local stream_key = keys[1]
-  local group_name = keys[2]
 
-  local consumer = argv[1]
-  local message_id = argv[2]
+  local group_name = argv[1]
+  local consumer = argv[2]
+  local message_id = argv[3]
 
   if #redis.call('xpending', stream_key, group_name, message_id, message_id, 1, consumer) > 0 then
     redis.call('xclaim', stream_key, group_name, consumer, 0, message_id, 'justid')
@@ -214,4 +216,8 @@ redis.register_function('schedule_cron_job', function(keys, argv)
     redis.call('zadd', queue_key, score, task_id)
     redis.call('copy', data_key, task_key)
   end
+end)
+
+redis.register_function('cluster_publish', function(keys, argv)
+  return redis.call('publish', keys[1], argv[1])
 end)

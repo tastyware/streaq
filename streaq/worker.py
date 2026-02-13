@@ -39,15 +39,20 @@ from anyio import (
 )
 from anyio.abc import TaskStatus as AnyStatus
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from coredis import ConnectionPool, PureToken, Redis
+from coredis import (
+    ClusterConnectionPool,
+    ConnectionPool,
+    PureToken,
+    Redis,
+    RedisCluster,
+)
 from coredis.sentinel import Sentinel
-from coredis.typing import KeyT
+from coredis.typing import KeyT, Node
 from crontab import CronTab
 from typing_extensions import Self
 
 from streaq import logger
 from streaq.constants import (
-    DEFAULT_QUEUE_NAME,
     HEALTH_CHECK,
     REDIS_ABORT,
     REDIS_CHANNEL,
@@ -191,6 +196,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_cancel_scopes",
         "_cancelled_class",
         "_channel_key",
+        "_cluster",
         "_coworkers",
         "_health_key",
         "_health_tab",
@@ -210,7 +216,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         redis_kwargs: dict[str, Any] | None = None,
         concurrency: int = 16,
         sync_concurrency: int | None = None,
-        queue_name: str = DEFAULT_QUEUE_NAME,
+        queue_name: str = "default",
         priorities: list[str] | None = None,
         prefetch: int | None = None,
         lifespan: Callable[[], AbstractAsyncContextManager[C]] = _lifespan,
@@ -227,12 +233,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         sentinel_nodes: list[tuple[str, int]] | None = None,
         sentinel_master: str = "mymaster",
         sentinel_kwargs: dict[str, Any] | None = None,
+        cluster_nodes: list[tuple[str, int]] | None = None,
         id: str | None = None,
     ):
         # Redis connection
         redis_kwargs = redis_kwargs or {}
         if redis_kwargs.pop("decode_responses", None) is not None:
             logger.warning("decode_responses ignored in redis_kwargs")
+        if redis_pool:
+            if not redis_pool.decode_responses:
+                raise StreaqError(
+                    "Worker can't use a connection pool with `decode_responses=False`!"
+                )
+        self._sentinel = self._cluster = None
         if sentinel_nodes:
             self._sentinel = Sentinel(
                 sentinel_nodes,
@@ -241,14 +254,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 **redis_kwargs,
             )
             self._redis = self._sentinel.primary_for(sentinel_master)
+        elif cluster_nodes:
+            self._cluster = self._redis = RedisCluster(
+                startup_nodes=[Node(host=n[0], port=n[1]) for n in cluster_nodes],
+                decode_responses=True,
+                **redis_kwargs,
+            )
+        elif isinstance(redis_pool, ClusterConnectionPool):
+            self._cluster = self._redis = RedisCluster(
+                connection_pool=redis_pool, decode_responses=True, **redis_kwargs
+            )
         else:
-            self._sentinel = None
             if redis_pool:
-                if not redis_pool.decode_responses:
-                    raise StreaqError(
-                        "Worker can't use a connection pool with"
-                        "`decode_responses=False`!"
-                    )
                 self._redis = Redis(
                     connection_pool=redis_pool, decode_responses=True, **redis_kwargs
                 )
@@ -382,7 +399,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             yield self
 
     @property
-    def redis(self) -> Redis[str]:
+    def redis(self) -> Redis[str] | RedisCluster[str]:
         if not self._initialized:
             raise StreaqError("Worker not initialized, use the async context manager!")
         return self._redis
@@ -658,7 +675,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         with scope:
             while True:
                 await sleep(timeout)
-                async with self.redis.pipeline(transaction=True) as pipe:
+                async with self.redis.pipeline(transaction=False) as pipe:
                     for priority, tasks in self._running_tasks.items():
                         if tasks:
                             pipe.xclaim(
@@ -721,7 +738,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                             entries = await self.redis.xreadgroup(
                                 REDIS_GROUP,
                                 self.id,
-                                streams=streams,  # type: ignore
+                                streams=streams,
                                 block=elapsed_ms,
                                 count=count,
                             )
@@ -832,14 +849,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.counters["failed"] += 1
         stream_key = self.stream_key + msg.priority
         async with self.redis.pipeline(transaction=True) as pipe:
+            lib = Streaq(pipe)
             pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
-            pipe.publish(self._channel_key + task_id, raw)
+            if self._cluster:
+                lib.cluster_publish(self._channel_key + task_id, raw)
+            else:
+                pipe.publish(self._channel_key + task_id, raw)
             pipe.srem(self._abort_key, [task_id])
             pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
             pipe.xdel(stream_key, [msg.message_id])
             if raw is not None and ttl:
                 pipe.set(key(REDIS_RESULT), raw, ex=ttl)
-            command = Streaq(pipe).fail_dependents(
+            command = lib.fail_dependents(
                 self.prefix + REDIS_DEPENDENTS,
                 self.prefix + REDIS_DEPENDENCIES,
                 task_id,
@@ -890,9 +911,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             }
             result = self.serialize(data)
             async with self.redis.pipeline(transaction=True) as pipe:
+                lib = Streaq(pipe)
                 pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
-                pipe.publish(self._channel_key + task_id, result)
+                if self._cluster:
+                    lib.cluster_publish(self._channel_key + task_id, result)
+                else:
+                    pipe.publish(self._channel_key + task_id, result)
                 if success:
                     self.counters["completed"] += 1
                 else:
@@ -909,13 +934,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     if triggers:
                         args = self.serialize(to_tuple(return_value))
                         pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
-                    command = Streaq(pipe).update_dependents(
+                    command = lib.update_dependents(
                         self.prefix + REDIS_DEPENDENTS,
                         self.prefix + REDIS_DEPENDENCIES,
                         task_id,
                     )
                 else:
-                    command = Streaq(pipe).fail_dependents(
+                    command = lib.fail_dependents(
                         self.prefix + REDIS_DEPENDENTS,
                         self.prefix + REDIS_DEPENDENCIES,
                         task_id,
@@ -1179,11 +1204,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
         async with self.redis.pipeline(transaction=False) as pipe:
+            lib = None
             for dep_id in dependents:
                 logger.info(f"task dependent × {dep_id} failed")
                 to_delete.append(self.prefix + REDIS_TASK + dep_id)
                 pipe.set(self.results_key + dep_id, result, ex=300)
-                pipe.publish(self._channel_key + dep_id, result)
+                if self._cluster:
+                    if not lib:
+                        lib = Streaq(pipe)
+                    lib.cluster_publish(self._channel_key + dep_id, result)
+                else:
+                    pipe.publish(self._channel_key + dep_id, result)
             pipe.delete(to_delete)
 
     def enqueue_unsafe(
@@ -1386,7 +1417,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         result_key = self.results_key + task_id
         with fail_after(to_seconds(timeout)):
             async with self.redis.pubsub(
-                channels=[self._channel_key + task_id], ignore_subscribe_messages=True
+                channels=[self._channel_key + task_id],
+                ignore_subscribe_messages=True,
+                subscription_timeout=5,
             ) as pubsub:
                 if not (raw := await self.redis.get(result_key)):
                     msg = await anext(pubsub)
@@ -1420,7 +1453,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         # pubsub should be open when we call SADD or we might miss the message
         async with self.redis.pubsub(
-            channels=[self._channel_key + task_id], ignore_subscribe_messages=True
+            channels=[self._channel_key + task_id],
+            ignore_subscribe_messages=True,
+            subscription_timeout=5,
         ) as pubsub:
             # check for result, add to abort set, check delayed queue(s)
             async with self.redis.pipeline(transaction=True) as pipe:
