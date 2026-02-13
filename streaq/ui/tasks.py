@@ -43,21 +43,21 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:
-    async with worker.redis.pipeline(transaction=False) as pipe:
+    async with worker.redis.pipeline(transaction=True) as pipe:
         delayed = [
             pipe.zrange(worker.queue_key + priority, 0, -1)
             for priority in worker.priorities
         ]
-        commands = (
-            pipe.xread(
-                {worker.stream_key + p: "0-0" for p in worker.priorities},
-                count=1000,
-            ),
-            pipe.keys(worker.prefix + REDIS_RESULT + "*"),
-            pipe.keys(worker.prefix + REDIS_RUNNING + "*"),
-            pipe.keys(worker.prefix + REDIS_TASK + "*"),
+        live = pipe.xread(
+            {worker.stream_key + p: "0-0" for p in worker.priorities},
+            count=1000,
         )
-    _stream, _results, _running, _data = await gather(*commands)
+    _stream = await live
+    _results, _running, _data = await gather(
+        worker.redis.keys(worker.prefix + REDIS_RESULT + "*"),
+        worker.redis.keys(worker.prefix + REDIS_RUNNING + "*"),
+        worker.redis.keys(worker.prefix + REDIS_TASK + "*"),
+    )
     stream: set[str] = (
         set(t.field_values["task_id"] for v in _stream.values() for t in v)  # type: ignore
         if _stream

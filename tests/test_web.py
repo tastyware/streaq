@@ -18,6 +18,7 @@ async def test_no_override():
 
 
 async def test_get_pages(worker: Worker):
+    # no lifespan because we already handle that
     app = FastAPI()
     prefix = "/streaq"
     app.include_router(router, prefix=prefix)
@@ -32,10 +33,7 @@ async def test_get_pages(worker: Worker):
     async def fails() -> None:
         raise Exception("Oh no!")
 
-    async def _get_worker():
-        yield worker
-
-    app.dependency_overrides[get_worker] = _get_worker
+    app.dependency_overrides[get_worker] = lambda: worker
     async with run_worker(worker):
         # queue up some tasks
         failed = fails.enqueue()

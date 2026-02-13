@@ -21,7 +21,7 @@ from coredis.commands.request import CommandRequest
 from coredis.response._callbacks.streams import MultiStreamRangeCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
-from coredis.typing import KeyT, ResponseType
+from coredis.typing import KeyT, RedisValueT, ResponseType
 from typing_extensions import TypeIs, TypeVarTuple
 
 C = TypeVar("C", bound=Optional[object])
@@ -174,12 +174,12 @@ class Streaq(Library[str]):
 
     @wraps(verify_existence=False)
     def create_groups(
-        self, stream_key: KeyT, group_name: KeyT, *priorities: str
+        self, stream_key: KeyT, group_name: str, *priorities: str
     ) -> CommandRequest[None]: ...
 
     @wraps(verify_existence=False)
     def fail_dependents(
-        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: KeyT
+        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str
     ) -> CommandRequest[list[str]]: ...
 
     @wraps(verify_existence=False)
@@ -209,8 +209,8 @@ class Streaq(Library[str]):
     def read_streams(
         self,
         stream_key: KeyT,
-        group_name: KeyT,
-        consumer_name: KeyT,
+        group_name: str,
+        consumer_name: str,
         count: int,
         idle: int,
         *priorities: str,
@@ -218,12 +218,12 @@ class Streaq(Library[str]):
 
     @wraps(verify_existence=False)
     def update_dependents(
-        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: KeyT
+        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str
     ) -> CommandRequest[list[str]]: ...
 
     @wraps(verify_existence=False)
     def refresh_timeout(
-        self, stream_key: KeyT, group_name: KeyT, consumer: str, message_id: str
+        self, stream_key: KeyT, group_name: str, consumer: str, message_id: str
     ) -> CommandRequest[bool]: ...
 
     @wraps(verify_existence=False)
@@ -237,3 +237,8 @@ class Streaq(Library[str]):
         score: int,
         member: str,
     ) -> CommandRequest[None]: ...
+
+    @wraps(verify_existence=False)
+    def cluster_publish(
+        self, channel_key: KeyT, data: RedisValueT
+    ) -> CommandRequest[int]: ...

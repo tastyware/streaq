@@ -1,4 +1,3 @@
-DEFAULT_QUEUE_NAME = "default"
 HEALTH_CHECK = "redis_health_check"
 REDIS_ABORT = ":aborted"
 REDIS_CHANNEL = ":channels:"

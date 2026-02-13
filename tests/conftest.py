@@ -27,7 +27,7 @@ def anyio_backend(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture(scope="function")
-def sentinel_worker() -> Worker:
+def sentinel() -> Worker:
     return Worker(
         sentinel_nodes=[
             ("sentinel-1", 26379),
@@ -40,15 +40,20 @@ def sentinel_worker() -> Worker:
 
 
 @pytest.fixture(scope="function")
-def normal_worker(redis_url: str) -> Worker:
+def cluster() -> Worker:
+    return Worker(cluster_nodes=[("cluster-1", 7000)], queue_name=f"{{{uuid4().hex}}}")
+
+
+@pytest.fixture(scope="function")
+def basic(redis_url: str) -> Worker:
     return Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
 
-@pytest.fixture(params=["basic", "sentinel"], ids=["basic", "sentinel"])
-def worker(
-    request: pytest.FixtureRequest, normal_worker: Worker, sentinel_worker: Worker
-) -> Worker:
-    return normal_worker if request.param == "basic" else sentinel_worker
+@pytest.fixture(
+    params=["basic", "sentinel", "cluster"], ids=["basic", "sentinel", "cluster"]
+)
+def worker(request: pytest.FixtureRequest) -> Worker:
+    return request.getfixturevalue(request.param)
 
 
 @asynccontextmanager
