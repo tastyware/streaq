@@ -120,11 +120,7 @@ In production environments, high availability guarantees are often needed, which
        ],
    )
 
-For a simple Docker Compose file to get a cluster running, use `this <https://github.com/tastyware/streaq/blob/master/docker-compose.yml>`_:
-
-.. code-block:: bash
-
-   $ docker-compose up sentinel-init
+For a simple Docker Compose file to get a cluster running, see `here <https://gist.github.com/Graeme22/d2745077ad62a08e3fcf5f71c6b5b431>`_.
 
 Deploying with Redis Cluster
 ----------------------------
@@ -137,11 +133,7 @@ Redis Cluster support is also provided, with some caveats. streaQ makes heavy us
 
 If you use several queues in the same cluster (which is the only way to scale), you should use different prefixes so that the queues are evenly distributed across cluster nodes to improve performance.
 
-For a simple Docker Compose file to get a cluster running, use `this <https://github.com/tastyware/streaq/blob/master/docker-compose.yml>`_:
-
-.. code-block:: bash
-
-   $ docker-compose up cluster-init
+For a simple Docker Compose file to get a cluster running, see `here <https://gist.github.com/Graeme22/d2745077ad62a08e3fcf5f71c6b5b431>`_.
 
 Modularizing task definitions
 -----------------------------

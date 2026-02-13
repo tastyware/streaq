@@ -16,27 +16,7 @@ If you need to test individual tests instead of the entire suite, you can do thi
 
 .. code-block:: bash
 
-   $ PYTHON_VERSION=3.11 docker compose run --rm tests uv run --locked --all-extras --dev pytest -sk 'test_name'
-
-You can also run sentinel/cluster clusters locally with the included ``docker-compose.yml``:
-
-.. code-block:: bash
-
-   $ docker-compose up sentinel-init
-
-On macOS you'll likely need to do some additional setup to connect to Docker containers running on your local network. This ``.env`` file helps configure container networking:
-
-.. code-block:: bash
-   :caption: .env
-
-   HOST_IP=host.docker.internal
-   HOST_OS=Darwin
-
-Together with a hosts entry:
-
-.. code-block:: bash
-
-   $ echo "127.0.0.1 host.docker.internal" >> /etc/hosts
+   $ PYTHON_VERSION=3.11 docker compose run --rm tests uv run --locked --all-extras --dev pytest -skv 'test_name'
 
 Benchmarks
 ----------
