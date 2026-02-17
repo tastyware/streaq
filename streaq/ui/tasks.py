@@ -16,7 +16,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from streaq import TaskStatus, Worker
-from streaq.constants import REDIS_RESULT, REDIS_RUNNING, REDIS_TASK
 from streaq.ui.deps import (
     get_exception_formatter,
     get_result_formatter,
@@ -27,6 +26,15 @@ from streaq.utils import gather
 
 router = APIRouter()
 _fmt = "%Y-%m-%d %H:%M:%S"
+
+# Status to color mapping
+_STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
+    TaskStatus.DONE: ("success", "light"),
+    TaskStatus.RUNNING: ("warning", "dark"),
+    TaskStatus.SCHEDULED: ("secondary", "light"),
+    TaskStatus.QUEUED: ("info", "dark"),
+    TaskStatus.NOT_FOUND: ("danger", "light"),
+}
 
 
 class TaskData(BaseModel):
@@ -43,73 +51,92 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:
-    async with worker.redis.pipeline(transaction=True) as pipe:
-        delayed = [
-            pipe.zrange(worker.queue_key + priority, 0, -1)
-            for priority in worker.priorities
-        ]
-        live = pipe.xread(
-            {worker.stream_key + p: "0-0" for p in worker.priorities},
-            count=1000,
-        )
-    _stream = await live
-    _results, _running, _data = await gather(
-        worker.redis.keys(worker.prefix + REDIS_RESULT + "*"),
-        worker.redis.keys(worker.prefix + REDIS_RUNNING + "*"),
-        worker.redis.keys(worker.prefix + REDIS_TASK + "*"),
+    # Fetch all task types using the new Worker methods
+    scheduled, queued, running, completed = await gather(
+        worker.get_scheduled_tasks(limit=1000, filter_aborted=True),
+        worker.get_queued_tasks(limit=1000, filter_aborted=True),
+        worker.get_running_tasks(limit=1000),
+        worker.get_completed_tasks(limit=1000),
     )
-    stream: set[str] = (
-        set(t.field_values["task_id"] for v in _stream.values() for t in v)  # type: ignore
-        if _stream
-        else set()
-    )
-    queue: set[str] = set()
-    for r in await gather(*delayed):
-        queue |= set(r)
-    results = set(r.split(":")[-1] for r in _results)
-    running = set(r.split(":")[-1] for r in _running)
+
     tasks: list[TaskData] = []
-    to_fetch: list[str] = list(_data | _results)
-    serialized = await worker.redis.mget(to_fetch) if to_fetch else ()  # type: ignore
-    for i, entry in enumerate(serialized):
-        td = worker.deserialize(entry)
-        task_id = to_fetch[i].split(":")[-1]
-        if task_id in results:
-            status = TaskStatus.DONE
-            color = "success"
-            text_color = "light"
-        elif task_id in running:
-            status = TaskStatus.RUNNING
-            color = "warning"
-            text_color = "dark"
-        elif task_id in queue:
-            status = TaskStatus.SCHEDULED
-            color = "secondary"
-            text_color = "light"
-        else:
-            status = TaskStatus.QUEUED
-            color = "info"
-            text_color = "dark"
-        ts = td.get("ft") or td.get("t") or 0
-        dt = datetime.fromtimestamp(ts / 1000, tz=worker.tz)
+
+    # Process scheduled tasks
+    for t in scheduled:
+        color, text_color = _STATUS_COLORS[TaskStatus.SCHEDULED]
+        dt = t.scheduled_time or datetime.fromtimestamp(
+            t.created_time / 1000, tz=worker.tz
+        )
         tasks.append(
             TaskData(
                 color=color,
                 text_color=text_color,
                 enqueue_time=dt.strftime(_fmt),
-                status=status,
-                task_id=task_id,
-                fn_name=td["f"],
+                status=TaskStatus.SCHEDULED,
+                task_id=t.task_id,
+                fn_name=t.fn_name,
                 sort_time=dt,
-                url=task_url.format(task_id=task_id),
+                url=task_url.format(task_id=t.task_id),
             )
         )
+
+    # Process queued tasks (in stream, not yet running)
+    for t in queued:
+        color, text_color = _STATUS_COLORS[TaskStatus.QUEUED]
+        dt = datetime.fromtimestamp(t.created_time / 1000, tz=worker.tz)
+        tasks.append(
+            TaskData(
+                color=color,
+                text_color=text_color,
+                enqueue_time=dt.strftime(_fmt),
+                status=TaskStatus.QUEUED,
+                task_id=t.task_id,
+                fn_name=t.fn_name,
+                sort_time=dt,
+                url=task_url.format(task_id=t.task_id),
+            )
+        )
+
+    # Process running tasks
+    for t in running:
+        color, text_color = _STATUS_COLORS[TaskStatus.RUNNING]
+        dt = datetime.fromtimestamp(t.created_time / 1000, tz=worker.tz)
+        tasks.append(
+            TaskData(
+                color=color,
+                text_color=text_color,
+                enqueue_time=dt.strftime(_fmt),
+                status=TaskStatus.RUNNING,
+                task_id=t.task_id,
+                fn_name=t.fn_name,
+                sort_time=dt,
+                url=task_url.format(task_id=t.task_id),
+            )
+        )
+
+    # Process completed tasks
+    for r in completed:
+        color, text_color = _STATUS_COLORS[TaskStatus.DONE]
+        dt = datetime.fromtimestamp(r.finish_time / 1000, tz=worker.tz)
+        tasks.append(
+            TaskData(
+                color=color,
+                text_color=text_color,
+                enqueue_time=dt.strftime(_fmt),
+                status=TaskStatus.DONE,
+                task_id=r.task_id,
+                fn_name=r.fn_name,
+                sort_time=dt,
+                url=task_url.format(task_id=r.task_id),
+            )
+        )
+
     tasks.sort(key=lambda td: td.sort_time, reverse=descending)
     return {
         "running": len(running),
-        "queued": len(stream) - len(running),
-        "scheduled": len(queue),
-        "finished": len(results),
+        "queued": len(queued),
+        "scheduled": len(scheduled),
+        "finished": len(completed),
         "functions": list(worker.registry.keys()),
         "tasks": tasks,
         "title": worker.queue_name,

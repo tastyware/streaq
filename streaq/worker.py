@@ -73,6 +73,7 @@ from streaq.constants import (
 )
 from streaq.task import (
     AsyncRegisteredTask,
+    QueuedTask,
     RegisteredTask,
     SyncRegisteredTask,
     Task,
@@ -1556,6 +1557,216 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.hdel(self.cron_registry_key, [task_id])
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])
+
+    async def get_aborted_ids(self) -> set[str]:
+        """
+        Get all task IDs that are marked for abortion.
+
+        :return: set of task IDs marked for abortion
+        """
+        return await self.redis.smembers(self._abort_key)
+
+    async def get_scheduled_tasks(
+        self,
+        priority: str | None = None,
+        limit: int = 100,
+        filter_aborted: bool = True,
+    ) -> list[QueuedTask]:
+        """
+        Get tasks in the delayed queue (scheduled for future execution).
+
+        :param priority: filter by priority queue, or None for all priorities
+        :param limit: maximum number of tasks to return
+        :param filter_aborted: whether to exclude tasks marked for abortion
+
+        :return: list of scheduled tasks
+        """
+        priorities = [priority] if priority else self.priorities
+        aborted_ids: set[str] = set()
+        if filter_aborted:
+            aborted_ids = await self.get_aborted_ids()
+
+        task_ids_with_scores: list[tuple[str, float]] = []
+        async with self.redis.pipeline(transaction=False) as pipe:
+            delayed = [
+                pipe.zrange(self.queue_key + p, 0, limit - 1, withscores=True)
+                for p in priorities
+            ]
+        for result in await gather(*delayed):
+            task_ids_with_scores.extend(result)  # type: ignore
+
+        # Sort by score (scheduled time) and apply limit
+        task_ids_with_scores.sort(key=lambda x: x[1])
+        task_ids_with_scores = task_ids_with_scores[:limit]
+
+        # Filter aborted and build (task_id, score) list
+        tasks: list[QueuedTask] = []
+        filtered_tasks = [
+            (tid, score)
+            for tid, score in task_ids_with_scores
+            if tid not in aborted_ids
+        ]
+        if not filtered_tasks:
+            return tasks
+
+        task_keys = [self.prefix + REDIS_TASK + tid for tid, _ in filtered_tasks]
+        serialized = await self.redis.mget(task_keys)  # type: ignore
+
+        for (task_id, score), raw in zip(filtered_tasks, serialized):
+            if not raw:
+                continue
+            data = self.deserialize(raw)
+            scheduled_dt = datetime.fromtimestamp(score / 1000, tz=self.tz)
+            tasks.append(
+                QueuedTask(
+                    task_id=task_id,
+                    fn_name=data["f"],
+                    args=tuple(data["a"]),
+                    kwargs=data["k"],
+                    created_time=data["t"],
+                    scheduled_time=scheduled_dt,
+                    status=TaskStatus.SCHEDULED,
+                )
+            )
+        return tasks
+
+    async def get_queued_tasks(
+        self,
+        priority: str | None = None,
+        limit: int = 100,
+        filter_aborted: bool = True,
+    ) -> list[QueuedTask]:
+        """
+        Get tasks in the stream queue (waiting to be picked up by workers).
+
+        :param priority: filter by priority queue, or None for all priorities
+        :param limit: maximum number of tasks to return
+        :param filter_aborted: whether to exclude tasks marked for abortion
+
+        :return: list of queued tasks
+        """
+        priorities = [priority] if priority else self.priorities
+        aborted_ids: set[str] = set()
+        if filter_aborted:
+            aborted_ids = await self.get_aborted_ids()
+
+        # Get running task IDs to exclude them
+        running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
+        running_ids = {str(k).split(":")[-1] for k in running_keys}
+
+        # Read from streams
+        streams = {self.stream_key + p: "0-0" for p in priorities}
+        stream_data = await self.redis.xread(streams, count=limit)
+
+        task_ids: list[str] = []
+        if stream_data:
+            for entries in stream_data.values():
+                for entry in entries:
+                    task_id = entry.field_values.get("task_id")
+                    if not task_id:
+                        continue
+                    if task_id not in aborted_ids and task_id not in running_ids:
+                        task_ids.append(str(task_id))
+
+        task_ids = task_ids[:limit]
+        if not task_ids:
+            return []
+
+        # Fetch task data
+        task_keys = [self.prefix + REDIS_TASK + tid for tid in task_ids]
+        serialized = await self.redis.mget(task_keys)  # type: ignore
+
+        tasks: list[QueuedTask] = []
+        for task_id, raw in zip(task_ids, serialized):
+            if not raw:
+                continue
+            data = self.deserialize(raw)
+            tasks.append(
+                QueuedTask(
+                    task_id=task_id,
+                    fn_name=data["f"],
+                    args=tuple(data["a"]),
+                    kwargs=data["k"],
+                    created_time=data["t"],
+                    scheduled_time=None,
+                    status=TaskStatus.QUEUED,
+                )
+            )
+        return tasks
+
+    async def get_running_tasks(self, limit: int = 100) -> list[QueuedTask]:
+        """
+        Get currently running tasks.
+
+        :param limit: maximum number of tasks to return
+
+        :return: list of running tasks
+        """
+        running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
+        task_ids = [str(k).split(":")[-1] for k in running_keys][:limit]
+
+        if not task_ids:
+            return []
+
+        task_keys = [self.prefix + REDIS_TASK + tid for tid in task_ids]
+        serialized = await self.redis.mget(task_keys)  # type: ignore
+
+        tasks: list[QueuedTask] = []
+        for task_id, raw in zip(task_ids, serialized):
+            if not raw:
+                continue
+            data = self.deserialize(raw)
+            tasks.append(
+                QueuedTask(
+                    task_id=task_id,
+                    fn_name=data["f"],
+                    args=tuple(data["a"]),
+                    kwargs=data["k"],
+                    created_time=data["t"],
+                    scheduled_time=None,
+                    status=TaskStatus.RUNNING,
+                )
+            )
+        return tasks
+
+    async def get_completed_tasks(self, limit: int = 100) -> list[TaskResult[Any]]:
+        """
+        Get completed tasks (both successful and failed).
+
+        :param limit: maximum number of tasks to return
+
+        :return: list of task results
+        """
+        result_keys = list(await self.redis.keys(self.results_key + "*"))[:limit]
+
+        if not result_keys:
+            return []
+
+        serialized = await self.redis.mget(result_keys)  # type: ignore
+
+        # Extract task_ids from keys (format: prefix:result:task_id)
+        task_ids = [str(k).split(":")[-1] for k in result_keys]
+
+        results: list[TaskResult[Any]] = []
+        for task_id, raw in zip(task_ids, serialized):
+            if not raw:
+                continue
+            data = self.deserialize(raw)
+            results.append(
+                TaskResult(
+                    fn_name=data["f"],
+                    created_time=data["ct"],
+                    enqueue_time=data["et"],
+                    success=data["s"],
+                    start_time=data["st"],
+                    finish_time=data["ft"],
+                    tries=data["t"],
+                    worker_id=data["w"],
+                    _result=data["r"],
+                    task_id=task_id,
+                )
+            )
+        return results
 
     def serialize(self, data: Any) -> Any:
         """

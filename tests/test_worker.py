@@ -426,3 +426,131 @@ async def test_grace_period_no_new_tasks(worker: Worker):
         task = await foobar.enqueue()
         await sleep(1)
         assert await task.status() == TaskStatus.QUEUED
+
+
+async def test_get_scheduled_tasks(worker: Worker):
+    from datetime import timedelta
+
+    @worker.task()
+    async def delayed_task(x: int) -> int:
+        return x * 2
+
+    async with worker:
+        # Schedule tasks for future execution
+        task1 = await delayed_task.enqueue(1).start(delay=timedelta(hours=1))
+        task2 = await delayed_task.enqueue(2).start(delay=timedelta(hours=2))
+
+        # Retrieve scheduled tasks
+        scheduled = await worker.get_scheduled_tasks()
+        task_ids = [t.task_id for t in scheduled]
+        assert task1.id in task_ids
+        assert task2.id in task_ids
+
+        # Check task properties
+        task = next(t for t in scheduled if t.task_id == task1.id)
+        assert "delayed_task" in task.fn_name
+        assert task.args[0] == 1
+        assert task.status == TaskStatus.SCHEDULED
+        assert task.scheduled_time is not None
+
+
+async def test_get_scheduled_tasks_with_limit(worker: Worker):
+    from datetime import timedelta
+
+    @worker.task()
+    async def delayed_task() -> None:
+        pass
+
+    async with worker:
+        # Schedule multiple tasks
+        for _ in range(5):
+            await delayed_task.enqueue().start(delay=timedelta(hours=1))
+
+        # Test limit
+        scheduled = await worker.get_scheduled_tasks(limit=2)
+        assert len(scheduled) <= 2
+
+
+async def test_get_aborted_ids(worker: Worker):
+    """Test that get_aborted_ids returns task IDs in the abort set.
+
+    Note: For delayed tasks, abort_by_id removes them immediately from the queue
+    and the abort set. The abort set is mainly for stream tasks.
+    """
+
+    @worker.task()
+    async def slow_task() -> None:
+        await sleep(60)
+
+    async with worker:
+        # Enqueue without delay - task goes to stream
+        task = await slow_task.enqueue()
+
+        # Abort the task (with timeout=0 means don't wait for confirmation)
+        await worker.abort_by_id(task.id, timeout=0)
+
+        # Check aborted IDs - task should be marked for abortion
+        aborted = await worker.get_aborted_ids()
+        assert task.id in aborted
+
+
+async def test_get_scheduled_tasks_abort_removes(worker: Worker):
+    """Test that aborting a delayed task removes it from the scheduled queue."""
+    from datetime import timedelta
+
+    @worker.task()
+    async def delayed_task() -> None:
+        pass
+
+    async with worker:
+        task1 = await delayed_task.enqueue().start(delay=timedelta(hours=1))
+        task2 = await delayed_task.enqueue().start(delay=timedelta(hours=1))
+
+        # Both tasks should be scheduled
+        scheduled = await worker.get_scheduled_tasks()
+        task_ids = [t.task_id for t in scheduled]
+        assert task1.id in task_ids
+        assert task2.id in task_ids
+
+        # Abort one task - this removes it from the delayed queue
+        aborted = await worker.abort_by_id(task1.id, timeout=0)
+        assert aborted  # Should return True for delayed tasks
+
+        # Only task2 should remain scheduled
+        scheduled_after = await worker.get_scheduled_tasks()
+        task_ids_after = [t.task_id for t in scheduled_after]
+        assert task1.id not in task_ids_after
+        assert task2.id in task_ids_after
+
+
+async def test_get_running_tasks(worker: Worker):
+    @worker.task()
+    async def slow_task() -> None:
+        await sleep(10)
+
+    async with run_worker(worker):
+        await slow_task.enqueue()
+        await sleep(1)  # Wait for task to start
+
+        running = await worker.get_running_tasks()
+        assert len(running) >= 1
+        assert "slow_task" in running[0].fn_name
+        assert running[0].status == TaskStatus.RUNNING
+
+
+async def test_get_completed_tasks(worker: Worker):
+    @worker.task()
+    async def quick_task(x: int) -> int:
+        return x * 2
+
+    async with run_worker(worker):
+        task = await quick_task.enqueue(5)
+        await task.result(3)
+
+        completed = await worker.get_completed_tasks()
+        assert len(completed) >= 1
+
+        result = next((r for r in completed if "quick_task" in r.fn_name), None)
+        assert result is not None
+        assert result.success
+        assert result.result == 10

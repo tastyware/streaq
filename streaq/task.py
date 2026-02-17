@@ -62,6 +62,21 @@ class TaskInfo:
 
 
 @dataclass(frozen=True)
+class QueuedTask:
+    """
+    Dataclass representing a task retrieved from Redis queues.
+    """
+
+    task_id: str
+    fn_name: str
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    created_time: int
+    scheduled_time: datetime | None
+    status: TaskStatus
+
+
+@dataclass(frozen=True)
 class TaskResult(Generic[R]):
     """
     Dataclass wrapping the result of a task with additional information
@@ -77,6 +92,7 @@ class TaskResult(Generic[R]):
     tries: int
     worker_id: str
     _result: R | BaseException
+    task_id: str = ""
 
     @property
     def result(self) -> R:
