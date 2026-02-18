@@ -1558,9 +1558,32 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])
 
+    @overload
     async def get_tasks_by_status(
         self,
-        status: TaskStatus,
+        status: Literal[TaskStatus.SCHEDULED, TaskStatus.QUEUED],
+        priority: str | None = None,
+        limit: int = 100,
+        filter_aborted: bool = True,
+    ) -> list[QueuedTask]: ...
+
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: Literal[TaskStatus.RUNNING],
+        limit: int = 100,
+    ) -> list[QueuedTask]: ...
+
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: Literal[TaskStatus.DONE] = TaskStatus.DONE,
+        limit: int = 100,
+    ) -> list[TaskResult[Any]]: ...
+
+    async def get_tasks_by_status(
+        self,
+        status: TaskStatus = TaskStatus.DONE,
         priority: str | None = None,
         limit: int = 100,
         filter_aborted: bool = True,
