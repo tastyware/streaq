@@ -15,7 +15,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
-from streaq import TaskStatus, Worker
+from streaq import QueuedTask, TaskResult, TaskStatus, Worker
 from streaq.ui.deps import (
     get_exception_formatter,
     get_result_formatter,
@@ -27,6 +27,14 @@ from streaq.utils import gather
 router = APIRouter()
 _fmt = "%Y-%m-%d %H:%M:%S"
 
+# Statuses to fetch
+_STATUSES = (
+    TaskStatus.SCHEDULED,
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.DONE,
+)
+
 # Status to color mapping
 _STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
     TaskStatus.DONE: ("success", "light"),
@@ -35,6 +43,20 @@ _STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
     TaskStatus.QUEUED: ("info", "dark"),
     TaskStatus.NOT_FOUND: ("danger", "light"),
 }
+
+
+def _get_sort_time(
+    item: QueuedTask | TaskResult[Any], status: TaskStatus, tz: Any
+) -> datetime:
+    """Extract the appropriate datetime for sorting based on status."""
+    if status == TaskStatus.SCHEDULED and isinstance(item, QueuedTask):
+        if item.scheduled_time:
+            return item.scheduled_time
+        return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
+    elif status == TaskStatus.DONE and isinstance(item, TaskResult):
+        return datetime.fromtimestamp(item.finish_time / 1000, tz=tz)
+    else:
+        return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
 
 
 class TaskData(BaseModel):
@@ -51,92 +73,36 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:
-    # Fetch all task types using get_tasks_by_status
-    scheduled, queued, running, completed = await gather(
-        worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=1000),
-        worker.get_tasks_by_status(TaskStatus.QUEUED, limit=1000),
-        worker.get_tasks_by_status(TaskStatus.RUNNING, limit=1000),
-        worker.get_tasks_by_status(TaskStatus.DONE, limit=1000),
+    # Fetch all task types
+    results = await gather(
+        *(worker.get_tasks_by_status(s, limit=1000) for s in _STATUSES)
     )
+    by_status = dict(zip(_STATUSES, results))
 
     tasks: list[TaskData] = []
-
-    # Process scheduled tasks
-    for t in scheduled:
-        color, text_color = _STATUS_COLORS[TaskStatus.SCHEDULED]
-        dt = t.scheduled_time or datetime.fromtimestamp(
-            t.created_time / 1000, tz=worker.tz
-        )
-        tasks.append(
-            TaskData(
-                color=color,
-                text_color=text_color,
-                enqueue_time=dt.strftime(_fmt),
-                status=TaskStatus.SCHEDULED,
-                task_id=t.task_id,
-                fn_name=t.fn_name,
-                sort_time=dt,
-                url=task_url.format(task_id=t.task_id),
+    for status, items in by_status.items():
+        color, text_color = _STATUS_COLORS[status]
+        for item in items:
+            dt = _get_sort_time(item, status, worker.tz)
+            tasks.append(
+                TaskData(
+                    color=color,
+                    text_color=text_color,
+                    enqueue_time=dt.strftime(_fmt),
+                    status=status,
+                    task_id=item.task_id,
+                    fn_name=item.fn_name,
+                    sort_time=dt,
+                    url=task_url.format(task_id=item.task_id),
+                )
             )
-        )
-
-    # Process queued tasks (in stream, not yet running)
-    for t in queued:
-        color, text_color = _STATUS_COLORS[TaskStatus.QUEUED]
-        dt = datetime.fromtimestamp(t.created_time / 1000, tz=worker.tz)
-        tasks.append(
-            TaskData(
-                color=color,
-                text_color=text_color,
-                enqueue_time=dt.strftime(_fmt),
-                status=TaskStatus.QUEUED,
-                task_id=t.task_id,
-                fn_name=t.fn_name,
-                sort_time=dt,
-                url=task_url.format(task_id=t.task_id),
-            )
-        )
-
-    # Process running tasks
-    for t in running:
-        color, text_color = _STATUS_COLORS[TaskStatus.RUNNING]
-        dt = datetime.fromtimestamp(t.created_time / 1000, tz=worker.tz)
-        tasks.append(
-            TaskData(
-                color=color,
-                text_color=text_color,
-                enqueue_time=dt.strftime(_fmt),
-                status=TaskStatus.RUNNING,
-                task_id=t.task_id,
-                fn_name=t.fn_name,
-                sort_time=dt,
-                url=task_url.format(task_id=t.task_id),
-            )
-        )
-
-    # Process completed tasks
-    for r in completed:
-        color, text_color = _STATUS_COLORS[TaskStatus.DONE]
-        dt = datetime.fromtimestamp(r.finish_time / 1000, tz=worker.tz)
-        tasks.append(
-            TaskData(
-                color=color,
-                text_color=text_color,
-                enqueue_time=dt.strftime(_fmt),
-                status=TaskStatus.DONE,
-                task_id=r.task_id,
-                fn_name=r.fn_name,
-                sort_time=dt,
-                url=task_url.format(task_id=r.task_id),
-            )
-        )
 
     tasks.sort(key=lambda td: td.sort_time, reverse=descending)
     return {
-        "running": len(running),
-        "queued": len(queued),
-        "scheduled": len(scheduled),
-        "finished": len(completed),
+        "running": len(by_status[TaskStatus.RUNNING]),
+        "queued": len(by_status[TaskStatus.QUEUED]),
+        "scheduled": len(by_status[TaskStatus.SCHEDULED]),
+        "finished": len(by_status[TaskStatus.DONE]),
         "functions": list(worker.registry.keys()),
         "tasks": tasks,
         "title": worker.queue_name,
