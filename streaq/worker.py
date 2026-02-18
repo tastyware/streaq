@@ -1558,7 +1558,35 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])
 
-    async def get_aborted_ids(self) -> set[str]:
+    async def get_tasks_by_status(
+        self,
+        status: TaskStatus,
+        priority: str | None = None,
+        limit: int = 100,
+        filter_aborted: bool = True,
+    ) -> list[QueuedTask] | list[TaskResult[Any]]:
+        """
+        Get tasks by their status.
+
+        :param status: the status to filter by (SCHEDULED, QUEUED, RUNNING, DONE)
+        :param priority: filter by priority (only for SCHEDULED and QUEUED)
+        :param limit: maximum number of tasks to return
+        :param filter_aborted: exclude aborted tasks (only for SCHEDULED/QUEUED)
+
+        :return: list of tasks matching the status
+        """
+        if status == TaskStatus.SCHEDULED:
+            return await self._get_scheduled_tasks(priority, limit, filter_aborted)
+        elif status == TaskStatus.QUEUED:
+            return await self._get_queued_tasks(priority, limit, filter_aborted)
+        elif status == TaskStatus.RUNNING:
+            return await self._get_running_tasks(limit)
+        elif status == TaskStatus.DONE:
+            return await self._get_completed_tasks(limit)
+        else:
+            return []
+
+    async def _get_aborted_ids(self) -> set[str]:
         """
         Get all task IDs that are marked for abortion.
 
@@ -1566,7 +1594,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         return await self.redis.smembers(self._abort_key)
 
-    async def get_scheduled_tasks(
+    async def _get_scheduled_tasks(
         self,
         priority: str | None = None,
         limit: int = 100,
@@ -1584,7 +1612,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priorities = [priority] if priority else self.priorities
         aborted_ids: set[str] = set()
         if filter_aborted:
-            aborted_ids = await self.get_aborted_ids()
+            aborted_ids = await self._get_aborted_ids()
 
         task_ids_with_scores: list[tuple[str, float]] = []
         async with self.redis.pipeline(transaction=False) as pipe:
@@ -1630,7 +1658,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             )
         return tasks
 
-    async def get_queued_tasks(
+    async def _get_queued_tasks(
         self,
         priority: str | None = None,
         limit: int = 100,
@@ -1648,7 +1676,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priorities = [priority] if priority else self.priorities
         aborted_ids: set[str] = set()
         if filter_aborted:
-            aborted_ids = await self.get_aborted_ids()
+            aborted_ids = await self._get_aborted_ids()
 
         # Get running task IDs to exclude them
         running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
@@ -1694,7 +1722,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             )
         return tasks
 
-    async def get_running_tasks(self, limit: int = 100) -> list[QueuedTask]:
+    async def _get_running_tasks(self, limit: int = 100) -> list[QueuedTask]:
         """
         Get currently running tasks.
 
@@ -1729,7 +1757,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             )
         return tasks
 
-    async def get_completed_tasks(self, limit: int = 100) -> list[TaskResult[Any]]:
+    async def _get_completed_tasks(self, limit: int = 100) -> list[TaskResult[Any]]:
         """
         Get completed tasks (both successful and failed).
 

@@ -428,7 +428,7 @@ async def test_grace_period_no_new_tasks(worker: Worker):
         assert await task.status() == TaskStatus.QUEUED
 
 
-async def test_get_scheduled_tasks(worker: Worker):
+async def test_get_tasks_by_status_scheduled(worker: Worker):
     from datetime import timedelta
 
     @worker.task()
@@ -441,7 +441,7 @@ async def test_get_scheduled_tasks(worker: Worker):
         task2 = await delayed_task.enqueue(2).start(delay=timedelta(hours=2))
 
         # Retrieve scheduled tasks
-        scheduled = await worker.get_scheduled_tasks()
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
         task_ids = [t.task_id for t in scheduled]
         assert task1.id in task_ids
         assert task2.id in task_ids
@@ -454,7 +454,7 @@ async def test_get_scheduled_tasks(worker: Worker):
         assert task.scheduled_time is not None
 
 
-async def test_get_scheduled_tasks_with_limit(worker: Worker):
+async def test_get_tasks_by_status_scheduled_with_limit(worker: Worker):
     from datetime import timedelta
 
     @worker.task()
@@ -467,12 +467,12 @@ async def test_get_scheduled_tasks_with_limit(worker: Worker):
             await delayed_task.enqueue().start(delay=timedelta(hours=1))
 
         # Test limit
-        scheduled = await worker.get_scheduled_tasks(limit=2)
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=2)
         assert len(scheduled) <= 2
 
 
-async def test_get_aborted_ids(worker: Worker):
-    """Test that get_aborted_ids returns task IDs in the abort set.
+async def test_get_tasks_by_status_abort_filter(worker: Worker):
+    """Test that filter_aborted works for stream tasks.
 
     Note: For delayed tasks, abort_by_id removes them immediately from the queue
     and the abort set. The abort set is mainly for stream tasks.
@@ -489,12 +489,12 @@ async def test_get_aborted_ids(worker: Worker):
         # Abort the task (with timeout=0 means don't wait for confirmation)
         await worker.abort_by_id(task.id, timeout=0)
 
-        # Check aborted IDs - task should be marked for abortion
-        aborted = await worker.get_aborted_ids()
+        # Check aborted IDs via private method
+        aborted = await worker._get_aborted_ids()
         assert task.id in aborted
 
 
-async def test_get_scheduled_tasks_abort_removes(worker: Worker):
+async def test_get_tasks_by_status_scheduled_abort_removes(worker: Worker):
     """Test that aborting a delayed task removes it from the scheduled queue."""
     from datetime import timedelta
 
@@ -507,7 +507,7 @@ async def test_get_scheduled_tasks_abort_removes(worker: Worker):
         task2 = await delayed_task.enqueue().start(delay=timedelta(hours=1))
 
         # Both tasks should be scheduled
-        scheduled = await worker.get_scheduled_tasks()
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
         task_ids = [t.task_id for t in scheduled]
         assert task1.id in task_ids
         assert task2.id in task_ids
@@ -517,13 +517,13 @@ async def test_get_scheduled_tasks_abort_removes(worker: Worker):
         assert aborted  # Should return True for delayed tasks
 
         # Only task2 should remain scheduled
-        scheduled_after = await worker.get_scheduled_tasks()
+        scheduled_after = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
         task_ids_after = [t.task_id for t in scheduled_after]
         assert task1.id not in task_ids_after
         assert task2.id in task_ids_after
 
 
-async def test_get_running_tasks(worker: Worker):
+async def test_get_tasks_by_status_running(worker: Worker):
     @worker.task()
     async def slow_task() -> None:
         await sleep(10)
@@ -532,13 +532,13 @@ async def test_get_running_tasks(worker: Worker):
         await slow_task.enqueue()
         await sleep(1)  # Wait for task to start
 
-        running = await worker.get_running_tasks()
+        running = await worker.get_tasks_by_status(TaskStatus.RUNNING)
         assert len(running) >= 1
         assert "slow_task" in running[0].fn_name
         assert running[0].status == TaskStatus.RUNNING
 
 
-async def test_get_completed_tasks(worker: Worker):
+async def test_get_tasks_by_status_done(worker: Worker):
     @worker.task()
     async def quick_task(x: int) -> int:
         return x * 2
@@ -547,7 +547,7 @@ async def test_get_completed_tasks(worker: Worker):
         task = await quick_task.enqueue(5)
         await task.result(3)
 
-        completed = await worker.get_completed_tasks()
+        completed = await worker.get_tasks_by_status(TaskStatus.DONE)
         assert len(completed) >= 1
 
         result = next((r for r in completed if "quick_task" in r.fn_name), None)

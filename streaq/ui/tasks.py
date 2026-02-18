@@ -51,12 +51,12 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:
-    # Fetch all task types using the new Worker methods
+    # Fetch all task types using get_tasks_by_status
     scheduled, queued, running, completed = await gather(
-        worker.get_scheduled_tasks(limit=1000, filter_aborted=True),
-        worker.get_queued_tasks(limit=1000, filter_aborted=True),
-        worker.get_running_tasks(limit=1000),
-        worker.get_completed_tasks(limit=1000),
+        worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=1000),
+        worker.get_tasks_by_status(TaskStatus.QUEUED, limit=1000),
+        worker.get_tasks_by_status(TaskStatus.RUNNING, limit=1000),
+        worker.get_tasks_by_status(TaskStatus.DONE, limit=1000),
     )
 
     tasks: list[TaskData] = []
