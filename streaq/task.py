@@ -50,30 +50,19 @@ class TaskStatus(str, Enum):
 @dataclass(frozen=True)
 class TaskInfo:
     """
-    Dataclass containing information about a running or enqueued task.
+    Dataclass containing information about a task (queued, running, or scheduled).
     """
 
     fn_name: str
     created_time: int
-    tries: int
-    scheduled: datetime | None
-    dependencies: set[str]
-    dependents: set[str]
-
-
-@dataclass(frozen=True)
-class QueuedTask:
-    """
-    Dataclass representing a task retrieved from Redis queues.
-    """
-
-    task_id: str
-    fn_name: str
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    created_time: int
-    scheduled_time: datetime | None
-    status: TaskStatus
+    task_id: str = ""
+    args: tuple[Any, ...] = ()
+    kwargs: dict[str, Any] = field(default_factory=dict)
+    tries: int = 0
+    scheduled: datetime | None = None
+    dependencies: set[str] = field(default_factory=set)
+    dependents: set[str] = field(default_factory=set)
+    status: TaskStatus = TaskStatus.NOT_FOUND
 
 
 @dataclass(frozen=True)

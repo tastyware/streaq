@@ -451,7 +451,7 @@ async def test_get_tasks_by_status_scheduled(worker: Worker):
         assert "delayed_task" in task.fn_name
         assert task.args[0] == 1
         assert task.status == TaskStatus.SCHEDULED
-        assert task.scheduled_time is not None
+        assert task.scheduled is not None
 
 
 async def test_get_tasks_by_status_scheduled_with_limit(worker: Worker):

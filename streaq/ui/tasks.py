@@ -15,7 +15,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
-from streaq import QueuedTask, TaskResult, TaskStatus, Worker
+from streaq import TaskInfo, TaskResult, TaskStatus, Worker
 from streaq.ui.deps import (
     get_exception_formatter,
     get_result_formatter,
@@ -46,12 +46,12 @@ _STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
 
 
 def _get_sort_time(
-    item: QueuedTask | TaskResult[Any], status: TaskStatus, tz: Any
+    item: TaskInfo | TaskResult[Any], status: TaskStatus, tz: Any
 ) -> datetime:
     """Extract the appropriate datetime for sorting based on status."""
-    if status == TaskStatus.SCHEDULED and isinstance(item, QueuedTask):
-        if item.scheduled_time:
-            return item.scheduled_time
+    if status == TaskStatus.SCHEDULED and isinstance(item, TaskInfo):
+        if item.scheduled:
+            return item.scheduled
         return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
     elif status == TaskStatus.DONE and isinstance(item, TaskResult):
         return datetime.fromtimestamp(item.finish_time / 1000, tz=tz)

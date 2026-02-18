@@ -73,7 +73,6 @@ from streaq.constants import (
 )
 from streaq.task import (
     AsyncRegisteredTask,
-    QueuedTask,
     RegisteredTask,
     SyncRegisteredTask,
     Task,
@@ -1565,14 +1564,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priority: str | None = None,
         limit: int = 100,
         filter_aborted: bool = True,
-    ) -> list[QueuedTask]: ...
+    ) -> list[TaskInfo]: ...
 
     @overload
     async def get_tasks_by_status(
         self,
         status: Literal[TaskStatus.RUNNING],
         limit: int = 100,
-    ) -> list[QueuedTask]: ...
+    ) -> list[TaskInfo]: ...
 
     @overload
     async def get_tasks_by_status(
@@ -1587,7 +1586,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priority: str | None = None,
         limit: int = 100,
         filter_aborted: bool = True,
-    ) -> list[QueuedTask] | list[TaskResult[Any]]:
+    ) -> list[TaskInfo] | list[TaskResult[Any]]:
         """
         Get tasks by their status.
 
@@ -1622,7 +1621,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priority: str | None = None,
         limit: int = 100,
         filter_aborted: bool = True,
-    ) -> list[QueuedTask]:
+    ) -> list[TaskInfo]:
         """
         Get tasks in the delayed queue (scheduled for future execution).
 
@@ -1651,7 +1650,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_ids_with_scores = task_ids_with_scores[:limit]
 
         # Filter aborted and build (task_id, score) list
-        tasks: list[QueuedTask] = []
+        tasks: list[TaskInfo] = []
         filtered_tasks = [
             (tid, score)
             for tid, score in task_ids_with_scores
@@ -1669,13 +1668,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             data = self.deserialize(raw)
             scheduled_dt = datetime.fromtimestamp(score / 1000, tz=self.tz)
             tasks.append(
-                QueuedTask(
+                TaskInfo(
                     task_id=task_id,
                     fn_name=data["f"],
                     args=tuple(data["a"]),
                     kwargs=data["k"],
                     created_time=data["t"],
-                    scheduled_time=scheduled_dt,
+                    scheduled=scheduled_dt,
                     status=TaskStatus.SCHEDULED,
                 )
             )
@@ -1686,7 +1685,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priority: str | None = None,
         limit: int = 100,
         filter_aborted: bool = True,
-    ) -> list[QueuedTask]:
+    ) -> list[TaskInfo]:
         """
         Get tasks in the stream queue (waiting to be picked up by workers).
 
@@ -1727,25 +1726,24 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_keys = [self.prefix + REDIS_TASK + tid for tid in task_ids]
         serialized = await self.redis.mget(task_keys)  # type: ignore
 
-        tasks: list[QueuedTask] = []
+        tasks: list[TaskInfo] = []
         for task_id, raw in zip(task_ids, serialized):
             if not raw:
                 continue
             data = self.deserialize(raw)
             tasks.append(
-                QueuedTask(
+                TaskInfo(
                     task_id=task_id,
                     fn_name=data["f"],
                     args=tuple(data["a"]),
                     kwargs=data["k"],
                     created_time=data["t"],
-                    scheduled_time=None,
                     status=TaskStatus.QUEUED,
                 )
             )
         return tasks
 
-    async def _get_running_tasks(self, limit: int = 100) -> list[QueuedTask]:
+    async def _get_running_tasks(self, limit: int = 100) -> list[TaskInfo]:
         """
         Get currently running tasks.
 
@@ -1762,19 +1760,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_keys = [self.prefix + REDIS_TASK + tid for tid in task_ids]
         serialized = await self.redis.mget(task_keys)  # type: ignore
 
-        tasks: list[QueuedTask] = []
+        tasks: list[TaskInfo] = []
         for task_id, raw in zip(task_ids, serialized):
             if not raw:
                 continue
             data = self.deserialize(raw)
             tasks.append(
-                QueuedTask(
+                TaskInfo(
                     task_id=task_id,
                     fn_name=data["f"],
                     args=tuple(data["a"]),
                     kwargs=data["k"],
                     created_time=data["t"],
-                    scheduled_time=None,
                     status=TaskStatus.RUNNING,
                 )
             )
