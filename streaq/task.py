@@ -57,11 +57,11 @@ class TaskInfo:
     created_time: int
     task_id: str = ""
     args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = field(default_factory=dict)
+    kwargs: dict[str, Any] = field(default_factory=lambda: {})
     tries: int = 0
     scheduled: datetime | None = None
-    dependencies: set[str] = field(default_factory=set)
-    dependents: set[str] = field(default_factory=set)
+    dependencies: set[str] = field(default_factory=lambda: set())
+    dependents: set[str] = field(default_factory=lambda: set())
     status: TaskStatus = TaskStatus.NOT_FOUND
 
 

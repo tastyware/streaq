@@ -1560,7 +1560,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     @overload
     async def get_tasks_by_status(
         self,
-        status: Literal[TaskStatus.SCHEDULED, TaskStatus.QUEUED],
+        status: Literal[TaskStatus.SCHEDULED, TaskStatus.QUEUED, TaskStatus.RUNNING],
         priority: str | None = None,
         limit: int = 100,
         filter_aborted: bool = True,
@@ -1569,15 +1569,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     @overload
     async def get_tasks_by_status(
         self,
-        status: Literal[TaskStatus.RUNNING],
-        limit: int = 100,
-    ) -> list[TaskInfo]: ...
-
-    @overload
-    async def get_tasks_by_status(
-        self,
         status: Literal[TaskStatus.DONE] = TaskStatus.DONE,
+        priority: str | None = None,
         limit: int = 100,
+        filter_aborted: bool = True,
     ) -> list[TaskResult[Any]]: ...
 
     async def get_tasks_by_status(

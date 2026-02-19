@@ -27,14 +27,6 @@ from streaq.utils import gather
 router = APIRouter()
 _fmt = "%Y-%m-%d %H:%M:%S"
 
-# Statuses to fetch
-_STATUSES = (
-    TaskStatus.SCHEDULED,
-    TaskStatus.QUEUED,
-    TaskStatus.RUNNING,
-    TaskStatus.DONE,
-)
-
 # Status to color mapping
 _STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
     TaskStatus.DONE: ("success", "light"),
@@ -73,11 +65,19 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], task_url: str, descending: bool
 ) -> dict[str, Any]:
-    # Fetch all task types
-    results = await gather(
-        *(worker.get_tasks_by_status(s, limit=1000) for s in _STATUSES)
+    # Fetch all task types - explicit calls for proper typing
+    scheduled, queued, running, completed = await gather(
+        worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=1000),
+        worker.get_tasks_by_status(TaskStatus.QUEUED, limit=1000),
+        worker.get_tasks_by_status(TaskStatus.RUNNING, limit=1000),
+        worker.get_tasks_by_status(TaskStatus.DONE, limit=1000),
     )
-    by_status = dict(zip(_STATUSES, results))
+    by_status: dict[TaskStatus, list[TaskInfo] | list[TaskResult[Any]]] = {
+        TaskStatus.SCHEDULED: scheduled,
+        TaskStatus.QUEUED: queued,
+        TaskStatus.RUNNING: running,
+        TaskStatus.DONE: completed,
+    }
 
     tasks: list[TaskData] = []
     for status, items in by_status.items():
@@ -99,10 +99,10 @@ async def _get_context(
 
     tasks.sort(key=lambda td: td.sort_time, reverse=descending)
     return {
-        "running": len(by_status[TaskStatus.RUNNING]),
-        "queued": len(by_status[TaskStatus.QUEUED]),
-        "scheduled": len(by_status[TaskStatus.SCHEDULED]),
-        "finished": len(by_status[TaskStatus.DONE]),
+        "running": len(running),
+        "queued": len(queued),
+        "scheduled": len(scheduled),
+        "finished": len(completed),
         "functions": list(worker.registry.keys()),
         "tasks": tasks,
         "title": worker.queue_name,
