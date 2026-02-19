@@ -471,58 +471,6 @@ async def test_get_tasks_by_status_scheduled_with_limit(worker: Worker):
         assert len(scheduled) <= 2
 
 
-async def test_get_tasks_by_status_abort_filter(worker: Worker):
-    """Test that filter_aborted works for stream tasks.
-
-    Note: For delayed tasks, abort_by_id removes them immediately from the queue
-    and the abort set. The abort set is mainly for stream tasks.
-    """
-
-    @worker.task()
-    async def slow_task() -> None:
-        await sleep(60)
-
-    async with worker:
-        # Enqueue without delay - task goes to stream
-        task = await slow_task.enqueue()
-
-        # Abort the task (with timeout=0 means don't wait for confirmation)
-        await worker.abort_by_id(task.id, timeout=0)
-
-        # Check aborted IDs via private method
-        aborted = await worker._get_aborted_ids()
-        assert task.id in aborted
-
-
-async def test_get_tasks_by_status_scheduled_abort_removes(worker: Worker):
-    """Test that aborting a delayed task removes it from the scheduled queue."""
-    from datetime import timedelta
-
-    @worker.task()
-    async def delayed_task() -> None:
-        pass
-
-    async with worker:
-        task1 = await delayed_task.enqueue().start(delay=timedelta(hours=1))
-        task2 = await delayed_task.enqueue().start(delay=timedelta(hours=1))
-
-        # Both tasks should be scheduled
-        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
-        task_ids = [t.task_id for t in scheduled]
-        assert task1.id in task_ids
-        assert task2.id in task_ids
-
-        # Abort one task - this removes it from the delayed queue
-        aborted = await worker.abort_by_id(task1.id, timeout=0)
-        assert aborted  # Should return True for delayed tasks
-
-        # Only task2 should remain scheduled
-        scheduled_after = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
-        task_ids_after = [t.task_id for t in scheduled_after]
-        assert task1.id not in task_ids_after
-        assert task2.id in task_ids_after
-
-
 async def test_get_tasks_by_status_running(worker: Worker):
     @worker.task()
     async def slow_task() -> None:

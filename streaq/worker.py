@@ -1563,7 +1563,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         status: Literal[TaskStatus.SCHEDULED, TaskStatus.QUEUED, TaskStatus.RUNNING],
         priority: str | None = None,
         limit: int = 100,
-        filter_aborted: bool = True,
     ) -> list[TaskInfo]: ...
 
     @overload
@@ -1572,7 +1571,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         status: Literal[TaskStatus.DONE] = TaskStatus.DONE,
         priority: str | None = None,
         limit: int = 100,
-        filter_aborted: bool = True,
     ) -> list[TaskResult[Any]]: ...
 
     async def get_tasks_by_status(
@@ -1580,7 +1578,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         status: TaskStatus = TaskStatus.DONE,
         priority: str | None = None,
         limit: int = 100,
-        filter_aborted: bool = True,
     ) -> list[TaskInfo] | list[TaskResult[Any]]:
         """
         Get tasks by their status.
@@ -1588,14 +1585,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param status: the status to filter by (SCHEDULED, QUEUED, RUNNING, DONE)
         :param priority: filter by priority (only for SCHEDULED and QUEUED)
         :param limit: maximum number of tasks to return
-        :param filter_aborted: exclude aborted tasks (only for SCHEDULED/QUEUED)
 
         :return: list of tasks matching the status
         """
         if status == TaskStatus.SCHEDULED:
-            return await self._get_scheduled_tasks(priority, limit, filter_aborted)
+            return await self._get_scheduled_tasks(priority, limit)
         elif status == TaskStatus.QUEUED:
-            return await self._get_queued_tasks(priority, limit, filter_aborted)
+            return await self._get_queued_tasks(priority, limit)
         elif status == TaskStatus.RUNNING:
             return await self._get_running_tasks(limit)
         elif status == TaskStatus.DONE:
@@ -1603,33 +1599,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         else:
             return []
 
-    async def _get_aborted_ids(self) -> set[str]:
-        """
-        Get all task IDs that are marked for abortion.
-
-        :return: set of task IDs marked for abortion
-        """
-        return await self.redis.smembers(self._abort_key)
-
     async def _get_scheduled_tasks(
         self,
         priority: str | None = None,
         limit: int = 100,
-        filter_aborted: bool = True,
     ) -> list[TaskInfo]:
         """
         Get tasks in the delayed queue (scheduled for future execution).
 
         :param priority: filter by priority queue, or None for all priorities
         :param limit: maximum number of tasks to return
-        :param filter_aborted: whether to exclude tasks marked for abortion
 
         :return: list of scheduled tasks
         """
         priorities = [priority] if priority else self.priorities
-        aborted_ids: set[str] = set()
-        if filter_aborted:
-            aborted_ids = await self._get_aborted_ids()
 
         task_ids_with_scores: list[tuple[str, float]] = []
         async with self.redis.pipeline(transaction=False) as pipe:
@@ -1644,20 +1627,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_ids_with_scores.sort(key=lambda x: x[1])
         task_ids_with_scores = task_ids_with_scores[:limit]
 
-        # Filter aborted and build (task_id, score) list
-        tasks: list[TaskInfo] = []
-        filtered_tasks = [
-            (tid, score)
-            for tid, score in task_ids_with_scores
-            if tid not in aborted_ids
-        ]
-        if not filtered_tasks:
-            return tasks
+        if not task_ids_with_scores:
+            return []
 
-        task_keys = [self.prefix + REDIS_TASK + tid for tid, _ in filtered_tasks]
+        task_keys = [self.prefix + REDIS_TASK + tid for tid, _ in task_ids_with_scores]
         serialized = await self.redis.mget(task_keys)  # type: ignore
 
-        for (task_id, score), raw in zip(filtered_tasks, serialized):
+        tasks: list[TaskInfo] = []
+        for (task_id, score), raw in zip(task_ids_with_scores, serialized):
             if not raw:  # pragma: no cover
                 continue
             data = self.deserialize(raw)
@@ -1679,21 +1656,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self,
         priority: str | None = None,
         limit: int = 100,
-        filter_aborted: bool = True,
     ) -> list[TaskInfo]:
         """
         Get tasks in the stream queue (waiting to be picked up by workers).
 
         :param priority: filter by priority queue, or None for all priorities
         :param limit: maximum number of tasks to return
-        :param filter_aborted: whether to exclude tasks marked for abortion
 
         :return: list of queued tasks
         """
         priorities = [priority] if priority else self.priorities
-        aborted_ids: set[str] = set()
-        if filter_aborted:
-            aborted_ids = await self._get_aborted_ids()
 
         # Get running task IDs to exclude them
         running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
@@ -1710,7 +1682,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     task_id = entry.field_values.get("task_id")
                     if not task_id:  # pragma: no cover
                         continue
-                    if task_id not in aborted_ids and task_id not in running_ids:
+                    if task_id not in running_ids:
                         task_ids.append(str(task_id))
 
         task_ids = task_ids[:limit]
