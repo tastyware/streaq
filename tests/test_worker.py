@@ -554,3 +554,38 @@ async def test_get_tasks_by_status_done(worker: Worker):
         assert result is not None
         assert result.success
         assert result.result == 10
+
+
+async def test_get_tasks_by_status_not_found(worker: Worker):
+    """Test that NOT_FOUND status returns empty list."""
+    async with worker:
+        result = await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)
+        assert result == []
+
+
+async def test_get_tasks_by_status_empty_scheduled(worker: Worker):
+    """Test empty scheduled tasks list."""
+    async with worker:
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
+        assert scheduled == []
+
+
+async def test_get_tasks_by_status_empty_queued(worker: Worker):
+    """Test empty queued tasks list."""
+    async with worker:
+        queued = await worker.get_tasks_by_status(TaskStatus.QUEUED)
+        assert queued == []
+
+
+async def test_get_tasks_by_status_empty_running(worker: Worker):
+    """Test empty running tasks list."""
+    async with worker:
+        running = await worker.get_tasks_by_status(TaskStatus.RUNNING)
+        assert running == []
+
+
+async def test_get_tasks_by_status_empty_done(worker: Worker):
+    """Test empty completed tasks list."""
+    async with worker:
+        completed = await worker.get_tasks_by_status(TaskStatus.DONE)
+        assert completed == []

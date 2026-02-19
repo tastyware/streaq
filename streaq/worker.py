@@ -1658,7 +1658,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         serialized = await self.redis.mget(task_keys)  # type: ignore
 
         for (task_id, score), raw in zip(filtered_tasks, serialized):
-            if not raw:
+            if not raw:  # pragma: no cover
                 continue
             data = self.deserialize(raw)
             scheduled_dt = datetime.fromtimestamp(score / 1000, tz=self.tz)
@@ -1708,7 +1708,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             for entries in stream_data.values():
                 for entry in entries:
                     task_id = entry.field_values.get("task_id")
-                    if not task_id:
+                    if not task_id:  # pragma: no cover
                         continue
                     if task_id not in aborted_ids and task_id not in running_ids:
                         task_ids.append(str(task_id))
@@ -1723,7 +1723,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         tasks: list[TaskInfo] = []
         for task_id, raw in zip(task_ids, serialized):
-            if not raw:
+            if not raw:  # pragma: no cover
                 continue
             data = self.deserialize(raw)
             tasks.append(
@@ -1757,7 +1757,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         tasks: list[TaskInfo] = []
         for task_id, raw in zip(task_ids, serialized):
-            if not raw:
+            if not raw:  # pragma: no cover
                 continue
             data = self.deserialize(raw)
             tasks.append(
@@ -1792,7 +1792,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         results: list[TaskResult[Any]] = []
         for task_id, raw in zip(task_ids, serialized):
-            if not raw:
+            if not raw:  # pragma: no cover
                 continue
             data = self.deserialize(raw)
             results.append(

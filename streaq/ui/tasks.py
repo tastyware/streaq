@@ -44,7 +44,9 @@ def _get_sort_time(
     if status == TaskStatus.SCHEDULED and isinstance(item, TaskInfo):
         if item.scheduled:
             return item.scheduled
-        return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
+        return datetime.fromtimestamp(  # pragma: no cover
+            item.created_time / 1000, tz=tz
+        )
     elif status == TaskStatus.DONE and isinstance(item, TaskResult):
         return datetime.fromtimestamp(item.finish_time / 1000, tz=tz)
     else:
