@@ -48,14 +48,14 @@ class TaskStatus(str, Enum):
 @dataclass(frozen=True)
 class TaskInfo:
     """
-    Dataclass containing information about a task (queued, running, or scheduled).
+    Dataclass containing information about an unfinished task (running or enqueued).
     """
 
+    task_id: str
     fn_name: str
     created_time: int
-    task_id: str = ""
     args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = field(default_factory=lambda: {})
+    kwargs: dict[str, Any] = field(default_factory=lambda: dict())
     tries: int = 0
     scheduled: datetime | None = None
     dependencies: set[str] = field(default_factory=lambda: set())
@@ -70,6 +70,7 @@ class TaskResult(Generic[R]):
     like run time and whether execution terminated successfully.
     """
 
+    task_id: str
     fn_name: str
     created_time: int
     enqueue_time: int
@@ -79,7 +80,6 @@ class TaskResult(Generic[R]):
     tries: int
     worker_id: str
     _result: R | BaseException
-    task_id: str = ""
 
     @property
     def result(self) -> R:

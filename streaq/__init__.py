@@ -8,7 +8,7 @@ logger.addHandler(logging.NullHandler())
 
 # ruff: noqa: E402
 
-from .task import TaskInfo, TaskResult, TaskStatus
+from .task import TaskStatus
 from .types import StreaqError, StreaqRetry, TaskContext, TaskDepends, WorkerDepends
 from .worker import Worker
 
@@ -17,8 +17,6 @@ __all__ = [
     "StreaqRetry",
     "TaskContext",
     "TaskDepends",
-    "TaskInfo",
-    "TaskResult",
     "TaskStatus",
     "Worker",
     "WorkerDepends",

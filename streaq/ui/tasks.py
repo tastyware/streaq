@@ -16,7 +16,8 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
-from streaq import TaskInfo, TaskResult, TaskStatus, Worker
+from streaq import TaskStatus, Worker
+from streaq.task import TaskInfo, TaskResult
 from streaq.ui.deps import (
     get_exception_formatter,
     get_result_formatter,
@@ -43,15 +44,10 @@ def _get_sort_time(
 ) -> datetime:
     """Extract the appropriate datetime for sorting based on status."""
     if status == TaskStatus.SCHEDULED and isinstance(item, TaskInfo):
-        if item.scheduled:
-            return item.scheduled
-        return datetime.fromtimestamp(  # pragma: no cover
-            item.created_time / 1000, tz=tz
-        )
+        return item.scheduled  # type: ignore
     elif status == TaskStatus.DONE and isinstance(item, TaskResult):
         return datetime.fromtimestamp(item.finish_time / 1000, tz=tz)
-    else:
-        return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
+    return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
 
 
 class TaskData(BaseModel):
@@ -81,7 +77,6 @@ async def _get_context(
         TaskStatus.RUNNING: running,
         TaskStatus.DONE: completed,
     }
-
     tasks: list[TaskData] = []
     for status, items in by_status.items():
         color, text_color = _STATUS_COLORS[status]
@@ -99,7 +94,6 @@ async def _get_context(
                     url=task_url.format(task_id=item.task_id),
                 )
             )
-
     tasks.sort(key=lambda td: td.sort_time, reverse=descending)
     return {
         "running": len(running),
