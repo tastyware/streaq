@@ -1538,6 +1538,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         score = next((r for r in res if r), None)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
         return TaskInfo(
+            task_id=task_id,
             fn_name=data["f"],
             created_time=data["t"],
             tries=int(try_count or 0),
