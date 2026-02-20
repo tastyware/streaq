@@ -357,7 +357,7 @@ async def test_include_worker(redis_url: str, worker: Worker):
     else:
         worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
 
-    @worker2.task()
+    @worker2.task
     async def foobar() -> None:
         await sleep(0)
 

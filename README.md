@@ -49,7 +49,7 @@ You can then register async tasks with the worker like this:
 ```python
 import trio
 
-@worker.task()
+@worker.task
 async def sleeper(time: int) -> int:
     await trio.sleep(time)
     return time

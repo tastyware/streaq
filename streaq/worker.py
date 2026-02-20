@@ -445,8 +445,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the cron job instead of the function name
-        :param silent:
-            whether to silence task logs and success/failure tracking; defaults to False
+        :param silent: whether to silence task logs; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
@@ -538,8 +537,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the task instead of the function name
-        :param silent:
-            whether to silence task logs and success/failure tracking; defaults to False
+        :param silent: whether to silence task logs; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously

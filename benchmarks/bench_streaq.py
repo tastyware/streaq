@@ -9,7 +9,7 @@ worker = Worker(concurrency=32, anyio_kwargs={"use_uvloop": True})
 N_TASKS = 20_000
 
 
-@worker.task()
+@worker.task
 async def sleeper(time: int) -> None:
     if time:
         await anyio.sleep(time)

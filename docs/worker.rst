@@ -46,7 +46,7 @@ Now, tasks created for the worker will have access to the dependencies like so:
 
    worker = Worker(lifespan=lifespan)
 
-   @worker.task()
+   @worker.task
    async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
       res = await ctx.http_client.get(url)
       return len(res.text)
@@ -147,7 +147,7 @@ Sometimes in large apps, registering all tasks to a single, global ``Worker`` in
 
    other = Worker()
 
-   @other.task()
+   @other.task
    async def foobar() -> bool: ...
 
 .. code-block:: python
@@ -161,7 +161,7 @@ Sometimes in large apps, registering all tasks to a single, global ``Worker`` in
    worker = Worker()
    worker.include(other)
 
-   @worker.task()
+   @worker.task
    async def barfoo() -> bool: ...
 
    async def main():
@@ -181,7 +181,7 @@ This allows for grouping tasks in whatever way you choose. We now have a task, `
    class WorkerContext(NamedTuple):
        db: AsyncSession
 
-   @other.task()
+   @other.task
    async def access_database(ctx: WorkerContext = WorkerDepends()) -> None:
        ...
        await ctx.db.commit()
@@ -201,7 +201,7 @@ First, you can simply use type stubs to re-define the task signatures in the bac
    # and queue name as the worker defined elsewhere
    worker = Worker(redis_url="redis://localhost:6379")
 
-   @worker.task()
+   @worker.task
    async def fetch(url: str) -> int: ...
 
 Now, tasks can be enqueued in the same way as before:
