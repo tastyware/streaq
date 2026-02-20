@@ -1733,18 +1733,36 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         Get currently running tasks.
 
+        Uses a Lua script for atomicity in non-cluster mode.
+        Falls back to KEYS + MGET in cluster mode (cross-slot limitation).
+
         :param limit: maximum number of tasks to return
 
         :return: list of running tasks
         """
-        running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
-        task_ids = [str(k).split(":")[-1] for k in running_keys][:limit]
+        if self._cluster:
+            # Cluster mode: use separate commands (Lua can't handle cross-slot keys)
+            running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
+            task_ids = [str(k).split(":")[-1] for k in running_keys][:limit]
 
-        if not task_ids:
-            return []
+            if not task_ids:
+                return []
 
-        task_keys = [self.prefix + REDIS_TASK + tid for tid in task_ids]
-        serialized = await self.redis.mget(task_keys)  # type: ignore
+            task_keys = [self.prefix + REDIS_TASK + tid for tid in task_ids]
+            serialized = await self.redis.mget(task_keys)  # type: ignore
+        else:
+            # Non-cluster: use atomic Lua script
+            result = await self.lib.get_running_tasks(
+                self.prefix + REDIS_RUNNING + "*",
+                self.prefix + REDIS_TASK,
+                limit,
+            )
+            if not result:
+                return []
+
+            # Result is alternating [task_id, value, task_id, value, ...]
+            task_ids = [str(result[i]) for i in range(0, len(result), 2)]
+            serialized = [result[i] for i in range(1, len(result), 2)]
 
         tasks: list[TaskInfo] = []
         for task_id, raw in zip(task_ids, serialized):

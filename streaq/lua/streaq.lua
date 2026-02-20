@@ -221,3 +221,44 @@ end)
 redis.register_function('cluster_publish', function(keys, argv)
   return redis.call('publish', keys[1], argv[1])
 end)
+
+redis.register_function('get_running_tasks', function(keys, argv)
+  local running_pattern = argv[1]
+  local task_prefix = argv[2]
+  local limit = tonumber(argv[3]) or 100
+
+  local running_keys = redis.call('keys', running_pattern)
+
+  if #running_keys == 0 then
+    return {}
+  end
+
+  -- Apply limit
+  if #running_keys > limit then
+    local limited = {}
+    for i = 1, limit do
+      limited[i] = running_keys[i]
+    end
+    running_keys = limited
+  end
+
+  -- Build task keys from running keys (extract task_id and prepend task_prefix)
+  local task_keys = {}
+  for i = 1, #running_keys do
+    -- Extract task_id from running key (last segment after ":")
+    local task_id = string.match(running_keys[i], '([^:]+)$')
+    task_keys[i] = task_prefix .. task_id
+  end
+
+  local values = redis.call('mget', unpack(task_keys))
+
+  -- Return as alternating task_id/value list
+  local result = {}
+  for i = 1, #running_keys do
+    local task_id = string.match(running_keys[i], '([^:]+)$')
+    result[#result + 1] = task_id
+    result[#result + 1] = values[i]
+  end
+
+  return result
+end)
