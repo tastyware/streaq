@@ -44,7 +44,7 @@ async def deps() -> AsyncIterator[WorkerContext]:
 async def test_lifespan(redis_url: str):
     worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
-    @worker.task()
+    @worker.task
     async def foobar(ctx: WorkerContext = WorkerDepends()) -> str:
         return ctx.name
 
@@ -81,7 +81,7 @@ def raise_error(*arg, **kwargs) -> Any:
 async def test_bad_serializer(redis_url: str):
     worker = Worker(redis_url=redis_url, serializer=raise_error, queue_name=uuid4().hex)
 
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         print("This can't print!")
 
@@ -95,7 +95,7 @@ async def test_bad_deserializer(redis_url: str):
         redis_url=redis_url, deserializer=raise_error, queue_name=uuid4().hex
     )
 
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         print("This can't print!")
 
@@ -110,7 +110,7 @@ async def test_custom_serializer(worker: Worker):
     worker.serializer = json.dumps
     worker.deserializer = json.loads
 
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -120,7 +120,7 @@ async def test_custom_serializer(worker: Worker):
 
 
 async def test_uninitialized_worker(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(ctx: Any = WorkerDepends()) -> None:
         print(ctx.nonexistent)
 
@@ -133,7 +133,7 @@ async def test_uninitialized_worker(worker: Worker):
 
 
 async def test_active_tasks(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foo() -> None:
         await sleep(10)
 
@@ -222,7 +222,7 @@ async def test_signed_data(redis_url: str):
         signing_secret=secrets.token_urlsafe(32),
     )
 
-    @worker.task()
+    @worker.task
     async def foo() -> str:
         return "bar"
 
@@ -240,7 +240,7 @@ async def test_sign_non_binary_data(redis_url: str):
         serializer=json.dumps,
     )
 
-    @worker.task()
+    @worker.task
     async def foo() -> str:
         return "bar"
 
@@ -257,7 +257,7 @@ async def test_corrupt_signed_data(redis_url: str):
         signing_secret=secrets.token_urlsafe(32),
     )
 
-    @worker.task()
+    @worker.task
     async def foo() -> str:
         return "bar"
 
@@ -273,7 +273,7 @@ async def test_corrupt_signed_data(redis_url: str):
 
 
 async def test_enqueue_many(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(val: int) -> int:
         await sleep(1)
         return val
@@ -397,7 +397,7 @@ async def test_include_duplicate(redis_url: str, worker: Worker):
 
 
 async def test_grace_period(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(3)
 
@@ -412,7 +412,7 @@ async def test_grace_period(worker: Worker):
 
 
 async def test_grace_period_no_new_tasks(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(3)
 

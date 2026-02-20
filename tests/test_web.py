@@ -25,11 +25,11 @@ async def test_get_pages(worker: Worker):
     worker.concurrency = 1
     worker.prefetch = 1
 
-    @worker.task()
+    @worker.task
     async def sleeper(time: int) -> None:
         await sleep(time)
 
-    @worker.task()
+    @worker.task
     async def fails() -> None:
         raise Exception("Oh no!")
 

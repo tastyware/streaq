@@ -95,6 +95,7 @@ from streaq.types import (
     SyncCron,
     SyncTask,
     TaskContext,
+    TaskDecorator,
     is_async_task,
     task_context,
     worker_context,
@@ -452,14 +453,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
 
         @overload
-        def wrapped(fn: AsyncCron[R]) -> AsyncRegisteredTask[[], R]: ...  # type: ignore
+        def wrapped(fn: AsyncCron[R]) -> AsyncRegisteredTask[[], R]: ...  # pyright: ignore[reportOverlappingOverload]
 
         @overload
         def wrapped(fn: SyncCron[R]) -> SyncRegisteredTask[[], R]: ...
 
         def wrapped(
             fn: AsyncCron[R] | SyncCron[R],
-        ) -> AsyncRegisteredTask[[], R] | SyncRegisteredTask[[], R]:
+        ) -> Any:
             if unique and timeout is None:
                 raise StreaqError("Unique tasks must have a timeout set!")
             if (fn_name := name or fn.__qualname__) in self.registry:
@@ -498,6 +499,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         return wrapped
 
+    @overload
+    def task(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # pyright: ignore[reportOverlappingOverload]
+
+    @overload
+    def task(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...
+
+    @overload
     def task(
         self,
         *,
@@ -508,7 +516,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
         unique: bool = False,
-    ):
+    ) -> TaskDecorator: ...
+
+    def task(
+        self,
+        fn: AsyncTask[P, R] | SyncTask[P, R] | None = None,
+        *,
+        expire: timedelta | int | None = None,
+        max_tries: int | None = 3,
+        name: str | None = None,
+        silent: bool = False,
+        timeout: timedelta | int | None = None,
+        ttl: timedelta | int | None = timedelta(minutes=5),
+        unique: bool = False,
+    ) -> Any:
         """
         Registers a task with the worker which can later be enqueued by the user.
 
@@ -523,12 +544,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param ttl: time to store results in Redis, if None will never expire
         :param unique: whether multiple instances of the task can exist simultaneously
         """
-
-        @overload
-        def wrapped(fn: AsyncTask[P, R]) -> AsyncRegisteredTask[P, R]: ...  # type: ignore
-
-        @overload
-        def wrapped(fn: SyncTask[P, R]) -> SyncRegisteredTask[P, R]: ...
 
         def wrapped(
             fn: AsyncTask[P, R] | SyncTask[P, R],
@@ -569,6 +584,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self.registry[fn_name] = task
             return task
 
+        if fn is not None:
+            return wrapped(fn)
         return wrapped
 
     def middleware(self, fn: Middleware) -> Middleware:

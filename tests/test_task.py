@@ -23,7 +23,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_result_timeout(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(5)
 
@@ -54,7 +54,7 @@ async def test_task_timeout(worker: Worker):
 
 
 async def test_task_status(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(2)
 
@@ -97,7 +97,7 @@ async def test_task_cron(worker: Worker):
 
 
 async def test_task_info(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -114,7 +114,7 @@ async def test_task_info(worker: Worker):
 
 
 async def test_task_retry(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries < 3:
             raise StreaqRetry("Retrying!")
@@ -128,7 +128,7 @@ async def test_task_retry(worker: Worker):
 
 
 async def test_task_retry_with_delay(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries == 1:
             raise StreaqRetry("Retrying!", delay=timedelta(seconds=3))
@@ -143,7 +143,7 @@ async def test_task_retry_with_delay(worker: Worker):
 
 
 async def test_task_retry_with_schedule(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries == 1:
             raise StreaqRetry(
@@ -160,7 +160,7 @@ async def test_task_retry_with_schedule(worker: Worker):
 
 
 async def test_task_failure(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         raise Exception("That wasn't supposed to happen!")
 
@@ -174,7 +174,7 @@ async def test_task_failure(worker: Worker):
 
 
 async def test_task_retry_no_delay(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(ctx: TaskContext = TaskDepends()) -> bool:
         if ctx.tries == 1:
             raise StreaqRetry("Retrying!", delay=0)
@@ -189,7 +189,7 @@ async def test_task_retry_no_delay(worker: Worker):
 
 
 async def test_task_max_retries(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         raise StreaqRetry("Retrying!", delay=0)
 
@@ -202,7 +202,7 @@ async def test_task_max_retries(worker: Worker):
 
 
 async def test_task_failed_abort(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> bool:
         return True
 
@@ -216,7 +216,7 @@ async def test_task_failed_abort(worker: Worker):
 
 
 async def test_task_nonexistent_or_finished_dependency(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -227,7 +227,7 @@ async def test_task_nonexistent_or_finished_dependency(worker: Worker):
 
 
 async def test_task_dependency(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(1)
 
@@ -243,7 +243,7 @@ async def test_task_dependency(worker: Worker):
 
 
 async def test_task_dependency_multiple(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(1)
 
@@ -263,11 +263,11 @@ async def test_task_dependency_multiple(worker: Worker):
 
 
 async def test_task_dependency_failed(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         raise Exception("Oh no!")
 
-    @worker.task()
+    @worker.task
     async def do_nothing() -> None:
         pass
 
@@ -280,7 +280,7 @@ async def test_task_dependency_failed(worker: Worker):
 
 
 async def test_task_dependency_aborted(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -295,7 +295,7 @@ async def test_task_dependency_aborted(worker: Worker):
 
 
 async def test_sync_task(worker: Worker):
-    @worker.task()
+    @worker.task
     def foobar() -> None:
         time.sleep(2)
 
@@ -308,7 +308,7 @@ async def test_sync_task(worker: Worker):
 
 
 async def test_unsafe_enqueue(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(ret: int) -> int:
         return ret
 
@@ -320,11 +320,11 @@ async def test_unsafe_enqueue(worker: Worker):
 
 
 async def test_chained_failed_dependencies(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         raise Exception("Oh no!")
 
-    @worker.task()
+    @worker.task
     async def child() -> None:
         pass
 
@@ -348,7 +348,7 @@ async def test_task_priorities(redis_url: str):
         priorities=["low", "high"],
     )
 
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         await sleep(1)
 
@@ -365,7 +365,7 @@ async def test_task_priorities(redis_url: str):
 
 
 async def test_scheduled_task(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -378,7 +378,7 @@ async def test_scheduled_task(worker: Worker):
 
 
 async def test_bad_start_params(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -448,7 +448,7 @@ async def test_cron_multiple_runs(worker: Worker):
 
 
 async def test_middleware(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> int:
         return 2
 
@@ -468,11 +468,11 @@ async def test_middleware(worker: Worker):
 
 
 async def test_task_pipeline(worker: Worker):
-    @worker.task()
+    @worker.task
     async def double(val: int) -> int:
         return val * 2
 
-    @worker.task()
+    @worker.task
     async def is_even(val: int) -> bool:
         return val % 2 == 0
 
@@ -483,7 +483,7 @@ async def test_task_pipeline(worker: Worker):
 
 
 async def test_task_pipeline_shorthand(worker: Worker):
-    @worker.task()
+    @worker.task
     async def double(val: int) -> int:
         return val * 2
 
@@ -494,11 +494,11 @@ async def test_task_pipeline_shorthand(worker: Worker):
 
 
 async def test_task_pipeline_multiple(worker: Worker):
-    @worker.task()
+    @worker.task
     async def double(val: int) -> int:
         return val * 2
 
-    @worker.task()
+    @worker.task
     async def is_even(val: int) -> bool:
         return val % 2 == 0
 
@@ -521,7 +521,7 @@ async def test_task_with_custom_name(worker: Worker):
     with pytest.raises(StreaqError):
         worker.task(name="bar")(foobar)
 
-    @worker.task()
+    @worker.task
     async def bar():
         return 10
 
@@ -568,7 +568,7 @@ async def test_abort(worker: Worker, ttl: int, wait: int):
 
 
 async def test_abort_delayed(worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         pass
 
@@ -593,7 +593,7 @@ async def test_task_expired(worker: Worker):
 
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
-    @worker.task()
+    @worker.task
     async def foobar(val: int) -> int: ...
 
     import asyncio
@@ -605,7 +605,7 @@ async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
 async def test_dynamic_cron(worker: Worker):
     vals: list[int] = []
 
-    @worker.task()
+    @worker.task
     async def foobar(val: int) -> None:
         vals.append(val)
 
@@ -627,7 +627,7 @@ async def test_bad_depends_task():
 
 
 async def test_sync_direct(worker: Worker):
-    @worker.task()
+    @worker.task
     def sync_sleep() -> bool:
         time.sleep(1)
         return True

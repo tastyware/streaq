@@ -5,15 +5,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from inspect import iscoroutinefunction
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
     Coroutine,
     Optional,
     ParamSpec,
+    Protocol,
     TypeAlias,
     TypeVar,
     cast,
+    overload,
 )
 
 from coredis.commands.function import Library, wraps
@@ -23,6 +26,9 @@ from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT, RedisValueT, ResponseType
 from typing_extensions import TypeIs, TypeVarTuple
+
+if TYPE_CHECKING:
+    from streaq.task import AsyncRegisteredTask, SyncRegisteredTask  # type: ignore
 
 C = TypeVar("C", bound=Optional[object])
 P = ParamSpec("P")
@@ -148,6 +154,18 @@ def is_async_task(
     fn: Callable[P, Awaitable[R]] | Callable[P, R],
 ) -> TypeIs[Callable[P, Awaitable[R]]]:
     return iscoroutinefunction(fn)
+
+
+class TaskDecorator(Protocol):
+    @overload
+    def __call__(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # pyright: ignore[reportOverlappingOverload]
+
+    @overload
+    def __call__(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...
+
+    def __call__(
+        self, fn: AsyncTask[P, R] | SyncTask[P, R], /
+    ) -> AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]: ...
 
 
 class ReadStreamsCallback(MultiStreamRangeCallback[str]):
