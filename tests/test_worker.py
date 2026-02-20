@@ -5,9 +5,10 @@ import secrets
 import signal
 import subprocess
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any
 from uuid import uuid4
 
 import pytest

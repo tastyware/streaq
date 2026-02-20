@@ -1,16 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Concatenate,
-    Generator,
     Generic,
-    Iterable,
     overload,
 )
 from uuid import uuid4

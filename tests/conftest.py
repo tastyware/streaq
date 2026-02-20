@@ -1,7 +1,7 @@
 import os
 import signal
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest

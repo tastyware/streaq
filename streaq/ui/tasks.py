@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from datetime import datetime
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any
 
 from fastapi import (
     APIRouter,

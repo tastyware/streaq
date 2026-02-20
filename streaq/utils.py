@@ -1,9 +1,10 @@
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, tzinfo
 from functools import partial, wraps
 from importlib import import_module
 from logging import Formatter
-from typing import Any, Awaitable, Callable, TypeVar, overload
+from typing import Any, TypeVar, overload
 
 from anyio import CapacityLimiter, create_task_group
 from anyio.to_thread import run_sync

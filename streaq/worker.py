@@ -4,6 +4,7 @@ import hmac
 import pickle
 import signal
 from collections import defaultdict
+from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone, tzinfo
 from hashlib import sha256
@@ -11,10 +12,7 @@ from inspect import iscoroutinefunction
 from textwrap import shorten
 from typing import (
     Any,
-    AsyncGenerator,
-    Callable,
     Generic,
-    Iterable,
     Literal,
     cast,
     overload,

@@ -101,7 +101,7 @@ dev = [
 testpaths = "tests"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "UP"]
 
 [tool.pyright]
 strict = ["streaq/"]
