@@ -1661,6 +1661,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         Get tasks in the stream queue (waiting to be picked up by workers).
 
+        Uses XINFO STREAM FULL to atomically get stream entries and pending
+        entries list. Queued tasks are those in the stream but not yet claimed
+        by any consumer (not in PEL).
+
         :param priority: filter by priority queue, or None for all priorities
         :param limit: maximum number of tasks to return
 
@@ -1668,23 +1672,37 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         priorities = [priority] if priority else self.priorities
 
-        # Get running task IDs to exclude them
-        running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
-        running_ids = {str(k).split(":")[-1] for k in running_keys}
-
-        # Read from streams
-        streams = {self.stream_key + p: "0-0" for p in priorities}
-        stream_data = await self.redis.xread(streams, count=limit)
-
+        # Collect queued task IDs from all priority streams
         task_ids: list[str] = []
-        if stream_data:
-            for entries in stream_data.values():
-                for entry in entries:
+        for p in priorities:
+            stream_key = self.stream_key + p
+            try:
+                info = await self.redis.xinfo_stream(stream_key, full=True, count=limit)
+            except Exception:  # pragma: no cover
+                # Stream may not exist yet
+                continue
+
+            entries = info.get("entries") or ()
+            groups = info.get("groups") or []
+
+            # Collect all pending entry IDs (claimed by consumers)
+            pending_ids: set[str] = set()
+            for group in groups:
+                pending = group.get("pending") or []
+                for pending_entry in pending:
+                    # pending_entry is [entry_id, consumer, idle_time, delivery_count]
+                    if pending_entry:
+                        pending_ids.add(str(pending_entry[0]))
+
+            # Queued = entries not in pending (not yet claimed)
+            for entry in entries:
+                if entry.identifier not in pending_ids:
                     task_id = entry.field_values.get("task_id")
-                    if not task_id:  # pragma: no cover
-                        continue
-                    if task_id not in running_ids:
+                    if task_id:
                         task_ids.append(str(task_id))
+
+            if len(task_ids) >= limit:  # pragma: no cover
+                break
 
         task_ids = task_ids[:limit]
         if not task_ids:
