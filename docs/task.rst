@@ -33,7 +33,7 @@ We can now register async functions with the worker:
 
    from anyio import sleep  # you can just as well use asyncio or trio
 
-   @worker.task()
+   @worker.task
    async def sleeper(time: int) -> int:
        await sleep(time)
        return time
@@ -43,10 +43,17 @@ The ``task`` decorator has several optional arguments that can be used to custom
 - ``expire``: time after which to dequeue the task, if ``None`` will never be dequeued
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to ``3``
 - ``name``: use a custom name for the task instead of the function name
-- ``silent``: whether to silence task startup/shutdown logs and task success/failure tracking; defaults to False
+- ``silent``: whether to silence task logs; defaults to False
 - ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
 - ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
+
+For example:
+
+.. code-block:: python
+
+   @worker.task(timeout=3, max_tries=1)
+   async def foo(): ...
 
 Enqueuing tasks
 ---------------
@@ -103,11 +110,11 @@ Here's an example that demonstrates how priorities work. Note that the low prior
 
    worker = Worker(concurrency=1)  # max 1 task running at a time for demo
 
-   @worker.task()
+   @worker.task
    async def low() -> None:
        print("Low priority task")
 
-   @worker.task()
+   @worker.task
    async def high() -> None:
        print("High priority task")
 
@@ -200,7 +207,7 @@ As we've already seen, tasks can access the worker context via ``WorkerDepends``
 
    from streaq import TaskContext, TaskDepends
 
-   @worker.task()
+   @worker.task
    async def get_id(ctx: TaskContext = TaskDepends()) -> str:
        return ctx.task_id
 
@@ -215,7 +222,7 @@ streaQ provides a special exception that you can raise manually inside of your t
 
    from streaq import StreaqRetry
 
-   @worker.task()
+   @worker.task
    async def try_thrice(ctx: TaskContext = TaskDepends()) -> bool:
        if ctx.tries < 3:
            raise StreaqRetry("Retrying!")
@@ -279,7 +286,7 @@ Note that if the task waiting for its completion is cancelled, the thread will s
 
    import time
 
-   @worker.task()
+   @worker.task
    def sync_sleep(seconds: int) -> int:
        time.sleep(seconds)
        return seconds
@@ -307,11 +314,11 @@ And the dependency failing will cause dependent tasks to fail as well:
 
 .. code-block:: python
 
-    @worker.task()
+    @worker.task
     async def foobar() -> None:
         raise Exception("Oh no!")
 
-    @worker.task()
+    @worker.task
     async def do_nothing() -> None:
         pass
 
@@ -332,11 +339,11 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
        res = await ctx.http_client.get(url)
        return len(res.text)
 
-   @worker.task()
+   @worker.task
    async def double(val: int) -> int:
        return val * 2
 
-   @worker.task()
+   @worker.task
    async def is_even(val: int) -> bool:
        return val % 2 == 0
 
@@ -355,7 +362,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
    from typing import Any
    from streaq.utils import gather, to_tuple
 
-   @worker.task()
+   @worker.task
    async def map(data: list[Any], *, to: str) -> list[Any]:
        task = worker.registry[to]
        coros = [task.enqueue(*to_tuple(d)).start() for d in data]
@@ -363,7 +370,7 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
        results = await gather(*[t.result(3) for t in tasks])
        return [r.result for r in results]
 
-   @worker.task()
+   @worker.task
    async def filter(data: list[Any], *, by: str) -> list[Any]:
        task = worker.registry[by]
        coros = [task.enqueue(*to_tuple(d)).start() for d in data]
@@ -390,11 +397,11 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 
    .. code-block:: python
 
-      @worker.task()
+      @worker.task
       async def tuplify(input: int) -> tuple[int, int]:
           return (input, input)
 
-      @worker.task()
+      @worker.task
       async def untuple(first: int, second: int, *, third: int = 0) -> int:
           return first + second + third
 

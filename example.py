@@ -5,7 +5,7 @@ from streaq import Worker
 worker = Worker(redis_url="redis://localhost:6379", anyio_backend="trio")
 
 
-@worker.task()
+@worker.task
 async def sleeper(time: int) -> int:
     await trio.sleep(time)
     return time
