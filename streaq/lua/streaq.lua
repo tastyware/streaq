@@ -222,6 +222,37 @@ redis.register_function('cluster_publish', function(keys, argv)
   return redis.call('publish', keys[1], argv[1])
 end)
 
+redis.register_function('get_keys_with_values', function(keys, argv)
+  local pattern = argv[1]
+  local limit = tonumber(argv[2]) or 100
+
+  local matched_keys = redis.call('keys', pattern)
+
+  if #matched_keys == 0 then
+    return {}
+  end
+
+  -- Apply limit
+  if #matched_keys > limit then
+    local limited = {}
+    for i = 1, limit do
+      limited[i] = matched_keys[i]
+    end
+    matched_keys = limited
+  end
+
+  local values = redis.call('mget', unpack(matched_keys))
+
+  -- Return as alternating key/value list
+  local result = {}
+  for i = 1, #matched_keys do
+    result[#result + 1] = matched_keys[i]
+    result[#result + 1] = values[i]
+  end
+
+  return result
+end)
+
 redis.register_function('get_running_tasks', function(keys, argv)
   local running_pattern = argv[1]
   local task_prefix = argv[2]

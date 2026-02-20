@@ -1785,19 +1785,35 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         Get completed tasks (both successful and failed).
 
+        Uses a Lua script for atomicity in non-cluster mode.
+        Falls back to KEYS + MGET in cluster mode (cross-slot limitation).
+
         :param limit: maximum number of tasks to return
 
         :return: list of task results
         """
-        result_keys = list(await self.redis.keys(self.results_key + "*"))[:limit]
+        if self._cluster:
+            # Cluster mode: use separate commands (Lua can't handle cross-slot keys)
+            result_keys = list(await self.redis.keys(self.results_key + "*"))[:limit]
 
-        if not result_keys:
-            return []
+            if not result_keys:
+                return []
 
-        serialized = await self.redis.mget(result_keys)  # type: ignore
+            serialized = await self.redis.mget(result_keys)  # type: ignore
+            task_ids = [str(k).split(":")[-1] for k in result_keys]
+        else:
+            # Non-cluster: use atomic Lua script
+            result = await self.lib.get_keys_with_values(
+                self.results_key + "*",
+                limit,
+            )
+            if not result:
+                return []
 
-        # Extract task_ids from keys (format: prefix:result:task_id)
-        task_ids = [str(k).split(":")[-1] for k in result_keys]
+            # Result is alternating [key, value, key, value, ...]
+            # Extract task_id from key (last segment after ":")
+            task_ids = [str(result[i]).split(":")[-1] for i in range(0, len(result), 2)]
+            serialized = [result[i] for i in range(1, len(result), 2)]
 
         results: list[TaskResult[Any]] = []
         for task_id, raw in zip(task_ids, serialized):

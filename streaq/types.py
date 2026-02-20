@@ -262,6 +262,11 @@ class Streaq(Library[str]):
     ) -> CommandRequest[int]: ...
 
     @wraps(verify_existence=False)
+    def get_keys_with_values(
+        self, pattern: str, limit: int
+    ) -> CommandRequest[list[str]]: ...
+
+    @wraps(verify_existence=False)
     def get_running_tasks(
         self, running_pattern: str, task_prefix: str, limit: int
     ) -> CommandRequest[list[str]]: ...
