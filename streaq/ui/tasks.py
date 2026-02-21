@@ -2,22 +2,12 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    Form,
-    HTTPException,
-    Request,
-    Response,
-)
-from fastapi import (
-    status as fast_status,
-)
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi import status as fast_status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from streaq import TaskStatus, Worker
-from streaq.task import TaskInfo, TaskResult
 from streaq.ui.deps import (
     get_exception_formatter,
     get_result_formatter,
@@ -35,19 +25,7 @@ _STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
     TaskStatus.RUNNING: ("warning", "dark"),
     TaskStatus.SCHEDULED: ("secondary", "light"),
     TaskStatus.QUEUED: ("info", "dark"),
-    TaskStatus.NOT_FOUND: ("danger", "light"),
 }
-
-
-def _get_sort_time(
-    item: TaskInfo | TaskResult[Any], status: TaskStatus, tz: Any
-) -> datetime:
-    """Extract the appropriate datetime for sorting based on status."""
-    if status == TaskStatus.SCHEDULED and isinstance(item, TaskInfo):
-        return item.scheduled  # type: ignore
-    elif status == TaskStatus.DONE and isinstance(item, TaskResult):
-        return datetime.fromtimestamp(item.finish_time / 1000, tz=tz)
-    return datetime.fromtimestamp(item.created_time / 1000, tz=tz)
 
 
 class TaskData(BaseModel):
@@ -62,26 +40,22 @@ class TaskData(BaseModel):
 
 
 async def _get_context(
-    worker: Worker[Any], task_url: str, descending: bool
+    worker: Worker[Any],
+    task_url: str,
+    descending: bool,
+    statuses: list[TaskStatus] | None,
 ) -> dict[str, Any]:
     # Fetch all task types - explicit calls for proper typing
-    scheduled, queued, running, completed = await gather(
-        worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=1000),
-        worker.get_tasks_by_status(TaskStatus.QUEUED, limit=1000),
-        worker.get_tasks_by_status(TaskStatus.RUNNING, limit=1000),
-        worker.get_tasks_by_status(TaskStatus.DONE, limit=1000),
-    )
-    by_status: dict[TaskStatus, list[TaskInfo] | list[TaskResult[Any]]] = {
-        TaskStatus.SCHEDULED: scheduled,
-        TaskStatus.QUEUED: queued,
-        TaskStatus.RUNNING: running,
-        TaskStatus.DONE: completed,
-    }
+    statuses = statuses or list(_STATUS_COLORS)
+    alL_tasks = await gather(*[worker.get_tasks_by_status(s) for s in statuses])
     tasks: list[TaskData] = []
-    for status, items in by_status.items():
+    counts: dict[str, int] = {s.value: 0 for s in _STATUS_COLORS}
+    for i, items in enumerate(alL_tasks):
+        status = statuses[i]
         color, text_color = _STATUS_COLORS[status]
+        counts[status.value] = len(items)
         for item in items:
-            dt = _get_sort_time(item, status, worker.tz)
+            dt = datetime.fromtimestamp(item.created_time / 1000, tz=worker.tz)
             tasks.append(
                 TaskData(
                     color=color,
@@ -96,13 +70,10 @@ async def _get_context(
             )
     tasks.sort(key=lambda td: td.sort_time, reverse=descending)
     return {
-        "running": len(running),
-        "queued": len(queued),
-        "scheduled": len(scheduled),
-        "finished": len(completed),
         "functions": list(worker.registry.keys()),
         "tasks": tasks,
         "title": worker.queue_name,
+        **counts,
     }
 
 
@@ -117,7 +88,7 @@ async def get_context(
     tasks_filter_url = request.url_for("filter_tasks").path
 
     descending = sort == "desc"
-    context = await _get_context(worker, task_url, descending)
+    context = await _get_context(worker, task_url, descending, statuses)
     context["tasks_filter_url"] = tasks_filter_url
 
     if functions:

@@ -240,6 +240,14 @@ Sometimes you'll want to abort tasks, fetch task info, etc. without having acces
        print(await worker.abort_by_id(my_task_id))
        await worker.unschedule_by_id(my_task_id)
 
+You can also fetch all tasks of a given status:
+
+.. code-block:: python
+
+   from streaq.task import TaskStatus
+
+   await worker.get_tasks_by_status(TaskStatus.RUNNING, limit=10)
+
 Worker optimization
 -------------------
 

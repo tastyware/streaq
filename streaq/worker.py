@@ -1585,6 +1585,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         limit: int = ...,
     ) -> list[TaskResult[Any]]: ...
 
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: TaskStatus,
+        *,
+        limit: int = ...,
+    ) -> list[TaskInfo] | list[TaskResult[Any]]: ...
+
     async def get_tasks_by_status(
         self,
         status: TaskStatus,
