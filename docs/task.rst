@@ -416,3 +416,27 @@ If you don't need to pass additional arguments, tasks can be pipelined using the
 
    async with worker:
        await (fetch.enqueue("https://tastyware.dev") | double | is_even)
+
+Retrieving Tasks
+----------------
+
+You may need to interact with tasks in another context than the one in which you enqueued them first. Thus you need to retrieve tasks from Redis and get their context.
+
+You can use ``get_tasks_by_status()`` function to do so.
+
+.. code-block:: python
+
+  from streaq import Worker
+  from streaq.task import TaskStatus
+
+  worker = Worker()
+
+  # Returns list[TaskInfo] for SCHEDULED, QUEUED, RUNNING
+  await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
+  await worker.get_tasks_by_status(TaskStatus.QUEUED)
+  await worker.get_tasks_by_status(TaskStatus.RUNNING)
+
+  # Returns list[TaskResult] for DONE
+  await worker.get_tasks_by_status(TaskStatus.DONE)
+
+From this point, you can retrieve the given task you expect and do whatever you want with it, from accessing its state, its result or cancelling it.
