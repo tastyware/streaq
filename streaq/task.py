@@ -1,16 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Concatenate,
-    Generator,
     Generic,
-    Iterable,
     overload,
 )
 from uuid import uuid4
@@ -50,15 +48,19 @@ class TaskStatus(str, Enum):
 @dataclass(frozen=True)
 class TaskInfo:
     """
-    Dataclass containing information about a running or enqueued task.
+    Dataclass containing information about an unfinished task (running or enqueued).
     """
 
+    task_id: str
     fn_name: str
     created_time: int
-    tries: int
-    scheduled: datetime | None
-    dependencies: set[str]
-    dependents: set[str]
+    args: tuple[Any, ...] = ()
+    kwargs: dict[str, Any] = field(default_factory=lambda: dict())
+    tries: int = 0
+    scheduled: datetime | None = None
+    dependencies: set[str] = field(default_factory=lambda: set())
+    dependents: set[str] = field(default_factory=lambda: set())
+    status: TaskStatus = TaskStatus.NOT_FOUND
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class TaskResult(Generic[R]):
     like run time and whether execution terminated successfully.
     """
 
+    task_id: str
     fn_name: str
     created_time: int
     enqueue_time: int

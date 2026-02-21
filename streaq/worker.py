@@ -4,6 +4,7 @@ import hmac
 import pickle
 import signal
 from collections import defaultdict
+from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timedelta, timezone, tzinfo
 from hashlib import sha256
@@ -11,10 +12,7 @@ from inspect import iscoroutinefunction
 from textwrap import shorten
 from typing import (
     Any,
-    AsyncGenerator,
-    Callable,
     Generic,
-    Iterable,
     Literal,
     cast,
     overload,
@@ -46,6 +44,7 @@ from coredis import (
     Redis,
     RedisCluster,
 )
+from coredis.commands import CommandRequest
 from coredis.sentinel import Sentinel
 from coredis.typing import KeyT, Node
 from crontab import CronTab
@@ -1441,6 +1440,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     raw = msg["data"]
         data = self.deserialize(raw)
         return TaskResult(
+            task_id=task_id,
             fn_name=data["f"],
             created_time=data["ct"],
             enqueue_time=data["et"],
@@ -1538,8 +1538,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         score = next((r for r in res if r), None)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
         return TaskInfo(
+            task_id=task_id,
             fn_name=data["f"],
             created_time=data["t"],
+            args=data["a"],
+            kwargs=data["k"],
             tries=int(try_count or 0),
             scheduled=dt,
             dependencies=dependencies,
@@ -1556,6 +1559,234 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             pipe.hdel(self.cron_registry_key, [task_id])
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])
+
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: Literal[TaskStatus.SCHEDULED, TaskStatus.QUEUED],
+        *,
+        priority: str | None = ...,
+        limit: int = ...,
+    ) -> list[TaskInfo]: ...
+
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: Literal[TaskStatus.RUNNING],
+        *,
+        limit: int = ...,
+    ) -> list[TaskInfo]: ...
+
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: Literal[TaskStatus.DONE],
+        *,
+        limit: int = ...,
+    ) -> list[TaskResult[Any]]: ...
+
+    @overload
+    async def get_tasks_by_status(
+        self,
+        status: TaskStatus,
+        *,
+        limit: int = ...,
+    ) -> list[TaskInfo] | list[TaskResult[Any]]: ...
+
+    async def get_tasks_by_status(
+        self,
+        status: TaskStatus,
+        *,
+        priority: str | None = None,
+        limit: int = 100,
+    ) -> Any:
+        """
+        Get tasks by their status.
+
+        :param status: the task status to filter by
+        :param priority: filter by priority queue
+        :param limit: maximum number of tasks to return
+
+        :return: list of tasks with given status
+        """
+        if status == TaskStatus.NOT_FOUND:
+            raise StreaqError("Can't search for nonexistent tasks!")
+        if status == TaskStatus.SCHEDULED:
+            return await self._get_scheduled_tasks(priority, limit)
+        elif status == TaskStatus.QUEUED:
+            return await self._get_queued_tasks(priority, limit)
+        elif status == TaskStatus.RUNNING:
+            return await self._get_running_tasks(limit)
+        return await self._get_completed_tasks(limit)
+
+    async def _get_info_for_ids(
+        self, status: TaskStatus, task_ids: list[str], scores: list[float] | None = None
+    ) -> list[TaskInfo]:
+        if not task_ids:
+            return []
+        _dependents: list[CommandRequest[set[str]]] = []
+        _dependencies: list[CommandRequest[set[str]]] = []
+        _tries: list[CommandRequest[str | None]] = []
+        async with self.redis.pipeline(transaction=True) as pipe:
+            serialized = pipe.mget([self.prefix + REDIS_TASK + tid for tid in task_ids])
+            for task_id in task_ids:
+                _dependents.append(pipe.smembers(self.dependents_key + task_id))
+                _dependencies.append(pipe.smembers(self.dependencies_key + task_id))
+                _tries.append(pipe.get(self.prefix + REDIS_RETRY + task_id))
+        tasks: list[TaskInfo] = []
+        for i, (task_id, raw, dependents, dependencies, tries) in enumerate(
+            zip(
+                task_ids,
+                await serialized,
+                await gather(*_dependents),
+                await gather(*_dependencies),
+                await gather(*_tries),
+            )
+        ):
+            # it's possible the task got aborted or finished between the pipe and now
+            if raw:
+                data = self.deserialize(raw)
+                if scores:
+                    dt = datetime.fromtimestamp(scores[i] / 1000, tz=self.tz)
+                else:
+                    dt = None
+                tasks.append(
+                    TaskInfo(
+                        task_id=task_id,
+                        fn_name=data["f"],
+                        created_time=data["t"],
+                        args=data["a"],
+                        kwargs=data["k"],
+                        tries=int(tries or 0),
+                        scheduled=dt,
+                        dependencies=dependencies,
+                        dependents=dependents,
+                        status=status,
+                    )
+                )
+        return tasks
+
+    async def _get_scheduled_tasks(
+        self,
+        priority: str | None = None,
+        limit: int = 100,
+    ) -> list[TaskInfo]:
+        """
+        Get tasks in the delayed queue (scheduled for future execution).
+
+        :param priority: filter by priority queue, or None for all priorities
+        :param limit: maximum number of tasks to return
+
+        :return: list of scheduled tasks
+        """
+        priorities = [priority] if priority else self.priorities
+        task_ids_with_scores: list[tuple[str, float]] = []
+        async with self.redis.pipeline(transaction=False) as pipe:
+            delayed = [
+                pipe.zrange(self.queue_key + p, 0, limit - 1, withscores=True)
+                for p in priorities
+            ]
+        for result in await gather(*delayed):
+            task_ids_with_scores.extend(result)  # type: ignore
+
+        # Sort by score (scheduled time) and apply limit
+        task_ids_with_scores.sort(key=lambda x: x[1])
+        task_ids_with_scores = task_ids_with_scores[:limit]
+        ids = [tid for tid, _ in task_ids_with_scores]
+        scores = [score for _, score in task_ids_with_scores]
+
+        return await self._get_info_for_ids(TaskStatus.SCHEDULED, ids, scores)
+
+    async def _get_queued_tasks(
+        self,
+        priority: str | None = None,
+        limit: int = 100,
+    ) -> list[TaskInfo]:
+        """
+        Get tasks in the stream queue (waiting to be picked up by workers).
+
+        Uses XINFO STREAM FULL to atomically get stream entries and pending
+        entries list. Queued tasks are those in the stream but not yet claimed
+        by any consumer (not in PEL).
+
+        :param priority: filter by priority queue, or None for all priorities
+        :param limit: maximum number of tasks to return
+
+        :return: list of queued tasks
+        """
+        priorities = [priority] if priority else self.priorities
+        # Collect queued task IDs from all priority streams
+        async with self.redis.pipeline(transaction=True) as pipe:
+            infos = [
+                pipe.xinfo_stream(self.stream_key + p, full=True, count=limit)
+                for p in priorities
+            ]
+        task_ids: list[str] = []
+        for info in await gather(*infos):
+            entries = info["entries"] or ()
+            groups = cast(list[dict[str, Any]], info["groups"])
+
+            # Collect all pending entry IDs (claimed by consumers)
+            pending_ids: set[str] = set()
+            for group in groups:
+                for pending_entry in group["pending"]:
+                    # pending_entry is [entry_id, consumer, idle_time, delivery_count]
+                    if pending_entry:
+                        pending_ids.add(str(pending_entry[0]))
+
+            # Queued = entries not in pending (not yet claimed)
+            for entry in entries:
+                if entry.identifier not in pending_ids:
+                    task_ids.append(str(entry.field_values["task_id"]))
+
+        task_ids = task_ids[:limit]
+        return await self._get_info_for_ids(TaskStatus.QUEUED, task_ids)
+
+    async def _get_running_tasks(self, limit: int = 100) -> list[TaskInfo]:
+        """
+        Get currently running tasks.
+
+        :param limit: maximum number of tasks to return
+
+        :return: list of running tasks
+        """
+        running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
+        task_ids = [k.split(":")[-1] for k in running_keys][:limit]
+        return await self._get_info_for_ids(TaskStatus.RUNNING, task_ids)
+
+    async def _get_completed_tasks(self, limit: int = 100) -> list[TaskResult[Any]]:
+        """
+        Get completed tasks (both successful and failed).
+
+        :param limit: maximum number of tasks to return
+
+        :return: list of task results
+        """
+        result_keys = list(await self.redis.keys(self.results_key + "*"))[:limit]
+        if not result_keys:
+            return []
+
+        serialized = await self.redis.mget(result_keys)  # type: ignore
+        task_ids = [k.split(":")[-1] for k in result_keys]
+        results: list[TaskResult[Any]] = []
+        for task_id, raw in zip(task_ids, serialized):
+            if raw:
+                data = self.deserialize(raw)
+                results.append(
+                    TaskResult(
+                        task_id=task_id,
+                        fn_name=data["f"],
+                        created_time=data["ct"],
+                        enqueue_time=data["et"],
+                        success=data["s"],
+                        start_time=data["st"],
+                        finish_time=data["ft"],
+                        tries=data["t"],
+                        worker_id=data["w"],
+                        _result=data["r"],
+                    )
+                )
+        return results
 
     def serialize(self, data: Any) -> Any:
         """

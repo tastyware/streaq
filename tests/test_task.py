@@ -529,12 +529,14 @@ async def test_task_with_custom_name(worker: Worker):
         task1 = await worker.enqueue_unsafe("bar")
         task2 = await worker.enqueue_unsafe(bar.fn_name)
         task3 = await worker.enqueue_unsafe(foo.fn.__qualname__)
-        res = await task1.result(3)
-        assert res.result == 42
-        res = await task2.result(3)
-        assert res.result == 10
-        res = await task3.result(3)
-        assert not res.success
+        res1, res2, res3 = await gather(
+            task1.result(3),
+            task2.result(3),
+            task3.result(3),
+        )
+        assert res1.result == 42
+        assert res2.result == 10
+        assert not res3.success
 
 
 async def test_cron_with_custom_name(worker: Worker):

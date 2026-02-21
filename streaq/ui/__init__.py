@@ -1,7 +1,8 @@
 import os
 import sys
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, cast
+from typing import Any, cast
 
 from streaq import Worker
 from streaq.ui.deps import get_exception_formatter, get_result_formatter, get_worker

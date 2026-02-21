@@ -5,9 +5,10 @@ import secrets
 import signal
 import subprocess
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -426,3 +427,97 @@ async def test_grace_period_no_new_tasks(worker: Worker):
         task = await foobar.enqueue()
         await sleep(1)
         assert await task.status() == TaskStatus.QUEUED
+
+
+async def test_get_tasks_by_status_scheduled(worker: Worker):
+    from datetime import timedelta
+
+    @worker.task()
+    async def delayed_task(x: int) -> int:
+        return x * 2
+
+    async with worker:
+        # Schedule tasks for future execution
+        task1 = await delayed_task.enqueue(1).start(delay=timedelta(hours=1))
+        task2 = await delayed_task.enqueue(2).start(delay=timedelta(hours=2))
+
+        # Retrieve scheduled tasks
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
+        task_ids = [t.task_id for t in scheduled]
+        assert task1.id in task_ids
+        assert task2.id in task_ids
+
+        # Check task properties
+        task = next(t for t in scheduled if t.task_id == task1.id)
+        assert "delayed_task" in task.fn_name
+        assert task.args[0] == 1
+        assert task.status == TaskStatus.SCHEDULED
+        assert task.scheduled is not None
+
+
+async def test_get_tasks_by_status_scheduled_with_limit(worker: Worker):
+    from datetime import timedelta
+
+    @worker.task()
+    async def delayed_task() -> None:
+        pass
+
+    async with worker:
+        # Schedule multiple tasks
+        for _ in range(5):
+            await delayed_task.enqueue().start(delay=timedelta(hours=1))
+
+        # Test limit
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=2)
+        assert len(scheduled) <= 2
+
+
+async def test_get_tasks_by_status_running(worker: Worker):
+    @worker.task()
+    async def slow_task() -> None:
+        await sleep(10)
+
+    async with run_worker(worker):
+        task = await slow_task.enqueue()
+        await sleep(1)  # Wait for task to start
+
+        running = await worker.get_tasks_by_status(TaskStatus.RUNNING)
+        assert len(running) >= 1
+        found = next(r for r in running if r.task_id == task.id)
+        assert found.status == TaskStatus.RUNNING
+
+
+async def test_get_tasks_by_status_done(worker: Worker):
+    @worker.task()
+    async def quick_task(x: int) -> int:
+        return x * 2
+
+    async with run_worker(worker):
+        task = await quick_task.enqueue(5)
+        await task.result(3)
+
+        completed = await worker.get_tasks_by_status(TaskStatus.DONE)
+        assert len(completed) >= 1
+
+        result = next((r for r in completed if "quick_task" in r.fn_name), None)
+        assert result is not None
+        assert result.success
+        assert result.result == 10
+
+
+async def test_get_tasks_by_status_not_found(worker: Worker):
+    async with worker:
+        with pytest.raises(StreaqError):
+            await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)  # type: ignore
+
+
+async def test_get_tasks_by_status_empty_scheduled(worker: Worker):
+    async with worker:
+        scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
+        assert scheduled == []
+
+
+async def test_get_tasks_by_status_empty_done(worker: Worker):
+    async with worker:
+        completed = await worker.get_tasks_by_status(TaskStatus.DONE)
+        assert completed == []

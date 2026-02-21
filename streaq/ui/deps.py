@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from pathlib import Path
 from traceback import format_exception
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import HTTPException, status
 from fastapi.templating import Jinja2Templates

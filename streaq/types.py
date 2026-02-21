@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Coroutine
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -7,10 +8,6 @@ from inspect import iscoroutinefunction
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
-    Coroutine,
-    Optional,
     ParamSpec,
     Protocol,
     TypeAlias,
@@ -30,10 +27,10 @@ from typing_extensions import TypeIs, TypeVarTuple
 if TYPE_CHECKING:
     from streaq.task import AsyncRegisteredTask, SyncRegisteredTask  # type: ignore
 
-C = TypeVar("C", bound=Optional[object])
+C = TypeVar("C", bound=object | None)
 P = ParamSpec("P")
-R = TypeVar("R", bound=Optional[object])
-ROther = TypeVar("ROther", bound=Optional[object])
+R = TypeVar("R", bound=object | None)
+ROther = TypeVar("ROther", bound=object | None)
 Ts = TypeVarTuple("Ts")
 
 

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Awaitable
+from collections.abc import Awaitable
 
 import typer
 from taskiq_redis import RedisAsyncResultBackend, RedisStreamBroker
