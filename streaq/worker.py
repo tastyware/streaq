@@ -52,7 +52,6 @@ from typing_extensions import Self
 
 from streaq import logger
 from streaq.constants import (
-    HEALTH_CHECK,
     REDIS_ABORT,
     REDIS_CHANNEL,
     REDIS_CRON,
@@ -200,7 +199,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_coworkers",
         "_health_key",
         "_health_tab",
-        "_health_tab_str",
         "_initialized",
         "_lib",
         "_limiter",
@@ -308,8 +306,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
         self._limiter = CapacityLimiter(self.sync_concurrency)
-        self._health_tab = CronTab(health_crontab)
-        self._health_tab_str = health_crontab
+        self._health_tab = health_crontab
         self._initialized = False
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
@@ -351,6 +348,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     def __str__(self) -> str:
         counters = {k: v for k, v in self.counters.items() if v}
+        if self._cancel_scopes:
+            counters["running"] = self.running()
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
 
@@ -379,7 +378,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "
             f"queued: {queued}, scheduled: {scheduled}}}"
         )
-        ttl = self._delay_for(self._health_tab)
+        ttl = (
+            self._next_datetime(self._health_tab)
+            - datetime.now(self.tz)
+            + timedelta(seconds=1)
+        )
         await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
     @asynccontextmanager
@@ -613,7 +616,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         # run user-defined initialization code
         async with self, self.lifespan as context:
             # register redis health check
-            self.cron(self._health_tab_str, silent=True, ttl=0, name=HEALTH_CHECK)(
+            self.cron(self._health_tab, silent=True, ttl=0, name="redis_health_check")(
                 self.redis_health_check
             )
             token = worker_context.set(context)
@@ -641,27 +644,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             send, receive = create_memory_object_stream[StreamMessage](
                 max_buffer_size=self.prefetch
             )
-            limiter = CapacityLimiter(self.concurrency)
-
-            async def _run_consumers(scope: CancelScope) -> None:
-                try:
-                    async with create_task_group() as tg:
-                        for _ in range(self.concurrency):
-                            tg.start_soon(self.consumer, receive.clone(), limiter)
-                finally:
-                    # don't cancel renewal task until consumers finish
-                    scope.cancel()
 
             # start tasks
             try:
                 async with create_task_group() as tg:
                     # register signal handler
                     tg.start_soon(self.signal_handler, tg.cancel_scope)
-                    tg.start_soon(self.health_check)
-                    tg.start_soon(self.producer, send, limiter, tg.cancel_scope)
                     scope = CancelScope(shield=True)
                     tg.start_soon(self.renew_idle_timeouts, scope)
-                    tg.start_soon(_run_consumers, scope)
+                    limiter = await tg.start(self.run_consumers, receive, scope)
+                    tg.start_soon(self.producer, send, limiter, tg.cancel_scope)
                     task_status.started()
             finally:
                 run_time = to_ms(current_time() - start_time)
@@ -679,17 +671,38 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 async with limiter:
                     await self.run_task(msg)
 
+    async def run_consumers(
+        self,
+        receive: MemoryObjectReceiveStream[StreamMessage],
+        scope: CancelScope,
+        *,
+        task_status: AnyStatus[CapacityLimiter] = TASK_STATUS_IGNORED,
+    ) -> None:
+        """
+        Run all consumers in a dedicated task group, finally clean up.
+        """
+        limiter = CapacityLimiter(self.concurrency)
+        try:
+            async with create_task_group() as tg:
+                for _ in range(self.concurrency):
+                    tg.start_soon(self.consumer, receive.clone(), limiter)
+                task_status.started(limiter)
+        finally:
+            # don't cancel renewal task until consumers finish
+            scope.cancel()
+
     async def renew_idle_timeouts(self, scope: CancelScope) -> None:
         """
         Periodically renew idle timeout for running tasks. This allows the queue to
-        be resilient to sudden shutdowns.
+        be resilient to sudden shutdowns. Additionally marks worker as healthy.
         """
         timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
+        key = f"{self._health_key}:{self.id}"
         # prevent cancellation until consumers finish
         with scope:
             while True:
-                await sleep(timeout)
                 async with self.redis.pipeline(transaction=False) as pipe:
+                    pipe.set(key, str(self), px=self.idle_timeout)
                     for priority, tasks in self._running_tasks.items():
                         if tasks:
                             pipe.xclaim(
@@ -700,6 +713,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                                 tasks,
                                 justid=True,
                             )
+                await sleep(timeout)
 
     async def producer(
         self,
@@ -1337,9 +1351,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
         return sum(await gather(*commands))
 
-    def _delay_for(self, tab: CronTab) -> int:
-        return to_ms(tab.next(now=datetime.now(self.tz)) + 1)  # type: ignore
-
     def _next_datetime(self, tab: str) -> datetime:
         return CronTab(tab).next(now=datetime.now(self.tz), return_datetime=True)  # type: ignore
 
@@ -1350,15 +1361,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param tab: cron tab to calculate next run for
         """
         return datetime_ms(self._next_datetime(tab))
-
-    async def health_check(self) -> None:
-        """
-        Periodically stores info about the worker in Redis.
-        """
-        while True:
-            ttl = self._delay_for(self._health_tab)
-            await self.redis.set(f"{self._health_key}:{self.id}", str(self), px=ttl)
-            await sleep(ttl / 1000)
 
     async def signal_handler(self, scope: CancelScope) -> None:
         """

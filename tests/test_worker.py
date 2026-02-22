@@ -418,15 +418,15 @@ async def test_grace_period_no_new_tasks(worker: Worker):
         await sleep(3)
 
     worker.grace_period = 5
+    task = foobar.enqueue().start(delay=1)
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
         await foobar.enqueue()
         await sleep(1)
+        await task
         os.kill(os.getpid(), signal.SIGINT)
     async with worker:
-        task = await foobar.enqueue()
-        await sleep(1)
-        assert await task.status() == TaskStatus.QUEUED
+        assert await task.status() == TaskStatus.SCHEDULED
 
 
 async def test_get_tasks_by_status_scheduled(worker: Worker):
