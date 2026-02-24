@@ -832,16 +832,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         logger.debug(f"enqueuing cron jobs in worker {self.id}")
         async with self.redis.pipeline(transaction=False) as pipe:
             lib = Streaq(pipe)
-            for task_id in ready:
-                tab, new_id = registry[task_id], uuid4().hex
+            for fn_name in ready:
+                tab = registry[fn_name]
+                ts = self.next_run(tab)
+                new_id = _deterministic_id(fn_name + str(ts))
                 lib.schedule_cron_job(
                     self.cron_schedule_key,
                     self.queue_key + self.priorities[-1],
-                    self.cron_data_key + task_id,
+                    self.cron_data_key + fn_name,
                     self.prefix + REDIS_TASK + new_id,
                     new_id,
-                    self.next_run(tab),
-                    task_id,
+                    ts,
+                    fn_name,
                 )
 
     async def finish_failed_task(
