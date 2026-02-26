@@ -226,6 +226,12 @@ The second way is to use ``Worker.enqueue_unsafe``:
 
 This method is not type-safe, but it doesn't require you to re-define the task signature in the backend. Here, the first parameter is the ``fn_name`` of the task defined elsewhere, and the rest of the args and kwargs can be passed normally.
 
+.. important::
+
+    If using the (default) pickle serializer/deserializer, the result/exception objects used must be accessible to both the backend and worker as well.
+
+    This may be done by moving them to a shared module, copying them between codebases, or just using builtin ones.
+
 Task-related functions
 ----------------------
 
