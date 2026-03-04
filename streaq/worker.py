@@ -144,7 +144,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     :param deserializer: function to deserialize task data from Redis
     :param tz: timezone to use for cron jobs
     :param handle_signals: whether to handle signals for graceful shutdown
-    :param health_crontab: crontab for frequency to store health info
     :param signing_secret:
         if provided, used to sign data stored in Redis, which can improve security
         especially if using pickle. For binary serializers only. You can generate
@@ -198,7 +197,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_cluster",
         "_coworkers",
         "_health_key",
-        "_health_tab",
         "_initialized",
         "_lib",
         "_limiter",
@@ -222,7 +220,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         deserializer: Callable[[Any], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         handle_signals: bool = True,
-        health_crontab: str = "*/5 * * * *",
         signing_secret: str | None = None,
         idle_timeout: timedelta | float = 60,
         grace_period: int = 0,
@@ -306,7 +303,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._cancel_scopes: dict[str, CancelScope] = {}
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
         self._limiter = CapacityLimiter(self.sync_concurrency)
-        self._health_tab = health_crontab
         self._initialized = False
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
@@ -319,7 +315,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.dependencies_key = self.prefix + REDIS_DEPENDENCIES
         self.results_key = self.prefix + REDIS_RESULT
         self._abort_key = self.prefix + REDIS_ABORT
-        self._health_key = self.prefix + REDIS_HEALTH
+        self._health_key = f"{self.prefix}{REDIS_HEALTH}:{self.id}"
         self._channel_key = self.prefix + REDIS_CHANNEL
 
     def include(self, other: Worker[Any]) -> None:
@@ -347,43 +343,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         return len(self._cancel_scopes)
 
     def __str__(self) -> str:
-        counters = {k: v for k, v in self.counters.items() if v}
+        counters = dict(sorted((k, v) for k, v in self.counters.items() if v))
         if self._cancel_scopes:
             counters["running"] = self.running()
         counters_str = repr(counters).replace("'", "")
         return f"worker {self.id} {counters_str}"
-
-    async def redis_health_check(self) -> None:
-        """
-        Saves Redis health in Redis. This gets registered as a cron job at worker
-        startup to prevent conflicts when combining workers.
-        """
-        async with self.redis.pipeline(transaction=False) as pipe:
-            streams = [
-                pipe.xlen(self.stream_key + priority) for priority in self.priorities
-            ]
-            queues = [
-                pipe.zcard(self.queue_key + priority) for priority in self.priorities
-            ]
-            infos = (
-                pipe.info("Memory", "Clients"),
-                pipe.dbsize(),
-            )
-        info, keys = await gather(*infos)
-        mem_usage = info.get("used_memory_human", "?")
-        clients = info.get("connected_clients", "?")
-        queued = sum(await gather(*streams))
-        scheduled = sum(await gather(*queues))
-        health = (
-            f"redis {{memory: {mem_usage}, clients: {clients}, keys: {keys}, "
-            f"queued: {queued}, scheduled: {scheduled}}}"
-        )
-        ttl = (
-            self._next_datetime(self._health_tab)
-            - datetime.now(self.tz)
-            + timedelta(seconds=1)
-        )
-        await self.redis.set(self._health_key + ":redis", health, ex=ttl)
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self]:
@@ -615,10 +579,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         logger.info(f"starting worker {self.id} for queue {self.queue_name}")
         # run user-defined initialization code
         async with self, self.lifespan as context:
-            # register redis health check
-            self.cron(self._health_tab, silent=True, ttl=0, name="redis_health_check")(
-                self.redis_health_check
-            )
             token = worker_context.set(context)
             now = now_ms()
             tasks: list[Task[Any]] = []
@@ -656,6 +616,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     tg.start_soon(self.producer, send, limiter, tg.cancel_scope)
                     task_status.started()
             finally:
+                with CancelScope(shield=True):
+                    await self.redis.delete([self._health_key])
                 run_time = to_ms(current_time() - start_time)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
                 worker_context.reset(token)
@@ -697,12 +659,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         be resilient to sudden shutdowns. Additionally marks worker as healthy.
         """
         timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
-        key = f"{self._health_key}:{self.id}"
         # prevent cancellation until consumers finish
         with scope:
             while True:
                 async with self.redis.pipeline(transaction=False) as pipe:
-                    pipe.set(key, str(self), px=self.idle_timeout)
+                    pipe.set(self._health_key, str(self), px=self.idle_timeout * 2)
                     for priority, tasks in self._running_tasks.items():
                         if tasks:
                             pipe.xclaim(

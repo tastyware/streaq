@@ -75,15 +75,15 @@ services:
       sh -c 'echo "bind 0.0.0.0" > /etc/sentinel.conf &&
             echo "sentinel monitor mymaster redis-master 6379 2" >> /etc/sentinel.conf &&
             echo "sentinel resolve-hostnames yes" >> /etc/sentinel.conf &&
-            echo "sentinel down-after-milliseconds mymaster 10000" >> /etc/sentinel.conf &&
-            echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds mymaster 2000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout mymaster 5000" >> /etc/sentinel.conf &&
             echo "sentinel parallel-syncs mymaster 1" >> /etc/sentinel.conf &&
             redis-sentinel /etc/sentinel.conf'
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL ckquorum mymaster | grep -q ^OK"]
       interval: 3s
       timeout: 4s
-      retries: 60
+      retries: 15
 
   sentinel-2:
     image: redis:latest
@@ -94,15 +94,15 @@ services:
       sh -c 'echo "bind 0.0.0.0" > /etc/sentinel.conf &&
             echo "sentinel monitor mymaster redis-master 6379 2" >> /etc/sentinel.conf &&
             echo "sentinel resolve-hostnames yes" >> /etc/sentinel.conf &&
-            echo "sentinel down-after-milliseconds mymaster 10000" >> /etc/sentinel.conf &&
-            echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds mymaster 2000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout mymaster 5000" >> /etc/sentinel.conf &&
             echo "sentinel parallel-syncs mymaster 1" >> /etc/sentinel.conf &&
             redis-sentinel /etc/sentinel.conf'
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL ckquorum mymaster | grep -q ^OK"]
       interval: 3s
       timeout: 4s
-      retries: 60
+      retries: 15
 
   sentinel-3:
     image: redis:latest
@@ -113,15 +113,15 @@ services:
       sh -c 'echo "bind 0.0.0.0" > /etc/sentinel.conf &&
             echo "sentinel monitor mymaster redis-master 6379 2" >> /etc/sentinel.conf &&
             echo "sentinel resolve-hostnames yes" >> /etc/sentinel.conf &&
-            echo "sentinel down-after-milliseconds mymaster 10000" >> /etc/sentinel.conf &&
-            echo "sentinel failover-timeout mymaster 10000" >> /etc/sentinel.conf &&
+            echo "sentinel down-after-milliseconds mymaster 2000" >> /etc/sentinel.conf &&
+            echo "sentinel failover-timeout mymaster 5000" >> /etc/sentinel.conf &&
             echo "sentinel parallel-syncs mymaster 1" >> /etc/sentinel.conf &&
             redis-sentinel /etc/sentinel.conf'
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -p 26379 SENTINEL ckquorum mymaster | grep -q ^OK"]
       interval: 3s
       timeout: 4s
-      retries: 60
+      retries: 15
 
   sentinel-init:
     image: redis:latest

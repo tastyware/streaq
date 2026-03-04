@@ -59,15 +59,12 @@ async def test_health_check(redis_url: str):
     worker = Worker(
         redis_url=redis_url,
         redis_kwargs={"decode_responses": True},
-        health_crontab="* * * * * * *",
         queue_name=uuid4().hex,
     )
     async with run_worker(worker):
-        await sleep(2)
-        worker_health = await worker.redis.get(f"{worker._health_key}:{worker.id}")
-        redis_health = await worker.redis.get(worker._health_key + ":redis")
+        await sleep(1)
+        worker_health = await worker.redis.get(worker._health_key)
         assert worker_health is not None
-        assert redis_health is not None
 
 
 async def test_queue_size(worker: Worker):
