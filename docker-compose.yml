@@ -206,7 +206,14 @@ services:
 
   cluster-init:
     image: redis:latest
-    command: redis-cli --cluster create cluster-1:7000 cluster-2:7001 cluster-3:7002 cluster-4:7003 cluster-5:7004 cluster-6:7005 --cluster-replicas 1 --cluster-yes
+    command: >
+        sh -c '
+          if redis-cli -h cluster-1 -p 7000 cluster info | grep -q "cluster_state:ok"; then
+            echo "Cluster already initialized";
+          else
+            redis-cli --cluster create cluster-1:7000 cluster-2:7001 cluster-3:7002 cluster-4:7003 cluster-5:7004 cluster-6:7005 --cluster-replicas 1 --cluster-yes;
+          fi
+        '
     depends_on:
       cluster-1:
         condition: service_healthy

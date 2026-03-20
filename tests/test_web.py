@@ -33,6 +33,10 @@ async def test_get_pages(worker: Worker):
     async def fails() -> None:
         raise Exception("Oh no!")
 
+    @worker.cron("* * * * *")
+    async def cronjob() -> None:
+        await sleep(0)
+
     app.dependency_overrides[get_worker] = lambda: worker
     async with run_worker(worker):
         # queue up some tasks
@@ -56,7 +60,7 @@ async def test_get_pages(worker: Worker):
             res = await client.patch(
                 f"{prefix}/queue",
                 data={
-                    "functions": ["redis_health_check"],
+                    "functions": [sleeper.fn_name],
                     "statuses": ["queued", "running", "done"],
                     "sort": "desc",
                 },
@@ -78,4 +82,16 @@ async def test_get_pages(worker: Worker):
             assert res.status_code == 200
             assert res.headers["HX-Redirect"] == f"{prefix}/queue"
             res = await client.get(f"{prefix}/task/nonexistent")
+            assert res.status_code == 404
+            # test getting workers page
+            res = await client.get(f"{prefix}/workers")
+            assert res.status_code == 200
+            # test getting cron page
+            res = await client.get(f"{prefix}/cron")
+            assert res.status_code == 200
+            # test aborting cron job
+            res = await client.delete(f"{prefix}/cron/{cronjob.fn_name}")
+            assert res.status_code == 200
+            # test aborting nonexistent cron job
+            res = await client.delete(f"{prefix}/cron/nonexistent")
             assert res.status_code == 404

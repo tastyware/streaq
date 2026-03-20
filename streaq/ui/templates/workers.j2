@@ -96,21 +96,13 @@
             <thead>
               <tr>
                 <th scope="col" class="w-25">Worker ID</th>
-                <th scope="col" class="w-25">Worker Status</th>
-                <th scope="col" class="w-50">Task Statistics</th>
+                <th scope="col" class="w-75">Task Statistics</th>
               </tr>
             </thead>
             <tbody class="font-monospace">
-              {% for key, worker, healthy in all %}
+              {% for key, worker in all %}
               <tr>
                 <td>{{ key }}</td>
-                <td>
-                  {% if healthy %}
-                  <span class="badge bg-success">Healthy</span>
-                  {% else %}
-                  <span class="badge bg-warning text-dark">Unhealthy</span>
-                  {% endif %}
-                </td>
                 <td>{{ worker }}</td>
               </tr>
               {% endfor %}

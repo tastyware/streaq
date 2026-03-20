@@ -43,10 +43,12 @@ from coredis import (
     PureToken,
     Redis,
     RedisCluster,
+    Sentinel,
 )
 from coredis.commands import CommandRequest
-from coredis.sentinel import Sentinel
-from coredis.typing import KeyT, Node
+from coredis.connection import TCPLocation
+from coredis.response.types import ScoredMember
+from coredis.typing import KeyT
 from crontab import CronTab
 from typing_extensions import Self
 
@@ -208,7 +210,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
-        redis_pool: ConnectionPool | None = None,
+        redis_pool: ConnectionPool[Any] | ClusterConnectionPool | None = None,
         redis_kwargs: dict[str, Any] | None = None,
         concurrency: int = 16,
         sync_concurrency: int | None = None,
@@ -216,8 +218,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priorities: list[str] | None = None,
         prefetch: int | None = None,
         lifespan: Callable[[], AbstractAsyncContextManager[C]] = _lifespan,
-        serializer: Callable[[Any], Any] = pickle.dumps,
-        deserializer: Callable[[Any], Any] = pickle.loads,
+        serializer: Callable[[Any], bytes | str] = pickle.dumps,
+        deserializer: Callable[[bytes], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         handle_signals: bool = True,
         signing_secret: str | None = None,
@@ -243,7 +245,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._sentinel = self._cluster = None
         if sentinel_nodes:
             self._sentinel = Sentinel(
-                sentinel_nodes,
+                [TCPLocation(*n) for n in sentinel_nodes],
                 decode_responses=True,
                 sentinel_kwargs=sentinel_kwargs,
                 **redis_kwargs,
@@ -251,7 +253,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._redis = self._sentinel.primary_for(sentinel_master)
         elif cluster_nodes:
             self._cluster = self._redis = RedisCluster(
-                startup_nodes=[Node(host=n[0], port=n[1]) for n in cluster_nodes],
+                startup_nodes=[TCPLocation(*n) for n in cluster_nodes],
                 decode_responses=True,
                 **redis_kwargs,
             )
@@ -616,8 +618,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     tg.start_soon(self.producer, send, limiter, tg.cancel_scope)
                     task_status.started()
             finally:
-                with CancelScope(shield=True):
-                    await self.redis.delete([self._health_key])
                 run_time = to_ms(current_time() - start_time)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
                 worker_context.reset(token)
@@ -663,7 +663,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         with scope:
             while True:
                 async with self.redis.pipeline(transaction=False) as pipe:
-                    pipe.set(self._health_key, str(self), px=self.idle_timeout * 2)
+                    pipe.set(self._health_key, str(self), px=self.idle_timeout)
                     for priority, tasks in self._running_tasks.items():
                         if tasks:
                             pipe.xclaim(
@@ -735,15 +735,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         for stream, msgs in sorted(
                             entries.items(), key=lambda item: priority_order[item[0]]
                         ):
+                            priority = stream_priorities[stream]
                             messages.extend(
                                 [
                                     StreamMessage(
                                         message_id=msg_id,  # type: ignore
                                         task_id=msg["task_id"],  # type: ignore
-                                        priority=stream_priorities[stream],
+                                        priority=priority,
                                         enqueue_time=int(msg.get("enqueue_time", 0)),
                                     )
                                     for msg_id, msg in msgs
+                                    if msg_id not in self._running_tasks[priority]
                                 ]
                             )
                         # start new tasks
@@ -842,14 +844,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         async with self.redis.pipeline(transaction=True) as pipe:
             lib = Streaq(pipe)
             pipe.delete([key(REDIS_RETRY), key(REDIS_RUNNING), key(REDIS_TASK)])
-            if self._cluster:
-                lib.cluster_publish(self._channel_key + task_id, raw)
-            else:
-                pipe.publish(self._channel_key + task_id, raw)
+            pipe.publish(self._channel_key + task_id, raw).route(self.queue_name)
             pipe.srem(self._abort_key, [task_id])
             pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
             pipe.xdel(stream_key, [msg.message_id])
-            if raw is not None and ttl:
+            if ttl != 0:
                 pipe.set(key(REDIS_RESULT), raw, ex=ttl)
             command = lib.fail_dependents(
                 self.prefix + REDIS_DEPENDENTS,
@@ -905,10 +904,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 lib = Streaq(pipe)
                 pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
-                if self._cluster:
-                    lib.cluster_publish(self._channel_key + task_id, result)
-                else:
-                    pipe.publish(self._channel_key + task_id, result)
+                pipe.publish(self._channel_key + task_id, result).route(self.queue_name)
                 if success:
                     self.counters["completed"] += 1
                 else:
@@ -1195,17 +1191,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
         async with self.redis.pipeline(transaction=False) as pipe:
-            lib = None
             for dep_id in dependents:
                 logger.info(f"task dependent × {dep_id} failed")
                 to_delete.append(self.prefix + REDIS_TASK + dep_id)
                 pipe.set(self.results_key + dep_id, result, ex=300)
-                if self._cluster:
-                    if not lib:
-                        lib = Streaq(pipe)
-                    lib.cluster_publish(self._channel_key + dep_id, result)
-                else:
-                    pipe.publish(self._channel_key + dep_id, result)
+                pipe.publish(self._channel_key + dep_id, result).route(self.queue_name)
             pipe.delete(to_delete)
 
     def enqueue_unsafe(
@@ -1514,16 +1504,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             dependents=dependents,
         )
 
-    async def unschedule_by_id(self, task_id: str) -> None:
+    async def unschedule_by_id(self, task_id: str) -> bool:
         """
         Stop scheduling the repeating task if registered.
 
         :param task_id: ID of the task to unregister
+
+        :return: whether the task was unscheduled successfully
         """
         async with self.redis.pipeline(transaction=False) as pipe:
             pipe.hdel(self.cron_registry_key, [task_id])
             pipe.zrem(self.cron_schedule_key, [task_id])
             pipe.delete([self.cron_data_key + task_id])
+        return sum(pipe.results or []) == 3
 
     @overload
     async def get_tasks_by_status(
@@ -1645,19 +1638,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :return: list of scheduled tasks
         """
         priorities = [priority] if priority else self.priorities
-        task_ids_with_scores: list[tuple[str, float]] = []
+        task_ids_with_scores: list[ScoredMember] = []
         async with self.redis.pipeline(transaction=False) as pipe:
             delayed = [
                 pipe.zrange(self.queue_key + p, 0, limit - 1, withscores=True)
                 for p in priorities
             ]
         for result in await gather(*delayed):
-            task_ids_with_scores.extend(result)  # type: ignore
+            task_ids_with_scores.extend(result)
 
         # Sort by score (scheduled time) and apply limit
         task_ids_with_scores.sort(key=lambda x: x[1])
         task_ids_with_scores = task_ids_with_scores[:limit]
-        ids = [tid for tid, _ in task_ids_with_scores]
+        ids = [str(tid) for tid, _ in task_ids_with_scores]
         scores = [score for _, score in task_ids_with_scores]
 
         return await self._get_info_for_ids(TaskStatus.SCHEDULED, ids, scores)
@@ -1690,7 +1683,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         for info in await gather(*infos):
             entries = info["entries"] or ()
             groups = cast(list[dict[str, Any]], info["groups"])
-
             # Collect all pending entry IDs (claimed by consumers)
             pending_ids: set[str] = set()
             for group in groups:
@@ -1698,7 +1690,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     # pending_entry is [entry_id, consumer, idle_time, delivery_count]
                     if pending_entry:
                         pending_ids.add(str(pending_entry[0]))
-
             # Queued = entries not in pending (not yet claimed)
             for entry in entries:
                 if entry.identifier not in pending_ids:
@@ -1715,8 +1706,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :return: list of running tasks
         """
-        running_keys = await self.redis.keys(self.prefix + REDIS_RUNNING + "*")
-        task_ids = [k.split(":")[-1] for k in running_keys][:limit]
+        running_keys: list[str] = []
+        cursor = 0
+        while True:
+            cursor, keys = await self.redis.scan(
+                cursor=cursor, match=self.prefix + REDIS_RUNNING + "*", count=500
+            ).route(self.queue_name)
+            running_keys.extend(keys)
+            if cursor == 0 or len(running_keys) >= limit:
+                break
+        task_ids = [k.split(":")[-1] for k in running_keys[:limit]]
         return await self._get_info_for_ids(TaskStatus.RUNNING, task_ids)
 
     async def _get_completed_tasks(self, limit: int = 100) -> list[TaskResult[Any]]:
@@ -1727,11 +1726,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :return: list of task results
         """
-        result_keys = list(await self.redis.keys(self.results_key + "*"))[:limit]
+        result_keys: list[str] = []
+        cursor = 0
+        while True:
+            cursor, keys = await self.redis.scan(
+                cursor=cursor, match=self.results_key + "*", count=500
+            ).route(self.queue_name)
+            result_keys.extend(keys)
+            if cursor == 0 or len(result_keys) >= limit:
+                break
         if not result_keys:
             return []
 
-        serialized = await self.redis.mget(result_keys)  # type: ignore
+        serialized = await self.redis.mget(result_keys)
         task_ids = [k.split(":")[-1] for k in result_keys]
         results: list[TaskResult[Any]] = []
         for task_id, raw in zip(task_ids, serialized):
@@ -1753,7 +1760,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
         return results
 
-    def serialize(self, data: Any) -> Any:
+    def serialize(self, data: Any) -> str | bytes:
         """
         Wrap serializer to append signature as last 32 bytes if applicable.
         """
@@ -1762,11 +1769,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         except Exception as e:
             raise StreaqError(f"Failed to serialize data: {data}") from e
         if self.signing_secret:
-            try:
-                # will only work if data is binary data
-                serialized += hmac.digest(self.signing_secret, serialized, "sha256")
-            except TypeError as e:
-                raise StreaqError("Can't sign non-binary data from serializer!") from e
+            # will only work if data is binary data
+            if isinstance(serialized, str):
+                raise StreaqError("Can't sign non-binary data from serializer!")
+            serialized += hmac.digest(self.signing_secret, serialized, "sha256")
         return serialized
 
     def deserialize(self, data: Any) -> Any:

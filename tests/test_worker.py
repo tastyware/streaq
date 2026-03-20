@@ -14,7 +14,7 @@ from uuid import uuid4
 import pytest
 from anyio import create_task_group, sleep
 from coredis import RedisCluster
-from coredis.typing import Node
+from coredis.connection import TCPLocation
 
 from streaq.constants import REDIS_TASK
 from streaq.task import TaskStatus
@@ -320,7 +320,7 @@ def test_cluster_connection_pool():
     from coredis import ClusterConnectionPool
 
     pool = ClusterConnectionPool(
-        startup_nodes=[Node(host="cluster-1", port=7000)], decode_responses=True
+        startup_nodes=[TCPLocation("cluster-1", 7000)], decode_responses=True
     )
     worker = Worker(redis_pool=pool, queue_name=f"{{{uuid4().hex}}}")
     worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)

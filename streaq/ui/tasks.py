@@ -3,8 +3,7 @@ from datetime import datetime
 from statistics import mean
 from typing import Annotated, Any
 
-from coredis.commands import CommandRequest
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi import status as fast_status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
@@ -226,24 +225,24 @@ async def get_workers(
     request: Request,
     worker: Annotated[Worker[Any], Depends(get_worker)],
 ) -> Any:
-    keys = list(await worker.redis.keys(worker.prefix + REDIS_HEALTH + "*"))
+    worker_keys: list[str] = []
+    cursor = 0
+    while True:
+        cursor, keys = await worker.redis.scan(
+            cursor=cursor, match=worker.prefix + REDIS_HEALTH + "*", count=500
+        ).route(worker.queue_name)
+        worker_keys.extend(keys)
+        if cursor == 0:
+            break
     context: dict[str, Any] = {}
-    if keys:
-        ttls: list[CommandRequest[int]] = []
-        async with worker.redis.pipeline(transaction=True) as pipe:
-            workers = pipe.mget(keys)  # type: ignore
-            for key in keys:
-                ttls.append(pipe.pttl(key))
+    if worker_keys:
+        workers = await worker.redis.mget(worker_keys)
         context["all"] = [
-            (
-                key.split(":")[-1],
-                " ".join(health.split(" ")[2:]),
-                ttl > worker.idle_timeout,
-            )
-            for key, health, ttl in zip(keys, await workers, await gather(*ttls))
+            (key.split(":")[-1], " ".join(health.split(" ")[2:]))
+            for key, health in zip(worker_keys, workers)
             if health
         ]
-    tasks = await worker.get_tasks_by_status(TaskStatus.DONE, limit=10_000)
+    tasks = await worker.get_tasks_by_status(TaskStatus.DONE, limit=1000)
     if tasks:
         wait_times = [t.start_time - t.enqueue_time for t in tasks]
         tries = [t.tries for t in tasks]
@@ -288,4 +287,8 @@ async def get_cronjobs(
 async def delete_cronjob(
     name: str, worker: Annotated[Worker[Any], Depends(get_worker)]
 ) -> None:
-    await worker.unschedule_by_id(name)
+    res = await worker.unschedule_by_id(name)
+    if not res:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Cron job not found!"
+        )

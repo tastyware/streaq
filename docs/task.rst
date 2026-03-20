@@ -278,7 +278,7 @@ This causes the task to run repeatedly with the given arguments at the given sch
 Synchronous functions
 ---------------------
 
-streaQ also supports synchronous functions as second-class citizens for use with mixed codebases. Sync functions will be run in a separate thread, so they won't block the event loop.
+streaQ also supports synchronous functions as second-class citizens for use with mixed codebases. Sync functions will be run in a separate thread, so they won't block the event loop; however, if you need true parallelism for CPU-bound work, you'll need to use a free-threaded Python version.
 
 Note that if the task waiting for its completion is cancelled, the thread will still run its course but its return value (or any raised exception) will be ignored.
 
