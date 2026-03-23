@@ -171,7 +171,7 @@ async def test_reclaim_backed_up(redis_url: str):
 
 
 async def test_reclaim_idle_task(redis_url: str):
-    worker2 = Worker(redis_url=redis_url, queue_name="reclaim", idle_timeout=3)
+    worker2 = Worker(redis_url=redis_url, queue_name=uuid4().hex, idle_timeout=3)
 
     @worker2.task(name="foo")
     async def foo() -> None:
@@ -180,7 +180,9 @@ async def test_reclaim_idle_task(redis_url: str):
     # get task ID
     task = foo.enqueue()
     # run separate worker which will enqueue and pick up task
-    worker = subprocess.Popen([sys.executable, "tests/failure.py", redis_url, task.id])
+    worker = subprocess.Popen(
+        [sys.executable, "tests/failure.py", redis_url, task.id, worker2.queue_name]
+    )
     async with worker2:
         while (await task.status()) == TaskStatus.NOT_FOUND:
             await sleep(1)
