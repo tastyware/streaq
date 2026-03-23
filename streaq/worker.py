@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import pickle
 import signal
+import warnings
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
@@ -222,6 +223,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         deserializer: Callable[[bytes], Any] = pickle.loads,
         tz: tzinfo = timezone.utc,
         handle_signals: bool = True,
+        health_crontab: str | None = None,
         signing_secret: str | None = None,
         idle_timeout: timedelta | float = 60,
         grace_period: int = 0,
@@ -233,6 +235,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         cluster_nodes: list[tuple[str, int]] | None = None,
         id: str | None = None,
     ):
+        # TODO: remove in v7
+        if health_crontab:
+            warnings.warn(
+                "`health_crontab` is deprecated as it no longer does anything and will "
+                "be removed in v7.0.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Redis connection
         redis_kwargs = redis_kwargs or {}
         if redis_kwargs.pop("decode_responses", None) is not None:

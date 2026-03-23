@@ -520,3 +520,8 @@ async def test_get_tasks_by_status_empty_done(worker: Worker):
     async with worker:
         completed = await worker.get_tasks_by_status(TaskStatus.DONE)
         assert completed == []
+
+
+def test_health_tab():
+    with pytest.warns(match="deprecated as it no longer does anything"):
+        _ = Worker(health_crontab="*/5 * * * *")
