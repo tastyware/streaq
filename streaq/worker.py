@@ -658,7 +658,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Periodically renew idle timeout for running tasks. This allows the queue to
         be resilient to sudden shutdowns. Additionally marks worker as healthy.
         """
-        timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
+        timeout = self.idle_timeout / 1000 / 2  # 50% buffer
         # prevent cancellation until consumers finish
         with scope:
             while True:
