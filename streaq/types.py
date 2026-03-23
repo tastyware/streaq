@@ -18,10 +18,10 @@ from typing import (
 
 from coredis.commands.function import Library, wraps
 from coredis.commands.request import CommandRequest
-from coredis.response._callbacks.streams import MultiStreamRangeCallback
+from coredis.response._callbacks import ResponseCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
-from coredis.typing import KeyT, RedisValueT, ResponseType
+from coredis.typing import KeyT
 from typing_extensions import TypeIs, TypeVarTuple
 
 if TYPE_CHECKING:
@@ -165,19 +165,22 @@ class TaskDecorator(Protocol):
     ) -> AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]: ...
 
 
-class ReadStreamsCallback(MultiStreamRangeCallback[str]):
+class ReadStreamsCallback(
+    ResponseCallback[
+        dict[str, list[list[list[str] | str]]] | None,
+        dict[str, tuple[StreamEntry, ...]] | None,
+    ]
+):
     def transform(
-        self,
-        response: ResponseType,
+        self, response: dict[str, list[list[list[str] | str]]] | None
     ) -> dict[str, tuple[StreamEntry, ...]] | None:
-        if not response:
-            return None
-        return {
-            stream_id: tuple(
-                StreamEntry(r[0], flat_pairs_to_ordered_dict(r[1])) for r in entries
-            )
-            for stream_id, entries in cast(list[Any], response)
-        }
+        if response:
+            return {
+                stream_id: tuple(
+                    StreamEntry(r[0], flat_pairs_to_ordered_dict(r[1])) for r in entries
+                )
+                for stream_id, entries in cast(list[Any], response)
+            }
 
 
 class Streaq(Library[str]):
@@ -252,8 +255,3 @@ class Streaq(Library[str]):
         score: int,
         member: str,
     ) -> CommandRequest[None]: ...
-
-    @wraps(verify_existence=False)
-    def cluster_publish(
-        self, channel_key: KeyT, data: RedisValueT
-    ) -> CommandRequest[int]: ...

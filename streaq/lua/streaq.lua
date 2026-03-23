@@ -217,7 +217,3 @@ redis.register_function('schedule_cron_job', function(keys, argv)
     redis.call('copy', data_key, task_key)
   end
 end)
-
-redis.register_function('cluster_publish', function(keys, argv)
-  return redis.call('publish', keys[1], argv[1])
-end)

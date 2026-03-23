@@ -186,6 +186,27 @@ This allows for grouping tasks in whatever way you choose. We now have a task, `
        ...
        await ctx.db.commit()
 
+.. warning::
+   Sometimes you need to access the worker itself *inside* a task, for example:
+
+   .. code-block:: python
+      :caption: other.py
+
+      @other.task
+      async def abort_foobar(task_id: str) -> bool:
+          await sleep(1)
+          return await other.abort_by_id(task_id)
+
+   However, this is unsafe because ``other`` **may or may not be the running worker**. Instead, use the reference to the worker contained in the task itself:
+
+   .. code-block:: python
+      :caption: other.py
+
+      @other.task
+      async def abort_foobar(task_id: str) -> bool:
+          await sleep(1)
+          return await abort_foobar.worker.abort_by_id(task_id)
+
 Separating enqueuing from task definitions
 ------------------------------------------
 

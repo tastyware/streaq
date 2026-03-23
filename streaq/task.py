@@ -334,11 +334,13 @@ class Task(Generic[R]):
         """
         return await self.worker.info_by_id(self.id)
 
-    async def unschedule(self) -> None:
+    async def unschedule(self) -> bool:
         """
         Stop scheduling the repeating task if registered.
+
+        :return: whether the task was unscheduled successfully
         """
-        await self.worker.unschedule_by_id(self.id)
+        return await self.worker.unschedule_by_id(self.id)
 
 
 @dataclass(kw_only=True)
