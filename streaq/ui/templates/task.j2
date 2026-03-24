@@ -17,7 +17,7 @@
             <tr>
               <th scope="row">Status</th>
               <td>
-                <span class="badge bg-{{color}} text-uppercase text-{{text_color}}">{{ status }}</span>
+                <span class="badge bg-{{ color }} text-uppercase text-{{ text_color }}">{{ status }}</span>
               </td>
             </tr>
             <tr>
@@ -76,7 +76,7 @@
         </table>
       </div>
       {% if not is_done %}
-      <button type="button" class="btn btn-danger" hx-delete="{{task_abort_url}}" hx-indicator="#spinner">
+      <button type="button" class="btn btn-danger" hx-delete="{{ base_url }}task/{{ task_id }}" hx-indicator="#spinner">
         Abort Task
         <img id="spinner" class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg"/>
       </button>

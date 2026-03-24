@@ -42,7 +42,7 @@ class TaskData(BaseModel):
 
 
 async def _get_context(
-    worker: Worker[Any], task_url: str, statuses: list[TaskStatus] | None
+    worker: Worker[Any], base_url: str, statuses: list[TaskStatus] | None
 ) -> dict[str, Any]:
     # Fetch all task types - explicit calls for proper typing
     statuses = statuses or list(_STATUS_COLORS)
@@ -64,7 +64,7 @@ async def _get_context(
                     task_id=item.task_id,
                     fn_name=item.fn_name,
                     sort_time=dt,
-                    url=task_url.format(task_id=item.task_id),
+                    url=base_url + f"task/{item.task_id}",
                 )
             )
     tasks.sort(key=lambda td: td.sort_time, reverse=True)
@@ -82,11 +82,9 @@ async def get_context(
     functions: list[str] | None = None,
     statuses: list[TaskStatus] | None = None,
 ) -> dict[str, Any]:
-    task_url = request.url_for("get_task", task_id="{task_id}").path
-    tasks_filter_url = request.url_for("filter_tasks").path
-
-    context = await _get_context(worker, task_url, statuses)
-    context["tasks_filter_url"] = tasks_filter_url
+    base_url = request.url_for("get_root").path
+    context = await _get_context(worker, base_url, statuses)
+    context["base_url"] = base_url
 
     if functions:
         context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
@@ -193,6 +191,7 @@ async def get_task(
         request,
         "task.j2",
         context={
+            "base_url": request.url_for("get_root").path,
             "color": color,
             "function": function,
             "is_done": is_done,
@@ -201,7 +200,6 @@ async def get_task(
             "title": "task",
             "status": status.value,
             "task_id": task_id,
-            "task_abort_url": request.url_for("abort_task", task_id=task_id).path,
             "task_try": task_try,
             "worker_id": worker_id,
             **extra,
@@ -234,7 +232,7 @@ async def get_workers(
         worker_keys.extend(keys)
         if cursor == 0:
             break
-    context: dict[str, Any] = {}
+    context: dict[str, Any] = {"base_url": request.url_for("get_root").path}
     if worker_keys:
         workers = await worker.redis.mget(worker_keys)
         context["all"] = [
@@ -274,6 +272,7 @@ async def get_cronjobs(
         request,
         "cron.j2",
         context={
+            "base_url": request.url_for("get_root").path,
             "registry": {n: registry[n] for n in ordered_names},
             "schedule": {
                 k: datetime.fromtimestamp(v / 1000, tz=worker.tz).strftime(_fmt)
