@@ -3,6 +3,7 @@ from datetime import datetime
 from statistics import mean
 from typing import Annotated, Any
 
+from anyio.functools import lru_cache
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi import status as fast_status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,6 +42,7 @@ class TaskData(BaseModel):
     url: str
 
 
+@lru_cache(ttl=1)
 async def _get_context(
     worker: Worker[Any], base_url: str, statuses: list[TaskStatus] | None
 ) -> dict[str, Any]:
