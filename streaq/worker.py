@@ -74,7 +74,6 @@ from streaq.constants import (
 )
 from streaq.task import (
     AsyncRegisteredTask,
-    RegisteredTask,
     SyncRegisteredTask,
     Task,
     TaskInfo,
@@ -95,11 +94,11 @@ from streaq.types import (
     StreaqRetry,
     SyncCron,
     SyncTask,
-    TaskContext,
     TaskDecorator,
+    _TaskDepends,  # pyright: ignore[reportPrivateUsage]
+    _WorkerDepends,  # pyright: ignore[reportPrivateUsage]
+    extract_depends,
     is_async_task,
-    task_context,
-    worker_context,
 )
 from streaq.utils import (
     asyncify,
@@ -198,6 +197,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_cancelled_class",
         "_channel_key",
         "_cluster",
+        "_context",
         "_coworkers",
         "_health_key",
         "_initialized",
@@ -389,20 +389,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             raise StreaqError("Worker not initialized, use the async context manager!")
         return self._lib
 
-    def build_context(
-        self, fn_name: str, registered_task: RegisteredTask, id: str, tries: int = 1
-    ) -> TaskContext:
-        """
-        Creates the context for a task to be run given task metadata
-        """
-        return TaskContext(
-            fn_name=fn_name,
-            task_id=id,
-            timeout=registered_task.timeout,
-            tries=tries,
-            ttl=registered_task.ttl,
-        )
-
     def cron(
         self,
         tab: str,
@@ -456,6 +442,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     fn_name=fn_name,
                     crontab=tab,
                     worker=self,
+                    depends=extract_depends(fn),
                 )
                 self.registry[fn_name] = task
                 return task
@@ -470,6 +457,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=fn_name,
                 crontab=tab,
                 worker=self,
+                depends=extract_depends(fn),
             )
             self.registry[fn_name] = task
             return task
@@ -542,6 +530,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     fn_name=fn_name,
                     crontab=None,
                     worker=self,
+                    depends=extract_depends(fn),
                 )
                 self.registry[fn_name] = task
                 return task
@@ -556,6 +545,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=fn_name,
                 crontab=None,
                 worker=self,
+                depends=extract_depends(fn),
             )
             self.registry[fn_name] = task
             return task
@@ -591,7 +581,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         logger.info(f"starting worker {self.id} for queue {self.queue_name}")
         # run user-defined initialization code
         async with self, self.lifespan as context:
-            token = worker_context.set(context)
+            self._context = context
             now = now_ms()
             tasks: list[Task[Any]] = []
             async with self.redis.pipeline(transaction=False) as pipe:
@@ -630,7 +620,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             finally:
                 run_time = to_ms(current_time() - start_time)
                 logger.info(f"shutdown {str(self)} after {run_time}ms")
-                worker_context.reset(token)
 
     async def consumer(
         self, queue: MemoryObjectReceiveStream[StreamMessage], limiter: CapacityLimiter
@@ -1083,9 +1072,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     ttl=task.ttl,
                 )
 
-        _args = data["a"] if not after else self.deserialize(await previous)  # type: ignore
+        args = data["a"] if not after else self.deserialize(await previous)  # type: ignore
+        kwargs = data["k"]
+        for k, v in task.depends.items():
+            if v is _WorkerDepends:
+                kwargs.setdefault(k, self._context)
+            elif v is _TaskDepends:
+                kwargs.setdefault(k, task.build_context(task_id, task_try))
         start_time = now_ms()
-        ctx = self.build_context(task.fn_name, task, task_id, tries=task_try)
         success = True
         schedule = None
         done = True
@@ -1101,14 +1095,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             wrapped = middleware(wrapped)
         result: Any = None
         scope = move_on_after(to_seconds(task.timeout), shield=True)
-        original_deadline, token = scope.deadline, task_context.set(ctx)
+        original_deadline = scope.deadline
         self._cancel_scopes[task_id] = scope
         self._running_tasks[msg.priority].add(msg.message_id)
         if not task.silent:
             logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
         try:
             with scope:
-                result = await wrapped(*_args, **data["k"])
+                result = await wrapped(*args, **kwargs)
         except StreaqRetry as e:
             success, done = False, False
             self.counters["retried"] += 1
@@ -1161,7 +1155,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         finally:
             self._cancel_scopes.pop(task_id, None)
             self._running_tasks[msg.priority].remove(msg.message_id)
-            task_context.reset(token)
         # shield is necessary here
         with CancelScope(shield=True):
             await self.finish_task(
@@ -1239,6 +1232,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             fn_name=fn_name,
             crontab=None,
             worker=self,
+            depends={},
         )
         return Task(args, kwargs, registered, self)
 
@@ -1261,7 +1255,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         enqueue_time = now_ms()
         async with self.redis.pipeline(transaction=False) as pipe:
             for task in tasks:
-                if task._after:  # type: ignore
+                if task._after:  # pyright: ignore[reportPrivateUsage]
                     raise StreaqError("Pipelined tasks can't be enqueued in batches!")
                 data = task.serialize(enqueue_time)
                 if task.schedule:

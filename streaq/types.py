@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Coroutine
-from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from inspect import iscoroutinefunction
+from inspect import iscoroutinefunction, signature
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -73,29 +72,16 @@ class StreaqRetry(StreaqError):
         self.schedule = schedule
 
 
-task_context: ContextVar[TaskContext] = ContextVar("_task_context")
-worker_context: ContextVar[Any] = ContextVar("_worker_context")
-
-
 class _TaskDepends:
-    def __getattr__(self, name: str) -> Any:
-        ctx = task_context.get(None)
-        if not ctx:
-            raise StreaqError(
-                "Task context can only be accessed inside a running worker!"
-            )
-        return getattr(ctx, name)
+    def __getattr__(self, _: str) -> Any:
+        raise StreaqError("Task context can only be accessed inside a running worker!")
 
 
 class _WorkerDepends:
-    def __getattr__(self, name: str) -> Any:
-        try:
-            ctx = worker_context.get()
-        except LookupError as e:
-            raise StreaqError(
-                "Worker context can only be accessed inside a running worker!"
-            ) from e
-        return getattr(ctx, name)
+    def __getattr__(self, _: str) -> Any:
+        raise StreaqError(
+            "Worker context can only be accessed inside a running worker!"
+        )
 
 
 def TaskDepends() -> TaskContext:
@@ -110,6 +96,17 @@ def WorkerDepends() -> Any:
     Simple dependency injection wrapper for worker dependencies.
     """
     return _WorkerDepends()
+
+
+def extract_depends(fn: Callable[..., Any]) -> dict[str, type]:
+    """
+    Check function signature for any dependencies and return them.
+    """
+    depends: dict[str, type] = {}
+    for name, param in signature(fn).parameters.items():
+        if isinstance(param.default, (_TaskDepends, _WorkerDepends)):
+            depends[name] = type(param.default)
+    return depends
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from streaq import TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
+from streaq.task import TaskInfo, TaskResult
 from streaq.ui.deps import (
     get_exception_formatter,
     get_result_formatter,
@@ -43,16 +44,22 @@ class TaskData(BaseModel):
 
 
 @lru_cache(ttl=1)
+async def _get_statuses(
+    worker: Worker[Any], statuses: tuple[TaskStatus, ...]
+) -> tuple[list[TaskInfo] | list[TaskResult[Any]], ...]:
+    return await gather(*[worker.get_tasks_by_status(s) for s in statuses])
+
+
 async def _get_context(
     worker: Worker[Any], base_url: str, statuses: list[TaskStatus] | None
 ) -> dict[str, Any]:
     # Fetch all task types - explicit calls for proper typing
-    statuses = statuses or list(_STATUS_COLORS)
-    alL_tasks = await gather(*[worker.get_tasks_by_status(s) for s in statuses])
+    _statuses = tuple(statuses or _STATUS_COLORS.keys())
+    all_tasks = await _get_statuses(worker, _statuses)
     tasks: list[TaskData] = []
     counts: dict[str, int] = {s.value: 0 for s in _STATUS_COLORS}
-    for i, items in enumerate(alL_tasks):
-        status = statuses[i]
+    for i, items in enumerate(all_tasks):
+        status = _statuses[i]
         color, text_color = _STATUS_COLORS[status]
         counts[status.value] = len(items)
         for item in items:

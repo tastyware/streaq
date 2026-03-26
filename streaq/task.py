@@ -24,6 +24,7 @@ from streaq.types import (
     Streaq,
     StreaqError,
     SyncTask,
+    TaskContext,
     Ts,
     TypedCoroutine,
 )
@@ -354,6 +355,19 @@ class RegisteredTask:
     fn_name: str
     crontab: str | None
     worker: Worker[Any]
+    depends: dict[str, type]
+
+    def build_context(self, id: str, tries: int = 1) -> TaskContext:
+        """
+        Creates the context for a task to be run given task metadata
+        """
+        return TaskContext(
+            fn_name=self.fn_name,
+            task_id=id,
+            timeout=self.timeout,
+            tries=tries,
+            ttl=self.ttl,
+        )
 
 
 @dataclass(kw_only=True)
