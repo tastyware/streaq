@@ -34,15 +34,21 @@ if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
 
 
+# TODO: update to StrEnum when 3.10 support is dropped
 class TaskStatus(str, Enum):
     """
     Enum of possible task statuses:
     """
 
+    #: task doesn't exist in Redis
     NOT_FOUND = "missing"
+    #: task is in the live queue
     QUEUED = "queued"
+    #: task is running on a worker
     RUNNING = "running"
+    #: task is in the delayed queue
     SCHEDULED = "scheduled"
+    #: task was completed
     DONE = "done"
 
 

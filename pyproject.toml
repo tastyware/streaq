@@ -84,7 +84,6 @@ Changelog = "https://github.com/tastyware/streaq/releases"
 
 [dependency-groups]
 dev = [
-    "enum-tools[sphinx]>=0.13.0",
     "httpx>=0.28.1",
     "pyright>=1.1.406",
     "pytest>=8.4.2",
