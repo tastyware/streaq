@@ -657,7 +657,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Periodically renew idle timeout for running tasks. This allows the queue to
         be resilient to sudden shutdowns. Additionally marks worker as healthy.
         """
-        timeout = self.idle_timeout / 1000 / 2  # 50% buffer
+        timeout = self.idle_timeout / 1000 * 0.9  # 10% buffer
         # prevent cancellation until consumers finish
         with scope:
             while True:
@@ -744,7 +744,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                                         enqueue_time=int(msg.get("enqueue_time", 0)),
                                     )
                                     for msg_id, msg in msgs
-                                    if msg_id not in self._running_tasks[priority]
                                 ]
                             )
                         # start new tasks
@@ -1154,7 +1153,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     success, done = False, False
         finally:
             self._cancel_scopes.pop(task_id, None)
-            self._running_tasks[msg.priority].remove(msg.message_id)
+            try:
+                self._running_tasks[msg.priority].remove(msg.message_id)
+            except KeyError:  # pragma: no cover
+                logger.critical(
+                    f"Task {task_id} ran twice in the same worker! The event loop is "
+                    f"getting blocked for extended periods of time. Consider using "
+                    f"`anyio.to_thread()` or explore non-blocking alternatives."
+                )
         # shield is necessary here
         with CancelScope(shield=True):
             await self.finish_task(
