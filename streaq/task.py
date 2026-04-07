@@ -353,6 +353,7 @@ class Task(Generic[R]):
 @dataclass(kw_only=True)
 class RegisteredTask:
     expire: timedelta | int | None
+    max_schedule_drift: timedelta | int | None
     max_tries: int | None
     silent: bool
     timeout: timedelta | int | None

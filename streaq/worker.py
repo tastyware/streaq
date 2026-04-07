@@ -393,6 +393,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self,
         tab: str,
         *,
+        max_schedule_drift: timedelta | int | None = None,
         max_tries: int | None = 3,
         name: str | None = None,
         silent: bool = False,
@@ -406,6 +407,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param tab:
             crontab for scheduling, follows the specification
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
+        :param max_schedule_drift:
+            maximum time a cron task can sit in the stream unexecuted before being
+            discarded. Guards against stale replay after worker restart. If None
+            (default), no check is performed.
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the cron job instead of the function name
@@ -434,6 +439,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 task = AsyncRegisteredTask(
                     fn=fn,
                     expire=None,
+                    max_schedule_drift=max_schedule_drift,
                     max_tries=max_tries,
                     silent=silent,
                     timeout=timeout,
@@ -449,6 +455,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             task = SyncRegisteredTask(
                 fn=fn,
                 expire=None,
+                max_schedule_drift=max_schedule_drift,
                 max_tries=max_tries,
                 silent=silent,
                 timeout=timeout,
@@ -522,6 +529,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 task = AsyncRegisteredTask(
                     fn=fn,
                     expire=expire,
+                    max_schedule_drift=None,
                     max_tries=max_tries,
                     silent=silent,
                     timeout=timeout,
@@ -537,6 +545,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             task = SyncRegisteredTask(
                 fn=fn,
                 expire=expire,
+                max_schedule_drift=None,
                 max_tries=max_tries,
                 silent=silent,
                 timeout=timeout,
@@ -1034,6 +1043,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=fn_name,
                 ttl=task.ttl,
             )
+        if task.max_schedule_drift is not None:
+            if now_ms() - msg.enqueue_time > to_ms(task.max_schedule_drift):
+                if not task.silent:
+                    logger.warning(
+                        f"task † {task_id} exceeded max_schedule_drift, skipping"
+                    )
+                return await self.finish_failed_task(
+                    msg,
+                    StreaqError("Cron task exceeded max_schedule_drift!"),
+                    task_try,
+                    data["t"],
+                    fn_name=fn_name,
+                    ttl=task.ttl,
+                )
 
         timeout = (
             None if task.timeout is None else self.idle_timeout + to_ms(task.timeout)
@@ -1230,6 +1253,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         registered = AsyncRegisteredTask(
             fn=_placeholder,
             expire=None,
+            max_schedule_drift=None,
             max_tries=None,
             silent=False,
             timeout=None,

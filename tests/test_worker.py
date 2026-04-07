@@ -8,6 +8,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -16,10 +17,10 @@ from anyio import create_task_group, sleep
 from coredis import RedisCluster
 from coredis.connection import TCPLocation
 
-from streaq.constants import REDIS_TASK
+from streaq.constants import REDIS_QUEUE, REDIS_TASK
 from streaq.task import TaskStatus
 from streaq.types import StreaqError, WorkerDepends
-from streaq.utils import gather
+from streaq.utils import gather, now_ms
 from streaq.worker import Worker
 from tests.conftest import run_worker
 
@@ -525,3 +526,115 @@ async def test_get_tasks_by_status_empty_done(worker: Worker):
 def test_health_tab():
     with pytest.warns(match="deprecated as it no longer does anything"):
         _ = Worker(health_crontab="*/5 * * * *")
+
+
+async def test_cron_max_schedule_drift_stale(redis_url: str):
+    """Stale cron task (enqueue_time older than max_schedule_drift) is discarded."""
+    called = False
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+
+    @worker.cron("0 0 1 1 *", max_schedule_drift=timedelta(seconds=5))
+    async def stale_job() -> None:
+        nonlocal called
+        called = True
+
+    stale_enqueue_time = now_ms() - 60_000  # 60 seconds ago, well outside 5s window
+    task = stale_job.enqueue()
+    serialized = task.serialize(stale_enqueue_time)
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        # inject task data and stream entry with stale timestamp
+        await worker.redis.set(worker.prefix + REDIS_TASK + task.id, serialized)
+        await worker.redis.xadd(
+            worker.stream_key + worker.priorities[-1],
+            {"task_id": task.id, "enqueue_time": stale_enqueue_time},
+        )
+        result = await task.result(5)
+        assert not result.success
+        assert "max_schedule_drift" in str(result.exception)
+        assert not called
+        tg.cancel_scope.cancel()
+
+
+async def test_cron_max_schedule_drift_fresh(redis_url: str):
+    """Fresh cron task (enqueue_time within max_schedule_drift) executes normally."""
+    called = False
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+
+    @worker.cron("0 0 1 1 *", max_schedule_drift=timedelta(minutes=5))
+    async def fresh_job() -> None:
+        nonlocal called
+        called = True
+
+    fresh_enqueue_time = now_ms()  # enqueued right now, within 5-minute window
+    task = fresh_job.enqueue()
+    serialized = task.serialize(fresh_enqueue_time)
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        await worker.redis.set(worker.prefix + REDIS_TASK + task.id, serialized)
+        await worker.redis.xadd(
+            worker.stream_key + worker.priorities[-1],
+            {"task_id": task.id, "enqueue_time": fresh_enqueue_time},
+        )
+        result = await task.result(5)
+        assert result.success
+        assert called
+        tg.cancel_scope.cancel()
+
+
+async def test_cron_no_max_schedule_drift(redis_url: str):
+    """Without max_schedule_drift set, stale tasks are never skipped."""
+    called = False
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+
+    @worker.cron("0 0 1 1 *")  # no max_schedule_drift
+    async def no_drift_job() -> None:
+        nonlocal called
+        called = True
+
+    stale_enqueue_time = now_ms() - 3_600_000  # 1 hour ago
+    task = no_drift_job.enqueue()
+    serialized = task.serialize(stale_enqueue_time)
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        await worker.redis.set(worker.prefix + REDIS_TASK + task.id, serialized)
+        await worker.redis.xadd(
+            worker.stream_key + worker.priorities[-1],
+            {"task_id": task.id, "enqueue_time": stale_enqueue_time},
+        )
+        result = await task.result(5)
+        assert result.success
+        assert called
+        tg.cancel_scope.cancel()
+
+
+async def test_cron_max_schedule_drift_stale_via_zset(redis_url: str):
+    """Stale cron task promoted from the delayed ZSET (the real worker-restart path) is discarded."""
+    called = False
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+
+    @worker.cron("0 0 1 1 *", max_schedule_drift=timedelta(seconds=5))
+    async def stale_zset_job() -> None:
+        nonlocal called
+        called = True
+
+    stale_score = now_ms() - 60_000  # scheduled 60 seconds ago, well outside 5s window
+    task = stale_zset_job.enqueue()
+    serialized = task.serialize(stale_score)
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        # simulate restart scenario: task data in Redis, task ID in delayed ZSET with stale score
+        await worker.redis.set(worker.prefix + REDIS_TASK + task.id, serialized)
+        await worker.redis.zadd(
+            worker.prefix + REDIS_QUEUE + worker.priorities[-1],
+            {task.id: stale_score},
+        )
+        result = await task.result(5)
+        assert not result.success
+        assert "max_schedule_drift" in str(result.exception)
+        assert not called
+        tg.cancel_scope.cancel()
