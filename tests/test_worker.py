@@ -612,7 +612,7 @@ async def test_cron_no_max_schedule_drift(redis_url: str):
 
 
 async def test_cron_max_schedule_drift_stale_via_zset(redis_url: str):
-    """Stale cron task promoted from the delayed ZSET (the real worker-restart path) is discarded."""
+    """Stale cron task promoted from the delayed ZSET (worker-restart path) is discarded."""
     called = False
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 
@@ -627,7 +627,7 @@ async def test_cron_max_schedule_drift_stale_via_zset(redis_url: str):
 
     async with create_task_group() as tg:
         await tg.start(worker.run_async)
-        # simulate restart scenario: task data in Redis, task ID in delayed ZSET with stale score
+        # simulate restart: task data in Redis, task ID in delayed ZSET with stale score
         await worker.redis.set(worker.prefix + REDIS_TASK + task.id, serialized)
         await worker.redis.zadd(
             worker.prefix + REDIS_QUEUE + worker.priorities[-1],
