@@ -7,17 +7,13 @@ import warnings
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
+from functools import wraps
 from hashlib import sha256
-from inspect import iscoroutinefunction
+from inspect import iscoroutinefunction, signature
 from textwrap import shorten
-from typing import (
-    Any,
-    Generic,
-    Literal,
-    cast,
-    overload,
-)
+from typing import Any, Generic, Literal, cast, overload
 from uuid import UUID, uuid4
 
 from anyio import (
@@ -87,6 +83,7 @@ from streaq.types import (
     Middleware,
     P,
     R,
+    ReturnCoroutine,
     StreamMessage,
     Streaq,
     StreaqCancelled,
@@ -94,6 +91,7 @@ from streaq.types import (
     StreaqRetry,
     SyncCron,
     SyncTask,
+    TaskContext,
     TaskDecorator,
     _TaskDepends,  # pyright: ignore[reportPrivateUsage]
     _WorkerDepends,  # pyright: ignore[reportPrivateUsage]
@@ -206,6 +204,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         "_redis",
         "_running_tasks",
         "_sentinel",
+        "_task_context",
     )
 
     def __init__(
@@ -316,6 +315,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._running_tasks: dict[str, set[str]] = defaultdict(set)
         self._limiter = CapacityLimiter(self.sync_concurrency)
         self._initialized = False
+        self._task_context: ContextVar[TaskContext] = ContextVar("_task_context")
         # precalculate Redis prefixes
         self.prefix = REDIS_PREFIX + self.queue_name
         self.cron_data_key = self.prefix + REDIS_CRON + "data:"
@@ -554,12 +554,33 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return wrapped(fn)
         return wrapped
 
-    def middleware(self, fn: Middleware) -> Middleware:
+    def middleware(self, original_middleware: Middleware) -> Middleware:
         """
         Registers the given middleware with the worker.
         """
-        self.middlewares.append(fn)
-        return fn
+
+        @wraps(original_middleware)
+        def modified_middleware(fn: ReturnCoroutine) -> ReturnCoroutine:
+            original_handler = original_middleware(fn)
+            depends = {
+                k: type(v.default)
+                for k, v in signature(original_handler).parameters.items()
+                if isinstance(v.default, (_TaskDepends, _WorkerDepends))
+            }
+
+            @wraps(original_handler)
+            async def modified_handler(*args: Any, **kwargs: Any) -> Any:
+                for k, v in depends.items():
+                    if v is _TaskDepends:
+                        kwargs.setdefault(k, self._task_context.get())
+                    else:
+                        kwargs.setdefault(k, self._context)
+                return await original_handler(*args, **kwargs)
+
+            return modified_handler
+
+        self.middlewares.append(modified_middleware)
+        return modified_middleware
 
     def run_sync(self) -> None:
         """
@@ -1071,25 +1092,28 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     ttl=task.ttl,
                 )
 
+        task_context = task.build_context(task_id, task_try)
         args = data["a"] if not after else self.deserialize(await previous)  # type: ignore
         kwargs = data["k"]
-        for k, v in task.depends.items():
-            if v is _WorkerDepends:
-                kwargs.setdefault(k, self._context)
-            elif v is _TaskDepends:
-                kwargs.setdefault(k, task.build_context(task_id, task_try))
         start_time = now_ms()
         success = True
         schedule = None
         done = True
 
-        async def _fn(*args: Any, **kwargs: Any) -> Any:
+        async def fn(*args: Any, **kwargs: Any) -> Any:
+            # inject dependencies
+            for k, v in task.depends.items():
+                if v is _WorkerDepends:
+                    kwargs.setdefault(k, self._context)
+                elif v is _TaskDepends:
+                    kwargs.setdefault(k, task_context)
+            # run underlying task function
             if iscoroutinefunction(task.fn):
                 return await task.fn(*args, **kwargs)
             return await asyncify(task.fn, self._limiter)(*args, **kwargs)
 
         # apply middlewares in reverse order
-        wrapped = _fn
+        wrapped = fn
         for middleware in reversed(self.middlewares):
             wrapped = middleware(wrapped)
         result: Any = None
@@ -1097,6 +1121,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         original_deadline = scope.deadline
         self._cancel_scopes[task_id] = scope
         self._running_tasks[msg.priority].add(msg.message_id)
+        token = self._task_context.set(task_context)
         if not task.silent:
             logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
         try:
@@ -1153,6 +1178,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     success, done = False, False
         finally:
             self._cancel_scopes.pop(task_id, None)
+            self._task_context.reset(token)
             try:
                 self._running_tasks[msg.priority].remove(msg.message_id)
             except KeyError:  # pragma: no cover

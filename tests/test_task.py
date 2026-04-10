@@ -1,4 +1,5 @@
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,7 @@ from streaq.types import (
     StreaqRetry,
     TaskContext,
     TaskDepends,
+    WorkerDepends,
 )
 from streaq.utils import gather
 from streaq.worker import Worker
@@ -465,6 +467,76 @@ async def test_middleware(worker: Worker):
         res = await task.result(3)
         assert res.success
         assert res.result == 4
+
+
+async def test_middleware_with_dependencies(redis_url: str):
+
+    @asynccontextmanager
+    async def lifespan():
+        yield 1
+
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex, lifespan=lifespan)
+
+    @worker.task
+    async def foobar() -> int:
+        return 2
+
+    @worker.middleware
+    def retry(task: ReturnCoroutine) -> ReturnCoroutine:
+        async def wrapper(
+            *args,
+            ctx: TaskContext = TaskDepends(),
+            worker_context: int = WorkerDepends(),
+            **kwargs,
+        ) -> Any:
+            res: int = await task(*args, **kwargs)
+            if worker_context + ctx.tries <= res:
+                raise StreaqRetry("Not enough!")
+            return res
+
+        return wrapper
+
+    async with run_worker(worker):
+        task = await foobar.enqueue()
+        res = await task.result(3)
+        assert res.success
+        assert res.result == 2
+
+
+async def test_middleware_duplicate_param_names(redis_url: str):
+
+    @asynccontextmanager
+    async def lifespan():
+        yield 1
+
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex, lifespan=lifespan)
+
+    @worker.task
+    async def incr(val: int, ctx: int = WorkerDepends()) -> int:
+        assert ctx == 1
+        return val + ctx
+
+    @worker.middleware
+    def first(task: ReturnCoroutine) -> ReturnCoroutine:
+        async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
+            assert isinstance(ctx, TaskContext)
+            return await task(*args, **kwargs)
+
+        return wrapper
+
+    @worker.middleware
+    def second(task: ReturnCoroutine) -> ReturnCoroutine:
+        async def wrapper(*args, ctx: int = WorkerDepends(), **kwargs) -> Any:
+            assert ctx == 1
+            return await task(*args, **kwargs)
+
+        return wrapper
+
+    async with run_worker(worker):
+        task = await incr.enqueue(1)
+        res = await task.result(3)
+        assert res.success
+        assert res.result == 2
 
 
 async def test_task_pipeline(worker: Worker):
