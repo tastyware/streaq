@@ -408,9 +408,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             crontab for scheduling, follows the specification
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param max_schedule_drift:
-            maximum time a cron task can sit in the stream unexecuted before being
-            discarded. Guards against stale replay after worker restart. If None
-            (default), no check is performed.
+            maximum amount of time a cron task can be delayed from its scheduled
+            execution time before getting discarded. If None, no check is performed.
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the cron job instead of the function name
@@ -1047,11 +1046,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             if now_ms() - msg.enqueue_time > to_ms(task.max_schedule_drift):
                 if not task.silent:
                     logger.warning(
-                        f"task † {task_id} exceeded max_schedule_drift, skipping"
+                        f"task {fn_name} ⊘ {task_id} missed scheduled time, skipping"
                     )
                 return await self.finish_failed_task(
                     msg,
-                    StreaqError("Cron task exceeded max_schedule_drift!"),
+                    StreaqError("Cron task exceeded max schedule drift!"),
                     task_try,
                     data["t"],
                     fn_name=fn_name,
