@@ -80,7 +80,7 @@ async def test_task_cron(worker: Worker):
     async def cron1() -> bool:
         return True
 
-    @worker.cron("* * * * * * *")  # once/second
+    @worker.cron("* * * * * *")  # once/second
     async def cron2() -> None:
         await sleep(5)
 
@@ -427,7 +427,7 @@ async def test_failed_abort(worker: Worker, wait: int):
 
 
 async def test_sync_cron(worker: Worker):
-    @worker.cron("* * * * * * *")
+    @worker.cron("* * * * * *")
     def cronjob() -> None:
         time.sleep(3)
 
@@ -439,7 +439,7 @@ async def test_sync_cron(worker: Worker):
 async def test_cron_multiple_runs(worker: Worker):
     val = 0
 
-    @worker.cron("* * * * * * *")
+    @worker.cron("* * * * * *")
     async def cronjob() -> None:
         nonlocal val
         val += 1
@@ -470,7 +470,6 @@ async def test_middleware(worker: Worker):
 
 
 async def test_middleware_with_dependencies(redis_url: str):
-
     @asynccontextmanager
     async def lifespan():
         yield 1
@@ -504,7 +503,6 @@ async def test_middleware_with_dependencies(redis_url: str):
 
 
 async def test_middleware_duplicate_param_names(redis_url: str):
-
     @asynccontextmanager
     async def lifespan():
         yield 1
@@ -612,7 +610,7 @@ async def test_task_with_custom_name(worker: Worker):
 
 
 async def test_cron_with_custom_name(worker: Worker):
-    @worker.cron("* * * * * * *", name="foo")
+    @worker.cron("* * * * * *", name="foo")
     async def cronjob() -> None:
         await sleep(3)
 
@@ -621,7 +619,7 @@ async def test_cron_with_custom_name(worker: Worker):
 
     assert cronjob.fn_name == "foo"
     with pytest.raises(StreaqError):
-        worker.cron("* * * * * * *", name="foo")(cronjob1)
+        worker.cron("* * * * * *", name="foo")(cronjob1)
 
     async with run_worker(worker):
         await sleep(2)
@@ -684,7 +682,7 @@ async def test_dynamic_cron(worker: Worker):
         vals.append(val)
 
     async with run_worker(worker):
-        task = await foobar.enqueue(1).start(schedule="* * * * * * *")
+        task = await foobar.enqueue(1).start(schedule="* * * * * *")
         await sleep(2)
         assert vals
         await task.unschedule()

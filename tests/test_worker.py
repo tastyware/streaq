@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 from anyio import create_task_group, sleep
-from coredis import RedisCluster
+from coredis import ClusterConnectionPool, ConnectionPool, RedisCluster
 from coredis.connection import TCPLocation
 
 from streaq.constants import REDIS_TASK
@@ -303,8 +303,6 @@ async def test_custom_worker_id(redis_url: str):
 
 
 def test_connection_pool(redis_url: str):
-    from coredis import ConnectionPool
-
     pool = ConnectionPool.from_url(redis_url, decode_responses=True)
     worker = Worker(redis_pool=pool, queue_name=uuid4().hex)
     worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)
@@ -312,16 +310,12 @@ def test_connection_pool(redis_url: str):
 
 
 def test_connection_pool_illegal(redis_url: str):
-    from coredis import ConnectionPool
-
     pool = ConnectionPool.from_url(redis_url, decode_responses=False, max_connections=4)
     with pytest.raises(StreaqError):
         _ = Worker(redis_pool=pool, queue_name=uuid4().hex)
 
 
 def test_cluster_connection_pool():
-    from coredis import ClusterConnectionPool
-
     pool = ClusterConnectionPool(
         startup_nodes=[TCPLocation("cluster-1", 7000)], decode_responses=True
     )
@@ -397,13 +391,15 @@ async def test_include_duplicate(redis_url: str, worker: Worker):
         worker.include(worker2)
 
 
-async def test_grace_period(worker: Worker):
+async def test_grace_period(redis_url: str):
+    pool = ConnectionPool.from_url(redis_url, decode_responses=True)
+    worker = Worker(redis_pool=pool, queue_name=uuid4().hex, grace_period=3)
+
     @worker.task
     async def foobar() -> None:
         await sleep(3)
 
-    worker.grace_period = 3
-    async with create_task_group() as tg:
+    async with pool, create_task_group() as tg:
         await tg.start(worker.run_async)
         task = await foobar.enqueue()
         await sleep(1)
@@ -412,21 +408,24 @@ async def test_grace_period(worker: Worker):
         assert res.success
 
 
-async def test_grace_period_no_new_tasks(worker: Worker):
+async def test_grace_period_no_new_tasks(redis_url: str):
+    pool = ConnectionPool.from_url(redis_url, decode_responses=True)
+    worker = Worker(redis_pool=pool, queue_name=uuid4().hex, grace_period=5)
+
     @worker.task
     async def foobar() -> None:
         await sleep(3)
 
-    worker.grace_period = 5
-    task = foobar.enqueue().start(delay=1)
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
-        await foobar.enqueue()
-        await sleep(1)
-        await task
-        os.kill(os.getpid(), signal.SIGINT)
-    async with worker:
-        assert await task.status() == TaskStatus.SCHEDULED
+    async with pool:
+        task = foobar.enqueue().start(delay=1)
+        async with create_task_group() as tg:
+            await tg.start(worker.run_async)
+            await foobar.enqueue()
+            await sleep(1)
+            await task
+            os.kill(os.getpid(), signal.SIGINT)
+        async with worker:
+            assert await task.status() == TaskStatus.SCHEDULED
 
 
 async def test_get_tasks_by_status_scheduled(worker: Worker):
@@ -521,11 +520,6 @@ async def test_get_tasks_by_status_empty_done(worker: Worker):
     async with worker:
         completed = await worker.get_tasks_by_status(TaskStatus.DONE)
         assert completed == []
-
-
-def test_health_tab():
-    with pytest.warns(match="deprecated as it no longer does anything"):
-        _ = Worker(health_crontab="*/5 * * * *")
 
 
 async def test_cron_max_schedule_drift_stale(worker: Worker):

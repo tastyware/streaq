@@ -3,7 +3,7 @@ import os
 import signal
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import timezone
+from datetime import UTC
 from uuid import uuid4
 
 import pytest
@@ -12,7 +12,7 @@ from anyio import create_task_group
 from streaq import Worker
 from streaq.utils import default_log_config
 
-logging.config.dictConfig(default_log_config(timezone.utc, False))
+logging.config.dictConfig(default_log_config(UTC, False))
 
 
 @pytest.fixture(scope="session")

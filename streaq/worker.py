@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import hmac
+import inspect
 import pickle
 import signal
-import warnings
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from functools import wraps
 from hashlib import sha256
 from inspect import iscoroutinefunction, signature
 from textwrap import shorten
-from typing import Any, Generic, Literal, cast, overload
+from typing import Any, Generic, Literal, Self, cast, overload
 from uuid import UUID, uuid4
 
 from anyio import (
@@ -46,8 +46,7 @@ from coredis.commands import CommandRequest
 from coredis.connection import TCPLocation
 from coredis.response.types import ScoredMember
 from coredis.typing import KeyT
-from crontab import CronTab
-from typing_extensions import Self
+from cronsim import CronSim
 
 from streaq import logger
 from streaq.constants import (
@@ -218,11 +217,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priorities: list[str] | None = None,
         prefetch: int | None = None,
         lifespan: Callable[[], AbstractAsyncContextManager[C]] = _lifespan,
-        serializer: Callable[[Any], bytes | str] = pickle.dumps,
+        serializer: Callable[
+            [Any], bytes | str | Awaitable[bytes | str]
+        ] = pickle.dumps,
         deserializer: Callable[[bytes], Any] = pickle.loads,
-        tz: tzinfo = timezone.utc,
+        tz: tzinfo = UTC,
         handle_signals: bool = True,
-        health_crontab: str | None = None,
         signing_secret: str | None = None,
         idle_timeout: timedelta | float = 60,
         grace_period: int = 0,
@@ -234,14 +234,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         cluster_nodes: list[tuple[str, int]] | None = None,
         id: str | None = None,
     ):
-        # TODO: remove in v7
-        if health_crontab:
-            warnings.warn(
-                "`health_crontab` is deprecated as it no longer does anything and will "
-                "be removed in v7.0.0.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         # Redis connection
         redis_kwargs = redis_kwargs or {}
         if redis_kwargs.pop("decode_responses", None) is not None:
@@ -405,8 +397,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Registers a task to be run at regular intervals as specified.
 
         :param tab:
-            crontab for scheduling, follows the specification
-            `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
+            crontab for scheduling, follows the specification `here <https://github.com/cuu508/cronsim>`_.
         :param max_schedule_drift:
             maximum amount of time a cron task can be delayed from its scheduled
             execution time before getting discarded. If None, no check is performed.
@@ -627,7 +618,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     task = cj.enqueue().start(schedule=dt)
                     task.id = _deterministic_id(cj.fn_name + str(ts))
                     tasks.append(task)
-                    pipe.set(self.cron_data_key + cj.fn_name, task.serialize(now))
+                    pipe.set(self.cron_data_key + cj.fn_name, await task.serialize(now))
                     pipe.hset(self.cron_registry_key, {cj.fn_name: cj.crontab})
                     pipe.zadd(self.cron_schedule_key, {cj.fn_name: ts})
             await self.enqueue_many(tasks)
@@ -861,7 +852,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             "t": tries,
             "w": self.id,
         }
-        raw = self.serialize(data)
+        raw = await self.serialize(data)
 
         def key(mid: str) -> str:
             return self.prefix + mid + task_id
@@ -926,7 +917,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 "t": tries,
                 "w": self.id,
             }
-            result = self.serialize(data)
+            result = await self.serialize(data)
             async with self.redis.pipeline(transaction=True) as pipe:
                 lib = Streaq(pipe)
                 pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
@@ -946,7 +937,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         output = shorten(str(return_value), width=32)
                         logger.info(f"task {fn_name} ■ {task_id} ← {output}")
                     if triggers:
-                        args = self.serialize(to_tuple(return_value))
+                        args = await self.serialize(to_tuple(return_value))
                         pipe.set(key(REDIS_PREVIOUS), args, ex=timedelta(minutes=5))
                     command = lib.update_dependents(
                         self.prefix + REDIS_DEPENDENTS,
@@ -1023,7 +1014,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return None
 
         try:
-            data = self.deserialize(raw)
+            data = await self.deserialize(raw)
         except StreaqError as e:
             logger.error(f"task ☒ {task_id} failed to deserialize")
             return await self.finish_failed_task(msg, e, task_try, 0)
@@ -1115,7 +1106,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
 
         task_context = task.build_context(task_id, task_try)
-        args = data["a"] if not after else self.deserialize(await previous)  # type: ignore
+        args = data["a"] if not after else await self.deserialize(await previous)  # type: ignore
         kwargs = data["k"]
         start_time = now_ms()
         success = True
@@ -1244,7 +1235,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             "t": 0,
             "w": self.id,
         }
-        result = self.serialize(failure)
+        result = await self.serialize(failure)
         self.counters["failed"] += len(dependents)
         to_delete: list[KeyT] = []
         async with self.redis.pipeline(transaction=False) as pipe:
@@ -1312,7 +1303,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             for task in tasks:
                 if task._after:  # pyright: ignore[reportPrivateUsage]
                     raise StreaqError("Pipelined tasks can't be enqueued in batches!")
-                data = task.serialize(enqueue_time)
+                data = await task.serialize(enqueue_time)
                 if task.schedule:
                     if isinstance(task.schedule, str):
                         score = self.next_run(task.schedule)
@@ -1364,7 +1355,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         return sum(await gather(*commands))
 
     def _next_datetime(self, tab: str) -> datetime:
-        return CronTab(tab).next(now=datetime.now(self.tz), return_datetime=True)  # type: ignore
+        it = CronSim(tab, datetime.now(self.tz))
+        return next(it)
 
     def next_run(self, tab: str) -> int:
         """
@@ -1452,7 +1444,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 if not (raw := await self.redis.get(result_key)):
                     msg = await anext(pubsub)
                     raw = msg["data"]
-        data = self.deserialize(raw)
+        data = await self.deserialize(raw)
         return TaskResult(
             task_id=task_id,
             fn_name=data["f"],
@@ -1516,7 +1508,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     msg = await anext(pubsub)
                     raw = msg["data"]
                     # build result
-                    data = self.deserialize(raw)
+                    data = await self.deserialize(raw)
                     return not data["s"] and isinstance(data["r"], StreaqCancelled)
             return False
 
@@ -1547,7 +1539,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         result, raw, try_count, dependencies, dependents = await gather(*commands)
         if result or not raw:  # if result exists or task data doesn't
             return None
-        data = self.deserialize(raw)
+        data = await self.deserialize(raw)
         res = await gather(*delayed)
         score = next((r for r in res if r), None)
         dt = datetime.fromtimestamp(score / 1000, tz=self.tz) if score else None
@@ -1662,7 +1654,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         ):
             # it's possible the task got aborted or finished between the pipe and now
             if raw:
-                data = self.deserialize(raw)
+                data = await self.deserialize(raw)
                 if scores:
                     dt = datetime.fromtimestamp(scores[i] / 1000, tz=self.tz)
                 else:
@@ -1802,7 +1794,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         results: list[TaskResult[Any]] = []
         for task_id, raw in zip(task_ids, serialized):
             if raw:
-                data = self.deserialize(raw)
+                data = await self.deserialize(raw)
                 results.append(
                     TaskResult(
                         task_id=task_id,
@@ -1819,12 +1811,13 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
         return results
 
-    def serialize(self, data: Any) -> str | bytes:
+    async def serialize(self, data: Any) -> str | bytes:
         """
         Wrap serializer to append signature as last 32 bytes if applicable.
         """
         try:
-            serialized = self.serializer(data)
+            out = self.serializer(data)
+            serialized = await out if inspect.isawaitable(out) else out
         except Exception as e:
             raise StreaqError(f"Failed to serialize data: {data}") from e
         if self.signing_secret:
@@ -1834,7 +1827,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             serialized += hmac.digest(self.signing_secret, serialized, "sha256")
         return serialized
 
-    def deserialize(self, data: Any) -> Any:
+    async def deserialize(self, data: Any) -> Any:
         """
         Wrap deserializer to validate signature from last 32 bytes if applicable.
         """
@@ -1845,6 +1838,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 if not hmac.compare_digest(signature, verify):
                     raise StreaqError("Invalid signature for task data!")
                 data = data_bytes
-            return self.deserializer(data)
+            out = self.deserializer(data)
+            return await out if inspect.isawaitable(out) else out
         except Exception as e:
             raise StreaqError(f"Failed to deserialize data: {data}") from e

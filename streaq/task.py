@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -12,8 +12,6 @@ from typing import (
     overload,
 )
 from uuid import uuid4
-
-from typing_extensions import Unpack
 
 from streaq.constants import REDIS_TASK
 from streaq.types import (
@@ -34,8 +32,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
 
 
-# TODO: update to StrEnum when 3.10 support is dropped
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """
     Enum of possible task statuses:
     """
@@ -141,8 +138,7 @@ class Task(Generic[R]):
         :param delay: duration to wait before running the task
         :param schedule:
             datetime at which to run the task, or crontab for repeated scheduling,
-            follows the specification
-            `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
+            follows the specification `here <https://github.com/cuu508/cronsim>`_.
         :param priority: priority queue to insert the task
 
         :return: self
@@ -169,7 +165,7 @@ class Task(Generic[R]):
         if self._after:
             self.after.append(self._after.id)
         enqueue_time = now_ms()
-        data = self.serialize(enqueue_time)
+        data = await self.serialize(enqueue_time)
         self.priority = self.priority or self.worker.priorities[-1]
         expire = to_ms(self.parent.expire or 0)
         if self.schedule:
@@ -229,9 +225,8 @@ class Task(Generic[R]):
 
     @overload
     def then(
-        self: Task[tuple[Unpack[Ts]]],
-        task: Callable[[Unpack[Ts]], TypedCoroutine[ROther]]
-        | Callable[[Unpack[Ts]], ROther],
+        self: Task[tuple[*Ts]],
+        task: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
         **kwargs: Any,
     ) -> Task[ROther]: ...
 
@@ -269,9 +264,8 @@ class Task(Generic[R]):
 
     @overload
     def __or__(
-        self: Task[tuple[Unpack[Ts]]],
-        other: Callable[[Unpack[Ts]], TypedCoroutine[ROther]]
-        | Callable[[Unpack[Ts]], ROther],
+        self: Task[tuple[*Ts]],
+        other: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
     ) -> Task[ROther]: ...
 
     def __or__(self: Task[Any], other: Any) -> Task[Any]:
@@ -282,7 +276,7 @@ class Task(Generic[R]):
     def task_key(self, mid: str) -> str:
         return self.worker.prefix + mid + self.id
 
-    def serialize(self, enqueue_time: int) -> Any:
+    async def serialize(self, enqueue_time: int) -> Any:
         """
         Serializes the task data for sending to the queue.
 
@@ -301,7 +295,7 @@ class Task(Generic[R]):
                 data["A"] = self._after.id
             if self._triggers:
                 data["T"] = self._triggers.id
-            return self.worker.serialize(data)
+            return await self.worker.serialize(data)
         except Exception as e:
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
 
