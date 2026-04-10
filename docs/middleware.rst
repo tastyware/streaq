@@ -25,6 +25,9 @@ You can define middleware to wrap task execution. This has a host of potential a
 
 Middleware are structured as wrapped functions for maximum flexibility--not only can you run code before/after execution, you can also access and even modify the arguments or results.
 
+.. warning::
+   Adding named keyword arguments to middleware (such as ``ctx`` here) will shadow arguments in your tasks with the same name, so use with caution!
+
 Stacking middleware
 -------------------
 
