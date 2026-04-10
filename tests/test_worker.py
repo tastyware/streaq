@@ -612,7 +612,7 @@ async def test_cron_no_max_schedule_drift(redis_url: str):
 
 
 async def test_cron_max_schedule_drift_stale_via_zset(redis_url: str):
-    """Stale cron task promoted from the delayed ZSET (worker-restart path) is discarded."""
+    """Stale cron task promoted from delayed ZSET is discarded."""
     called = False
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
 

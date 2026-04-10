@@ -66,8 +66,7 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
       local stream = stream_key .. priority
       -- add ready tasks to live queue, using scheduled fire time as enqueue_time
       for j=1, #tids, 2 do
-        local scheduled_time = tostring(math.floor(tonumber(tids[j+1])))
-        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', scheduled_time)
+        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', tids[j+1])
       end
     end
   end
