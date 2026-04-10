@@ -8,6 +8,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -525,3 +526,43 @@ async def test_get_tasks_by_status_empty_done(worker: Worker):
 def test_health_tab():
     with pytest.warns(match="deprecated as it no longer does anything"):
         _ = Worker(health_crontab="*/5 * * * *")
+
+
+async def test_cron_max_schedule_drift_stale(worker: Worker):
+    @worker.cron("* * * * *", max_schedule_drift=timedelta(seconds=5))
+    async def every_minute() -> None: ...
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        # simulate previously enqueued with old timestamp
+        task = await every_minute.enqueue().start(schedule=datetime(2022, 2, 22))
+        result = await task.result(5)
+        assert not result.success
+        assert "max schedule drift" in str(result.exception)
+        tg.cancel_scope.cancel()
+
+
+async def test_cron_max_schedule_drift_fresh(worker: Worker):
+    @worker.cron("* * * * *", max_schedule_drift=timedelta(seconds=5))
+    async def every_minute() -> None: ...
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        # simulate previously enqueued with old timestamp
+        task = await every_minute.enqueue()
+        result = await task.result(5)
+        assert result.success
+        tg.cancel_scope.cancel()
+
+
+async def test_cron_no_max_schedule_drift(worker: Worker):
+    @worker.cron("* * * * *")
+    async def every_minute() -> None: ...
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        # simulate previously enqueued with old timestamp
+        task = await every_minute.enqueue().start(schedule=datetime(2022, 2, 22))
+        result = await task.result(5)
+        assert result.success
+        tg.cancel_scope.cancel()

@@ -58,15 +58,15 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
   for i=2, #argv do
     local priority = argv[i]
     local queue = queue_key .. priority
-    -- get and delete tasks ready to run from delayed queue
-    local tids = redis.call('zrange', queue, 0, current_time, 'byscore')
+    -- get and delete tasks ready to run from delayed queue (with scores)
+    local tids = redis.call('zrange', queue, 0, current_time, 'byscore', 'withscores')
     if #tids > 0 then
       redis.call('zremrangebyscore', queue, 0, current_time)
 
       local stream = stream_key .. priority
-      -- add ready tasks to live queue
-      for j=1, #tids do
-        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', current_time)
+      -- add ready tasks to live queue, using scheduled fire time as enqueue_time
+      for j=1, #tids, 2 do
+        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', tids[j+1])
       end
     end
   end
