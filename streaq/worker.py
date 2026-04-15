@@ -1309,6 +1309,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         enqueue_time = now_ms()
         async with self.redis.pipeline(transaction=False) as pipe:
+            lib = Streaq(pipe)
             for task in tasks:
                 if task._after:  # pyright: ignore[reportPrivateUsage]
                     raise StreaqError("Pipelined tasks can't be enqueued in batches!")
@@ -1328,7 +1329,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     score = 0
                 task.priority = task.priority or self.priorities[-1]
                 expire = to_ms(task.parent.expire or 0)
-                Streaq(pipe).publish_task(
+                lib.publish_task(
                     self.stream_key,
                     self.queue_key,
                     task.task_key(REDIS_TASK),
