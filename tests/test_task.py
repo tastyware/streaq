@@ -470,7 +470,6 @@ async def test_middleware(worker: Worker):
 
 
 async def test_middleware_with_dependencies(redis_url: str):
-
     @asynccontextmanager
     async def lifespan():
         yield 1
@@ -504,7 +503,6 @@ async def test_middleware_with_dependencies(redis_url: str):
 
 
 async def test_middleware_duplicate_param_names(redis_url: str):
-
     @asynccontextmanager
     async def lifespan():
         yield 1
