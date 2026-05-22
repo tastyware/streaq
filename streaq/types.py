@@ -21,13 +21,14 @@ from coredis.response._callbacks import ResponseCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT
-from typing_extensions import TypeIs, TypeVarTuple
+from typing_extensions import TypeIs, TypeVarTuple, deprecated
 
 if TYPE_CHECKING:
     from streaq.task import AsyncRegisteredTask, SyncRegisteredTask  # type: ignore
 
 C = TypeVar("C", bound=object | None)
 P = ParamSpec("P")
+POther = ParamSpec("POther")
 R = TypeVar("R", bound=object | None)
 ROther = TypeVar("ROther", bound=object | None)
 Ts = TypeVarTuple("Ts")
@@ -74,26 +75,36 @@ class StreaqRetry(StreaqError):
 
 class _TaskDepends:
     def __getattr__(self, _: str) -> Any:
-        raise StreaqError("Task context can only be accessed inside a running worker!")
+        raise StreaqError("Context is only available in running tasks!")
 
 
 class _WorkerDepends:
     def __getattr__(self, _: str) -> Any:
-        raise StreaqError(
-            "Worker context can only be accessed inside a running worker!"
-        )
+        raise StreaqError("Context is only available in running workers!")
 
 
+@deprecated(
+    "`TaskDepends()` is deprecated and will be removed in v7.0.0. Use "
+    "`my_task.context` or `my_middleware.context` instead."
+)
 def TaskDepends() -> TaskContext:
     """
-    Simple dependency injection wrapper for task dependencies.
+    Simple dependency injection wrapper for task dependencies. Deprecated in favor of
+    :py:attr:`RegisteredTask.context <streaq.task.RegisteredTask.context>` (or
+    :py:attr:`RegisteredMiddleware.context <streaq.task.RegisteredMiddleware.context>`
+    for middlewares).
     """
     return _TaskDepends()  # type: ignore
 
 
+@deprecated(
+    "`WorkerDepends()` is deprecated and will be removed in v7.0.0. Use "
+    "`my_worker.context` instead."
+)
 def WorkerDepends() -> Any:
     """
-    Simple dependency injection wrapper for worker dependencies.
+    Simple dependency injection wrapper for worker dependencies. Deprecated in favor of
+    :py:attr:`Worker.context <streaq.worker.Worker.context>`.
     """
     return _WorkerDepends()
 
@@ -168,6 +179,10 @@ class ReadStreamsCallback(
         dict[str, tuple[StreamEntry, ...]] | None,
     ]
 ):
+    """
+    Transform Lua script output to same format as XREAD.
+    """
+
     def transform(
         self, response: dict[str, list[list[list[str] | str]]] | None
     ) -> dict[str, tuple[StreamEntry, ...]] | None:
@@ -194,7 +209,7 @@ class Streaq(Library[str]):
 
     @wraps(verify_existence=False)
     def fail_dependents(
-        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str
+        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str, skip_id: str
     ) -> CommandRequest[list[str]]: ...
 
     @wraps(verify_existence=False)

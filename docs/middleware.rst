@@ -15,18 +15,15 @@ You can define middleware to wrap task execution. This has a host of potential a
 
    @worker.middleware
    def timer(task: ReturnCoroutine) -> ReturnCoroutine:
-       async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
+       async def wrapper(*args, **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
+           print(f"Executed task {timer.context.task_id} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper
 
-Middleware are structured as wrapped functions for maximum flexibility--not only can you run code before/after execution, you can also access and even modify the arguments or results.
-
-.. warning::
-   Adding named keyword arguments to middleware (such as ``ctx`` here) will shadow arguments in your tasks with the same name, so use with caution!
+Middleware are structured as wrapped functions for maximum flexibility--not only can you run code before/after execution, you can also access and even modify the arguments or results. Often you'll use the task context which can be accessed as seen here at :py:attr:`RegisteredMiddleware.context <streaq.task.RegisteredMiddleware.context>`.
 
 Stacking middleware
 -------------------
@@ -39,10 +36,10 @@ You can register as many middleware as you like to a worker, which will run them
 
    @worker.middleware
    def timer(task: ReturnCoroutine) -> ReturnCoroutine:
-       async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
+       async def wrapper(*args, **kwargs) -> Any:
            start_time = time.perf_counter()
            result = await task(*args, **kwargs)
-           print(f"Executed task {ctx.task_id} in {time.perf_counter() - start_time:.3f}s")
+           print(f"Executed task {timer.context.task_id} in {time.perf_counter() - start_time:.3f}s")
            return result
 
        return wrapper
@@ -50,11 +47,11 @@ You can register as many middleware as you like to a worker, which will run them
    # retry all exceptions up to a max of 3 tries
    @worker.middleware
    def retry(task: ReturnCoroutine) -> ReturnCoroutine:
-       async def wrapper(*args, ctx: TaskContext = TaskDepends(), **kwargs) -> Any:
+       async def wrapper(*args, **kwargs) -> Any:
            try:
                return await task(*args, **kwargs)
            except Exception as e:
-               if ctx.tries <= 3:
+               if retry.context.tries <= 3:
                    raise StreaqRetry("Retrying on error!", delay=1) from e
                else:
                    raise e

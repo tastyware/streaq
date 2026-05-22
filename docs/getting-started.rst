@@ -33,7 +33,7 @@ Now, when creating a ``Worker`` object, you can provide an async context manager
    class WorkerContext:
        """
        Type safe way of defining the dependencies of your tasks.
-       e.g. HTTP client, database connection, settings.
+       e.g. HTTP client, database engine, settings.
        """
        http_client: AsyncClient
 
@@ -58,7 +58,7 @@ You can then register async tasks to the worker like this:
    from dataclasses import dataclass
    from typing import AsyncGenerator
    from httpx import AsyncClient
-   from streaq import Worker, WorkerDepends
+   from streaq import Worker
 
    @dataclass
    class WorkerContext:
@@ -80,8 +80,8 @@ You can then register async tasks to the worker like this:
    my_worker = Worker(redis_url="redis://localhost:6379", lifespan=lifespan)
 
    @my_worker.task(timeout=5)
-   async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
-       res = await ctx.http_client.get(url)
+   async def fetch(url: str) -> int:
+       res = await my_worker.context.http_client.get(url)
        return len(res.text)
 
 Now let's save the file and spin up a worker which will pick up future tasks:

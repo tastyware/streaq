@@ -4,7 +4,7 @@ redis.register_function('create_groups', function(keys, argv)
   local stream_key = keys[1]
   local group_name = argv[1]
 
-  for i=2, #argv do
+  for i = 2, #argv do
     local stream = stream_key .. argv[i]
     -- create group if it doesn't exist
     local ok, groups = pcall(redis.call, 'xinfo', 'groups', stream)
@@ -19,6 +19,7 @@ redis.register_function('fail_dependents', function(keys, argv)
   local dependencies_key = keys[2]
 
   local task_id = argv[1]
+  local skip_id = argv[2]
 
   local visited = {}
   local failed = {}
@@ -34,8 +35,11 @@ redis.register_function('fail_dependents', function(keys, argv)
       -- push dependents onto the stack
       local deps = redis.call('smembers', dependents_key .. tid)
       for _, dep_id in ipairs(deps) do
-        stack[#stack + 1] = dep_id
         redis.call('srem', dependencies_key .. dep_id, tid)
+        -- skip the subtree if fallback
+        if dep_id ~= skip_id then
+          stack[#stack + 1] = dep_id
+        end
       end
       -- remove dependents set
       redis.call('del', dependents_key .. tid)
@@ -55,7 +59,7 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
 
   local current_time = argv[1]
 
-  for i=2, #argv do
+  for i = 2, #argv do
     local priority = argv[i]
     local queue = queue_key .. priority
     -- get and delete tasks ready to run from delayed queue (with scores)
@@ -65,8 +69,8 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
 
       local stream = stream_key .. priority
       -- add ready tasks to live queue, using scheduled fire time as enqueue_time
-      for j=1, #tids, 2 do
-        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', tids[j+1])
+      for j = 1, #tids, 2 do
+        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', tids[j + 1])
       end
     end
   end
@@ -89,16 +93,16 @@ redis.register_function('publish_task', function(keys, argv)
 
   local args
   if expire ~= '0' then
-    args = {'set', task_key, task_data, 'nx', 'px', expire}
+    args = { 'set', task_key, task_data, 'nx', 'px', expire }
   else
-    args = {'set', task_key, task_data, 'nx'}
+    args = { 'set', task_key, task_data, 'nx' }
   end
 
   if not redis.call(unpack(args)) then return 0 end
 
   local modified = 0
   -- additional args are dependencies for task
-  for i=7, #argv do
+  for i = 7, #argv do
     local dep_id = argv[i]
     -- update dependency DAG if dependency exists
     if redis.call('exists', results_key .. dep_id) ~= 1 then
@@ -113,7 +117,7 @@ redis.register_function('publish_task', function(keys, argv)
     -- delayed queue
     if score ~= '0' then
       redis.call('zadd', queue_key .. priority, score, task_id)
-    -- live queue
+      -- live queue
     else
       return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id, 'enqueue_time', current_time)
     end
@@ -140,7 +144,7 @@ redis.register_function('read_streams', function(keys, argv)
     local reclaimed = redis.call('xautoclaim', stream, group_name, consumer_name, idle, '0-0', 'count', count)[2]
     -- output format should match XREADGROUP
     if #reclaimed > 0 then
-      for j=1, #reclaimed do entry_table[j] = reclaimed[j] end
+      for j = 1, #reclaimed do entry_table[j] = reclaimed[j] end
       count = count - #reclaimed
     end
     -- next, check for new messages
@@ -156,7 +160,7 @@ redis.register_function('read_streams', function(keys, argv)
     end
 
     if #entry_table > 0 then
-      table.insert(entries, {stream, entry_table})
+      table.insert(entries, { stream, entry_table })
     end
     if count <= 0 then break end
   end

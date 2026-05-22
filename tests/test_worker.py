@@ -5,7 +5,7 @@ import secrets
 import signal
 import subprocess
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -17,7 +17,6 @@ from anyio import create_task_group, sleep
 from coredis import RedisCluster
 from coredis.connection import TCPLocation
 
-from streaq.constants import REDIS_TASK
 from streaq.task import TaskStatus
 from streaq.types import StreaqError, WorkerDepends
 from streaq.utils import gather
@@ -39,7 +38,7 @@ class WorkerContext:
 
 
 @asynccontextmanager
-async def deps() -> AsyncIterator[WorkerContext]:
+async def deps() -> AsyncGenerator[WorkerContext]:
     yield WorkerContext(NAME_STR)
 
 
@@ -47,13 +46,13 @@ async def test_lifespan(redis_url: str):
     worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
     @worker.task
-    async def foobar(ctx: WorkerContext = WorkerDepends()) -> str:
-        return ctx.name
+    async def foobar(ctx: WorkerContext = WorkerDepends()) -> bool:
+        return ctx.name == NAME_STR and ctx.name == worker.context.name
 
     async with run_worker(worker):
         task = await foobar.enqueue()
         res = await task.result(3)
-        assert res.success and res.result == NAME_STR
+        assert res.success and res.result
 
 
 async def test_health_check(redis_url: str):
@@ -265,7 +264,7 @@ async def test_corrupt_signed_data(redis_url: str):
     async with worker:
         task = await foo.enqueue()
         await worker.redis.set(
-            task.task_key(REDIS_TASK), pickle.dumps({"f": "This is an attack!"})
+            worker.task_key + task.id, pickle.dumps({"f": "This is an attack!"})
         )
 
     async with run_worker(worker):
@@ -289,7 +288,9 @@ async def test_enqueue_many(worker: Worker):
         assert await worker.queue_size() >= 10
 
 
-async def test_bad_depends_worker():
+async def test_bad_depends_worker(worker: Worker):
+    with pytest.raises(StreaqError):
+        print(worker.context)
     with pytest.raises(StreaqError):
         ctx = WorkerDepends()
         print(ctx.nonexistent)

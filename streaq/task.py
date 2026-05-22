@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -15,11 +16,12 @@ from uuid import uuid4
 
 from typing_extensions import Unpack
 
-from streaq.constants import REDIS_TASK
 from streaq.types import (
     AsyncTask,
     P,
+    POther,
     R,
+    ReturnCoroutine,
     ROther,
     Streaq,
     StreaqError,
@@ -32,6 +34,8 @@ from streaq.utils import datetime_ms, now_ms, to_ms
 
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
+
+_task_context = ContextVar[TaskContext]("_task_context")
 
 
 # TODO: update to StrEnum when 3.10 support is dropped
@@ -107,8 +111,8 @@ class TaskResult(Generic[R]):
         return self._result  # type: ignore
 
 
-@dataclass
-class Task(Generic[R]):
+@dataclass(slots=True)
+class Task(Generic[P, R]):
     """
     Represents a task that has been enqueued or scheduled.
 
@@ -120,12 +124,14 @@ class Task(Generic[R]):
     parent: RegisteredTask
     worker: Worker[Any]
     id: str = field(default_factory=lambda: uuid4().hex)
-    _after: Task[Any] | None = None
+    _after: Task[Any, Any] | None = None
     after: list[str] = field(default_factory=lambda: [])
     delay: timedelta | int | None = None
     schedule: datetime | str | None = None
     priority: str | None = None
-    _triggers: Task[Any] | None = None
+    _triggers: Task[Any, Any] | None = None
+    _fails_over: bool = False
+    _prev_source: str | None = None
 
     def start(
         self,
@@ -133,7 +139,7 @@ class Task(Generic[R]):
         delay: timedelta | int | None = None,
         schedule: datetime | str | None = None,
         priority: str | None = None,
-    ) -> Task[R]:
+    ) -> Task[P, R]:
         """
         Configure the task to modify schedule, queue, or dependencies.
 
@@ -162,7 +168,7 @@ class Task(Generic[R]):
             )
         return self
 
-    async def _enqueue(self) -> Task[R]:
+    async def _enqueue(self) -> Task[P, R]:
         """
         This is called when the task is awaited.
         """
@@ -183,7 +189,7 @@ class Task(Generic[R]):
                     Streaq(pipe).publish_task(
                         self.worker.stream_key,
                         self.worker.queue_key,
-                        self.task_key(REDIS_TASK),
+                        self.worker.task_key + self.id,
                         self.worker.dependents_key,
                         self.worker.dependencies_key,
                         self.worker.results_key,
@@ -204,7 +210,7 @@ class Task(Generic[R]):
         await self.worker.lib.publish_task(
             self.worker.stream_key,
             self.worker.queue_key,
-            self.task_key(REDIS_TASK),
+            self.worker.task_key + self.id,
             self.worker.dependents_key,
             self.worker.dependencies_key,
             self.worker.results_key,
@@ -220,22 +226,22 @@ class Task(Generic[R]):
 
     @overload
     def then(
-        self: Task[R],
-        task: AsyncRegisteredTask[Concatenate[R, P], ROther]
-        | SyncRegisteredTask[Concatenate[R, P], ROther],
-        *_: P.args,  # for some reason we have to define this although it's not used
-        **kwargs: P.kwargs,
-    ) -> Task[ROther]: ...
+        self: Task[Any, R],
+        task: AsyncRegisteredTask[Concatenate[R, POther], ROther]
+        | SyncRegisteredTask[Concatenate[R, POther], ROther],
+        *_: POther.args,  # for some reason we have to define this but it's not used
+        **kwargs: POther.kwargs,
+    ) -> Task[Concatenate[R, POther], ROther]: ...
 
     @overload
     def then(
-        self: Task[tuple[Unpack[Ts]]],
+        self: Task[Any, tuple[Unpack[Ts]]],
         task: Callable[[Unpack[Ts]], TypedCoroutine[ROther]]
         | Callable[[Unpack[Ts]], ROther],
         **kwargs: Any,
-    ) -> Task[ROther]: ...
+    ) -> Task[Any, ROther]: ...
 
-    def then(self: Task[Any], task: Any, **kwargs: Any) -> Task[Any]:
+    def then(self: Task[Any, Any], task: Any, **kwargs: Any) -> Task[Any, Any]:
         """
         Enqueues the given task as a dependent of this one. Positional arguments must
         come from the previous task's output (tuple outputs will be unpacked), and any
@@ -249,38 +255,61 @@ class Task(Generic[R]):
         self._triggers._after = self
         return self._triggers
 
-    async def _chain(self) -> Task[R]:
+    def otherwise(
+        self, task: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
+    ) -> Task[P, R]:
+        """
+        Enqueues the given task as a fallback of this one. If this task fails, the
+        other task will be run with the same arguments. If this task succeeds, the
+        other task will be skipped and return the same result.
+
+        :param task: task to fall back to
+
+        :return: task object for newly created, dependent task
+        """
+        self._triggers = Task(self.args, self.kwargs, task, self.worker)
+        self._triggers._after = self
+        self._fails_over = True
+        return self._triggers
+
+    async def _chain(self) -> Task[P, R]:
         # traverse backwards
         if self._after:
             await self._after
+            if self._after._fails_over:
+                self._prev_source = self._after._prev_source
+            else:
+                self._prev_source = self._after.id
         return await self._enqueue()
 
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def __await__(self) -> Generator[Any, None, Task[R]]:
+    def __await__(self) -> Generator[Any, None, Task[P, R]]:
         return self._chain().__await__()
 
     @overload
     def __or__(
-        self: Task[R],
+        self: Task[Any, R],
         other: AsyncRegisteredTask[[R], ROther] | SyncRegisteredTask[[R], ROther],
-    ) -> Task[ROther]: ...
+    ) -> Task[[R], ROther]: ...
 
     @overload
     def __or__(
-        self: Task[tuple[Unpack[Ts]]],
+        self: Task[Any, tuple[Unpack[Ts]]],
         other: Callable[[Unpack[Ts]], TypedCoroutine[ROther]]
         | Callable[[Unpack[Ts]], ROther],
-    ) -> Task[ROther]: ...
+    ) -> Task[Any, ROther]: ...
 
-    def __or__(self: Task[Any], other: Any) -> Task[Any]:
+    def __or__(self: Task[Any, Any], other: Any) -> Task[Any, Any]:
         self._triggers = Task((), {}, other, self.worker)
         self._triggers._after = self
         return self._triggers
 
-    def task_key(self, mid: str) -> str:
-        return self.worker.prefix + mid + self.id
+    def __xor__(
+        self, other: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
+    ) -> Task[P, R]:
+        return self.otherwise(other)
 
     def serialize(self, enqueue_time: int) -> Any:
         """
@@ -297,10 +326,15 @@ class Task(Generic[R]):
                 "k": self.kwargs,
                 "t": enqueue_time,
             }
-            if self._after:
-                data["A"] = self._after.id
+            if self._prev_source:
+                data["A"] = self._prev_source
+            if self._after and self._after._fails_over:
+                data["F"] = self._after.id
             if self._triggers:
-                data["T"] = self._triggers.id
+                if self._fails_over:
+                    data["O"] = self._triggers.id
+                else:
+                    data["T"] = self._triggers.id
             return self.worker.serialize(data)
         except Exception as e:
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
@@ -352,6 +386,10 @@ class Task(Generic[R]):
 
 @dataclass(kw_only=True)
 class RegisteredTask:
+    """
+    Base task registry definition containing task properties from the decorator.
+    """
+
     expire: timedelta | int | None
     max_schedule_drift: timedelta | int | None
     max_tries: int | None
@@ -376,16 +414,31 @@ class RegisteredTask:
             ttl=self.ttl,
         )
 
+    @property
+    def context(self) -> TaskContext:
+        """
+        Get the current task's unique context. Only available in running tasks.
+        """
+        try:
+            return _task_context.get()
+        except LookupError as e:
+            raise StreaqError("Context is only available in running tasks!") from e
+
 
 @dataclass(kw_only=True)
 class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
+    """
+    Registered task definition for an async function that allows spawning new tasks to
+    be enqueued.
+    """
+
     fn: AsyncTask[P, R]
 
     def enqueue(
         self,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Task[R]:
+    ) -> Task[P, R]:
         """
         Serialize the task and send it to the queue for later execution by an
         active worker. Though this isn't async, it should be awaited as it
@@ -399,13 +452,18 @@ class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
 
 @dataclass(kw_only=True)
 class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
+    """
+    Registered task definition for a sync function that allows spawning new tasks to be
+    enqueued.
+    """
+
     fn: SyncTask[P, R]
 
     def enqueue(
         self,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Task[R]:
+    ) -> Task[P, R]:
         """
         Serialize the task and send it to the queue for later execution by an
         active worker. Though this isn't async, it should be awaited as it
@@ -415,3 +473,27 @@ class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return self.fn(*args, **kwargs)
+
+
+@dataclass
+class RegisteredMiddleware:
+    """
+    Registered middleware definition, allows for accessing task context.
+    """
+
+    _wrapped: Callable[[ReturnCoroutine], ReturnCoroutine]
+
+    def __call__(self, fn: ReturnCoroutine) -> ReturnCoroutine:
+        return self._wrapped(fn)
+
+    @property
+    def context(self) -> TaskContext:
+        """
+        Get the current task's unique context. Only available in running middlewares.
+        """
+        try:
+            return _task_context.get()
+        except LookupError as e:
+            raise StreaqError(
+                "Context is only available in running middlewares!"
+            ) from e

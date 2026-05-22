@@ -143,7 +143,7 @@ Sometimes, you may wish to run a task's underlying function directly and skip en
 
    await sleeper(3)
 
-Note that tasks that require access to ``WorkerDepends`` or ``TaskDepends`` will fail when run this way as context is handled by running workers.
+Note that tasks that require access to task or worker dependencies will fail when run this way as context is handled by running workers.
 
 Task status & results
 ---------------------
@@ -201,17 +201,15 @@ If an exception occurs while performing the task, the ``TaskResult.success`` fla
 Task context
 ------------
 
-As we've already seen, tasks can access the worker context via ``WorkerDepends``. In addition to this, streaQ provides a per-task context via ``TaskDepends``, with task-specific information such as the try count:
+As we've already seen, tasks can access the worker context via ``Worker.context``. In addition to this, streaQ provides a per-task context via ``RegisteredTask.context``, with task-specific information such as the try count:
 
 .. code-block:: python
 
-   from streaq import TaskContext, TaskDepends
-
    @worker.task
-   async def get_id(ctx: TaskContext = TaskDepends()) -> str:
-       return ctx.task_id
+   async def get_id() -> str:
+       return get_id.context.task_id
 
-Calls to ``TaskDepends()`` anywhere outside of a task or a middleware will result in an error.
+Accessing ``context`` anywhere outside of a task will result in an error.
 
 Retrying tasks
 --------------
@@ -223,8 +221,8 @@ streaQ provides a special exception that you can raise manually inside of your t
    from streaq import StreaqRetry
 
    @worker.task
-   async def try_thrice(ctx: TaskContext = TaskDepends()) -> bool:
-       if ctx.tries < 3:
+   async def try_thrice() -> bool:
+       if try_thrice.context.tries < 3:
            raise StreaqRetry("Retrying!")
        return True
 
@@ -335,8 +333,8 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 .. code-block:: python
 
    @worker.task(timeout=5)
-   async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
-       res = await ctx.http_client.get(url)
+   async def fetch(url: str) -> int:
+       res = await worker.context.http_client.get(url)
        return len(res.text)
 
    @worker.task
@@ -416,3 +414,35 @@ If you don't need to pass additional arguments, tasks can be pipelined using the
 
    async with worker:
        await (fetch.enqueue("https://tastyware.dev") | double | is_even)
+
+Note that ``await`` is higher precedence than ``|`` so the parentheses are necessary!
+
+Fail-over tasks
+---------------
+
+Similar to ``Task.then()``, streaQ also provides ``Task.otherwise()``, which lets you run another task with the same arguments if a task fails:
+
+.. code-block:: python
+
+   @worker.task
+   async def fails(val: int) -> int:
+       raise Exception("Oh no!")
+
+   @worker.task
+   async def double(val: int) -> int:
+       return val * 2
+
+   async with worker:
+       task = await fails.enqueue(3).otherwise(double)
+       print(await task.result(3))
+
+Both tasks must have the same function signature (parameters and return type) in order to use fail-overs. Here ``task.result()`` will be the result of ``fails(3)`` if it succeeds, otherwise the result of ``double(3)``.
+
+You can also use the ``^`` operator as a convenience:
+
+.. code-block:: python
+
+   async with worker:
+       await (fails.enqueue(3) ^ double)
+
+Note that ``await`` is higher precedence than ``^`` so the parentheses are necessary!

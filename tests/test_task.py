@@ -116,7 +116,7 @@ async def test_task_info(worker: Worker):
 
 
 async def test_task_retry(worker: Worker):
-    @worker.task
+    @worker.task(unique=True, timeout=10)
     async def foobar(ctx: TaskContext = TaskDepends()) -> int:
         if ctx.tries < 3:
             raise StreaqRetry("Retrying!")
@@ -482,18 +482,16 @@ async def test_middleware_with_dependencies(redis_url: str):
 
     @worker.middleware
     def retry(task: ReturnCoroutine) -> ReturnCoroutine:
-        async def wrapper(
-            *args,
-            ctx: TaskContext = TaskDepends(),
-            worker_context: int = WorkerDepends(),
-            **kwargs,
-        ) -> Any:
+        async def wrapper(*args, **kwargs) -> Any:
             res: int = await task(*args, **kwargs)
-            if worker_context + ctx.tries <= res:
+            if worker.context + retry.context.tries <= res:
                 raise StreaqRetry("Not enough!")
             return res
 
         return wrapper
+
+    with pytest.raises(StreaqError):
+        print(retry.context)
 
     async with run_worker(worker):
         task = await foobar.enqueue()
@@ -692,7 +690,12 @@ async def test_dynamic_cron(worker: Worker):
         assert last_len == len(vals)
 
 
-async def test_bad_depends_task():
+async def test_bad_depends_task(worker: Worker):
+    @worker.task
+    async def foobar(val: int) -> None: ...
+
+    with pytest.raises(StreaqError):
+        print(foobar.context)
     with pytest.raises(StreaqError):
         ctx = TaskDepends()
         print(ctx.task_id)
@@ -708,3 +711,212 @@ async def test_sync_direct(worker: Worker):
         await sync_sleep.enqueue()
 
     assert sync_sleep()
+
+
+async def test_otherwise_fallback(worker: Worker):
+    @worker.task
+    async def maybe_fail(val: int) -> int:
+        if val % 2 != 0:
+            raise ValueError("odd")
+        return val * 2
+
+    @worker.task
+    async def halve(val: int) -> int:
+        return val // 2
+
+    async with run_worker(worker):
+        task = await maybe_fail.enqueue(1).otherwise(halve)
+        res = await task.result(3)
+        assert res.success and res.result == 0
+
+
+async def test_otherwise_skipped_on_success(worker: Worker):
+    @worker.task
+    async def maybe_fail(val: int) -> int:
+        if val % 2 != 0:
+            raise ValueError("odd")
+        return val * 2
+
+    @worker.task
+    async def halve(val: int) -> int:
+        return val // 2
+
+    async with run_worker(worker):
+        task = await maybe_fail.enqueue(2).otherwise(halve)
+        res = await task.result(3)
+        assert res.success and res.result == 4
+
+
+async def test_otherwise_shorthand(worker: Worker):
+    @worker.task
+    async def maybe_fail(val: int) -> int:
+        if val % 2 != 0:
+            raise ValueError("odd")
+        return val * 2
+
+    @worker.task
+    async def halve(val: int) -> int:
+        return val // 2
+
+    async with run_worker(worker):
+        task = await (maybe_fail.enqueue(1) ^ halve)
+        res = await task.result(3)
+        assert res.success and res.result == 0
+
+
+async def test_otherwise_then_after_fail(worker: Worker):
+    @worker.task
+    async def fail_task(val: int) -> int:
+        raise ValueError("nope")
+
+    @worker.task
+    async def fallback(val: int) -> int:
+        return val + 100
+
+    @worker.task
+    async def add_one(val: int) -> int:
+        return val + 1
+
+    async with run_worker(worker):
+        task = await fail_task.enqueue(5).otherwise(fallback).then(add_one)
+        res = await task.result(3)
+        assert res.success
+        assert res.result == 106  # fallback(5)+1
+
+
+async def test_otherwise_then_after_success(worker: Worker):
+    @worker.task
+    async def ok(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def fallback(val: int) -> int:
+        return val + 100
+
+    @worker.task
+    async def add_one(val: int) -> int:
+        return val + 1
+
+    async with run_worker(worker):
+        task = await ok.enqueue(5).otherwise(fallback).then(add_one)
+        res = await task.result(3)
+        assert res.success and res.result == 11
+
+
+async def test_otherwise_after_then_fails(worker: Worker):
+    @worker.task
+    async def produce(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def fail_consumer(val: int) -> int:
+        raise ValueError("nope")
+
+    @worker.task
+    async def fallback(val: int) -> int:
+        return val + 1
+
+    async with run_worker(worker):
+        task = await produce.enqueue(5).then(fail_consumer).otherwise(fallback)
+        res = await task.result(3)
+        assert res.success and res.result == 11
+
+
+async def test_otherwise_after_then_succeeds(worker: Worker):
+    @worker.task
+    async def produce(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def consume(val: int) -> int:
+        return val + 100
+
+    @worker.task
+    async def fallback(val: int) -> int:
+        return val + 1
+
+    async with run_worker(worker):
+        task = await produce.enqueue(5).then(consume).otherwise(fallback)
+        res = await task.result(3)
+        assert res.success and res.result == 110
+
+
+async def test_chained_otherwise_first_fails(worker: Worker):
+    @worker.task
+    async def fail_task(val: int) -> int:
+        raise ValueError
+
+    @worker.task
+    async def ok(val: int) -> int:
+        return val + 1
+
+    @worker.task
+    async def never(val: int) -> int:
+        return -999
+
+    async with run_worker(worker):
+        task = await fail_task.enqueue(5).otherwise(ok).otherwise(never)
+        res = await task.result(3)
+        assert res.success and res.result == 6
+
+
+async def test_chained_otherwise_all_fail(worker: Worker):
+    @worker.task
+    async def fail1(val: int) -> int:
+        raise ValueError("1")
+
+    @worker.task
+    async def fail2(val: int) -> int:
+        raise ValueError("2")
+
+    @worker.task
+    async def final(val: int) -> int:
+        return val * 10
+
+    async with run_worker(worker):
+        task = await fail1.enqueue(5).otherwise(fail2).otherwise(final)
+        res = await task.result(3)
+        assert res.success and res.result == 50
+
+
+async def test_otherwise_retries_exhaust(worker: Worker):
+    @worker.task(max_tries=2)
+    async def always_fail(val: int) -> int:
+        raise StreaqRetry("nope", delay=0)
+
+    @worker.task
+    async def fallback(val: int) -> int:
+        return val + 1
+
+    async with run_worker(worker):
+        task = await always_fail.enqueue(5).otherwise(fallback)
+        res = await task.result(5)
+        assert res.success and res.result == 6
+
+
+async def test_otherwise_retry_eventually_succeeds(worker: Worker):
+    @worker.task
+    async def flaky(val: int) -> int:
+        if flaky.context.tries < 2:
+            raise StreaqRetry("retry", delay=0)
+        return val * 2
+
+    @worker.task
+    async def fallback(val: int) -> int:
+        return -1
+
+    async with run_worker(worker):
+        task = await flaky.enqueue(5).otherwise(fallback)
+        res = await task.result(5)
+        assert res.success and res.result == 10
+
+
+async def test_otherwise_fallback_fails(worker: Worker):
+    @worker.task
+    async def fail(val: int) -> int:
+        raise ValueError
+
+    async with run_worker(worker):
+        task = await fail.enqueue(5).otherwise(fail)
+        res = await task.result(3)
+        assert not res.success
