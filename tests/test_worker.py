@@ -18,7 +18,7 @@ from coredis import ClusterConnectionPool, ConnectionPool, RedisCluster
 from coredis.connection import TCPLocation
 
 from streaq.task import TaskStatus
-from streaq.types import StreaqError, WorkerDepends
+from streaq.types import StreaqError
 from streaq.utils import gather
 from streaq.worker import Worker
 from tests.conftest import run_worker
@@ -46,8 +46,8 @@ async def test_lifespan(redis_url: str):
     worker = Worker(redis_url=redis_url, lifespan=deps, queue_name=uuid4().hex)
 
     @worker.task
-    async def foobar(ctx: WorkerContext = WorkerDepends()) -> bool:
-        return ctx.name == NAME_STR and ctx.name == worker.context.name
+    async def foobar() -> bool:
+        return worker.context.name == NAME_STR
 
     async with run_worker(worker):
         task = await foobar.enqueue()
@@ -119,8 +119,8 @@ async def test_custom_serializer(worker: Worker):
 
 async def test_uninitialized_worker(worker: Worker):
     @worker.task
-    async def foobar(ctx: Any = WorkerDepends()) -> None:
-        print(ctx.nonexistent)
+    async def foobar() -> None:
+        print(worker.context)
 
     with pytest.raises(StreaqError):
         await foobar()
@@ -292,8 +292,7 @@ async def test_bad_depends_worker(worker: Worker):
     with pytest.raises(StreaqError):
         print(worker.context)
     with pytest.raises(StreaqError):
-        ctx = WorkerDepends()
-        print(ctx.nonexistent)
+        print(worker.context)
 
 
 async def test_custom_worker_id(redis_url: str):

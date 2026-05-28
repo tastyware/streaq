@@ -9,9 +9,8 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, tzinfo
-from functools import wraps
 from hashlib import sha256
-from inspect import iscoroutinefunction, signature
+from inspect import iscoroutinefunction
 from textwrap import shorten
 from typing import Any, Generic, Literal, Self, cast, overload
 from uuid import UUID, uuid4
@@ -46,7 +45,7 @@ from coredis.commands import CommandRequest
 from coredis.connection import TCPLocation
 from coredis.response.types import ScoredMember
 from coredis.typing import KeyT
-from crontab import CronSim
+from crontab import CronTab
 
 from streaq import logger
 from streaq.constants import (
@@ -86,7 +85,6 @@ from streaq.types import (
     Middleware,
     P,
     R,
-    ReturnCoroutine,
     StreamMessage,
     Streaq,
     StreaqCancelled,
@@ -95,9 +93,6 @@ from streaq.types import (
     SyncCron,
     SyncTask,
     TaskDecorator,
-    _TaskDepends,  # pyright: ignore[reportPrivateUsage]
-    _WorkerDepends,  # pyright: ignore[reportPrivateUsage]
-    extract_depends,
     is_async_task,
 )
 from streaq.utils import (
@@ -426,7 +421,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Registers a task to be run at regular intervals as specified.
 
         :param tab:
-            crontab for scheduling, follows the specification `here <https://github.com/cuu508/cronsim>`_.
+            crontab for scheduling, follows the specification
+            `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param max_schedule_drift:
             maximum amount of time a cron task can be delayed from its scheduled
             execution time before getting discarded. If None, no check is performed.
@@ -467,7 +463,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     fn_name=fn_name,
                     crontab=tab,
                     worker=self,
-                    depends=extract_depends(fn),
                 )
                 self.registry[fn_name] = task
                 return task
@@ -483,7 +478,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=fn_name,
                 crontab=tab,
                 worker=self,
-                depends=extract_depends(fn),
             )
             self.registry[fn_name] = task
             return task
@@ -557,7 +551,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     fn_name=fn_name,
                     crontab=None,
                     worker=self,
-                    depends=extract_depends(fn),
                 )
                 self.registry[fn_name] = task
                 return task
@@ -573,7 +566,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=fn_name,
                 crontab=None,
                 worker=self,
-                depends=extract_depends(fn),
             )
             self.registry[fn_name] = task
             return task
@@ -582,32 +574,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return wrapped(fn)
         return wrapped
 
-    def middleware(self, original_middleware: Middleware) -> RegisteredMiddleware:
+    def middleware(self, new_middleware: Middleware) -> RegisteredMiddleware:
         """
         Registers the given middleware with the worker.
         """
-
-        @wraps(original_middleware)
-        def modified_middleware(fn: ReturnCoroutine) -> ReturnCoroutine:
-            original_handler = original_middleware(fn)
-            depends = {
-                k: type(v.default)
-                for k, v in signature(original_handler).parameters.items()
-                if isinstance(v.default, (_TaskDepends, _WorkerDepends))
-            }
-
-            @wraps(original_handler)
-            async def modified_handler(*args: Any, **kwargs: Any) -> Any:
-                for k, v in depends.items():
-                    if v is _TaskDepends:
-                        kwargs.setdefault(k, _task_context.get())
-                    else:
-                        kwargs.setdefault(k, self.context)
-                return await original_handler(*args, **kwargs)
-
-            return modified_handler
-
-        registered = RegisteredMiddleware(modified_middleware)
+        registered = RegisteredMiddleware(new_middleware)
         self.middlewares.append(registered)
         return registered
 
@@ -1152,7 +1123,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
         if data.get("F"):
             if parent_raw := await self.redis.get(self._fallback_key + task_id):
-                parent = self.deserialize(parent_raw)
+                parent = await self.deserialize(parent_raw)
                 if not task.silent:
                     logger.debug(f"fallback {fn_name} ⊘ {task_id} skipped")
                 return await self.finish_task(
@@ -1182,12 +1153,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         done = True
 
         async def fn(*args: Any, **kwargs: Any) -> Any:
-            # inject dependencies
-            for k, v in task.depends.items():
-                if v is _WorkerDepends:
-                    kwargs.setdefault(k, self.context)
-                elif v is _TaskDepends:
-                    kwargs.setdefault(k, task_context)
             # run underlying task function
             if iscoroutinefunction(task.fn):
                 return await task.fn(*args, **kwargs)
@@ -1358,7 +1323,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             fn_name=fn_name,
             crontab=None,
             worker=self,
-            depends={},
         )
         return Task(args, kwargs, registered, self)
 
@@ -1436,8 +1400,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         return sum(await gather(*commands))
 
     def _next_datetime(self, tab: str) -> datetime:
-        it = CronSim(tab, datetime.now(self.tz))
-        return next(it)
+        return CronTab(tab).next(now=datetime.now(self.tz), return_datetime=True)  # type: ignore
 
     def next_run(self, tab: str) -> int:
         """
@@ -1569,7 +1532,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             if any(await gather(*delayed)):
                 otherwise = None
                 if data := await raw:
-                    otherwise = self.deserialize(data).get("O")
+                    otherwise = (await self.deserialize(data)).get("O")
                 async with self.redis.pipeline(transaction=True) as pipe:
                     pipe.delete([task_key])
                     pipe.srem(self._abort_key, [task_id])

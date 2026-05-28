@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from inspect import iscoroutinefunction, signature
+from inspect import iscoroutinefunction
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -21,7 +21,7 @@ from coredis.response._callbacks import ResponseCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT
-from typing_extensions import TypeIs, TypeVarTuple, deprecated
+from typing_extensions import TypeIs, TypeVarTuple
 
 if TYPE_CHECKING:
     from streaq.task import AsyncRegisteredTask, SyncRegisteredTask  # type: ignore
@@ -71,53 +71,6 @@ class StreaqRetry(StreaqError):
         super().__init__(*args)
         self.delay = delay
         self.schedule = schedule
-
-
-class _TaskDepends:
-    def __getattr__(self, _: str) -> Any:
-        raise StreaqError("Context is only available in running tasks!")
-
-
-class _WorkerDepends:
-    def __getattr__(self, _: str) -> Any:
-        raise StreaqError("Context is only available in running workers!")
-
-
-@deprecated(
-    "`TaskDepends()` is deprecated and will be removed in v7.0.0. Use "
-    "`my_task.context` or `my_middleware.context` instead."
-)
-def TaskDepends() -> TaskContext:
-    """
-    Simple dependency injection wrapper for task dependencies. Deprecated in favor of
-    :py:attr:`RegisteredTask.context <streaq.task.RegisteredTask.context>` (or
-    :py:attr:`RegisteredMiddleware.context <streaq.task.RegisteredMiddleware.context>`
-    for middlewares).
-    """
-    return _TaskDepends()  # type: ignore
-
-
-@deprecated(
-    "`WorkerDepends()` is deprecated and will be removed in v7.0.0. Use "
-    "`my_worker.context` instead."
-)
-def WorkerDepends() -> Any:
-    """
-    Simple dependency injection wrapper for worker dependencies. Deprecated in favor of
-    :py:attr:`Worker.context <streaq.worker.Worker.context>`.
-    """
-    return _WorkerDepends()
-
-
-def extract_depends(fn: Callable[..., Any]) -> dict[str, type]:
-    """
-    Check function signature for any dependencies and return them.
-    """
-    depends: dict[str, type] = {}
-    for name, param in signature(fn).parameters.items():
-        if isinstance(param.default, (_TaskDepends, _WorkerDepends)):
-            depends[name] = type(param.default)
-    return depends
 
 
 @dataclass(frozen=True)

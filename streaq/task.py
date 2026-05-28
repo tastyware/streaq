@@ -144,7 +144,8 @@ class Task(Generic[P, R]):
         :param delay: duration to wait before running the task
         :param schedule:
             datetime at which to run the task, or crontab for repeated scheduling,
-            follows the specification `here <https://github.com/cuu508/cronsim>`_.
+            follows the specification
+            `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param priority: priority queue to insert the task
 
         :return: self
@@ -394,7 +395,6 @@ class RegisteredTask:
     fn_name: str
     crontab: str | None
     worker: Worker[Any]
-    depends: dict[str, type]
 
     def build_context(self, id: str, tries: int = 1) -> TaskContext:
         """

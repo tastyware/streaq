@@ -87,6 +87,7 @@ dev = [
     "pyright>=1.1.406",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
+    "pytest-randomly>=4.1.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.13.1",
     "sphinx>=8.1.3",
