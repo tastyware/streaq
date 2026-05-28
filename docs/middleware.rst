@@ -10,7 +10,6 @@ You can define middleware to wrap task execution. This has a host of potential a
 
    import time
    from typing import Any
-   from streaq import TaskContext, TaskDepends
    from streaq.types import ReturnCoroutine
 
    @worker.middleware
