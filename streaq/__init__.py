@@ -1,6 +1,6 @@
 import logging
 
-VERSION = "6.4.0"
+VERSION = "6.5.3"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,13 @@ logger.addHandler(logging.NullHandler())
 # ruff: noqa: E402
 
 from .task import TaskStatus
-from .types import StreaqError, StreaqRetry, TaskContext, TaskDepends, WorkerDepends
+from .types import (
+    StreaqError,
+    StreaqRetry,
+    TaskContext,
+    TaskDepends,  # pyright: ignore[reportDeprecated]
+    WorkerDepends,  # pyright: ignore[reportDeprecated]
+)
 from .worker import Worker
 
 __all__ = [

@@ -3,7 +3,6 @@
 [![Downloads](https://static.pepy.tech/badge/streaq)](https://pepy.tech/project/streaq)
 [![Release](https://img.shields.io/github/v/release/tastyware/streaq?label=release%20notes)](https://github.com/tastyware/streaq/releases)
 ![Coverage](https://raw.githubusercontent.com/tastyware/streaq/master/coverage.svg)
-[![Gitter](https://img.shields.io/gitter/room/:user/tastyware)](https://matrix.to/#/#tastyware:gitter.im)
 
 # streaQ
 

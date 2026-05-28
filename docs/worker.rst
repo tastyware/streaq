@@ -16,7 +16,7 @@ First, define the dependencies in a custom ``dataclass`` or ``NamedTuple``:
    class WorkerContext(NamedTuple):
        """
        Type safe way of defining the dependencies of your tasks.
-       e.g. HTTP client, database connection, settings.
+       e.g. HTTP client, database engine, settings.
        """
        http_client: AsyncClient
 
@@ -42,13 +42,11 @@ Now, tasks created for the worker will have access to the dependencies like so:
 
 .. code-block:: python
 
-   from streaq import WorkerDepends
-
    worker = Worker(lifespan=lifespan)
 
    @worker.task
-   async def fetch(url: str, ctx: WorkerContext = WorkerDepends()) -> int:
-      res = await ctx.http_client.get(url)
+   async def fetch(url: str) -> int:
+      res = await worker.context.http_client.get(url)
       return len(res.text)
 
 .. important::
@@ -172,19 +170,25 @@ Sometimes in large apps, registering all tasks to a single, global ``Worker`` in
    if __name__ == "__main__":
        run(main)
 
-This allows for grouping tasks in whatever way you choose. We now have a task, ``foobar``, which is defined independently of our main worker and can be enqueued without it as well. Importantly, tasks defined without awareness of the main worker can still access its dependencies thanks to dependency injection:
+This allows for grouping tasks in whatever way you choose. We now have a task, ``foobar``, which is defined independently of our main worker and can be enqueued without it as well. Importantly, tasks defined without awareness of the main worker can still access its dependencies:
 
 .. code-block:: python
 
-   from sqlalchemy.ext.asyncio import AsyncSession
+   from httpx import AsyncClient
 
    class WorkerContext(NamedTuple):
-       db: AsyncSession
+       client: AsyncClient
 
    @other.task
-   async def access_database(ctx: WorkerContext = WorkerDepends()) -> None:
-       ...
-       await ctx.db.commit()
+   async def make_request() -> None:
+       await other.context.client.get(...)
+
+Here, ``other.context`` will be inferred as type ``Any``. However, we can get correct type hints here by specifying the dependencies' type in the worker definition (without needing to pass ``lifespan`` again):
+
+.. code-block:: python
+   :caption: other.py
+
+   other = Worker[WorkerContext]()
 
 .. warning::
    Sometimes you need to access the worker itself *inside* a task, for example:

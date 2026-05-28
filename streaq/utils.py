@@ -161,6 +161,7 @@ T2 = TypeVar("T2")
 T3 = TypeVar("T3")
 T4 = TypeVar("T4")
 T5 = TypeVar("T5")
+T6 = TypeVar("T6")
 
 
 @overload
@@ -194,6 +195,18 @@ async def gather(
     awaitable5: Awaitable[T5],
     /,
 ) -> tuple[T1, T2, T3, T4, T5]: ...
+
+
+@overload
+async def gather(
+    awaitable1: Awaitable[T1],
+    awaitable2: Awaitable[T2],
+    awaitable3: Awaitable[T3],
+    awaitable4: Awaitable[T4],
+    awaitable5: Awaitable[T5],
+    awaitable6: Awaitable[T6],
+    /,
+) -> tuple[T1, T2, T3, T4, T5, T6]: ...
 
 
 @overload
