@@ -201,7 +201,6 @@ async def test_task_failed_abort(worker: Worker):
     async def foobar() -> bool:
         return True
 
-    worker.burst = True
     async with run_worker(worker):
         task = await foobar.enqueue()
         result = await task.result(3)
@@ -267,7 +266,7 @@ async def test_task_dependency_failed(worker: Worker):
         pass
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start()
+        task = await foobar.enqueue().start(delay=1)
         dep = await do_nothing.enqueue().start(after=task.id)
         res = await dep.result(3)
         assert not res.success

@@ -13,10 +13,11 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from anyio import create_task_group, sleep
+from anyio import create_task_group, fail_after, sleep
 from coredis import ClusterConnectionPool, ConnectionPool, RedisCluster
 from coredis.connection import TCPLocation
 
+from streaq.constants import REDIS_HEALTH
 from streaq.task import TaskStatus
 from streaq.types import StreaqError
 from streaq.utils import gather
@@ -63,7 +64,8 @@ async def test_health_check(redis_url: str):
     )
     async with run_worker(worker):
         await sleep(1)
-        worker_health = await worker.redis.get(worker._health_key)
+        health_key = f"{worker.prefix}{REDIS_HEALTH}:{worker.id}"
+        worker_health = await worker.redis.get(health_key)
         assert worker_health is not None
 
 
@@ -97,7 +99,6 @@ async def test_bad_deserializer(redis_url: str):
     async def foobar() -> None:
         print("This can't print!")
 
-    worker.burst = True
     async with run_worker(worker):
         task = await foobar.enqueue()
         with pytest.raises(StreaqError):
@@ -302,6 +303,22 @@ async def test_custom_worker_id(redis_url: str):
     assert worker.id == worker_id
 
 
+async def test_burst_after_execution(worker: Worker):
+    @worker.task
+    async def sleeper(time: int) -> None:
+        await sleep(time)
+
+    worker.burst = True
+    async with worker:
+        tasks = [sleeper.enqueue(1) for _ in range(10)]
+        await worker.enqueue_many(tasks)
+    with fail_after(3):
+        await worker.run_async()
+    async with worker:
+        results = await gather(*[t.result(3) for t in tasks])
+        assert all(r.success for r in results)
+
+
 def test_connection_pool(redis_url: str):
     pool = ConnectionPool.from_url(redis_url, decode_responses=True)
     worker = Worker(redis_pool=pool, queue_name=uuid4().hex)
@@ -428,6 +445,18 @@ async def test_grace_period_no_new_tasks(redis_url: str):
             assert await task.status() == TaskStatus.SCHEDULED
 
 
+async def test_no_grace_period(worker: Worker):
+    @worker.task()
+    async def sleeper(time: int) -> None:
+        await sleep(time)
+
+    with fail_after(3):
+        async with run_worker(worker):
+            tasks = [sleeper.enqueue(5) for _ in range(48)]
+            await worker.enqueue_many(tasks)
+            await sleep(1)
+
+
 async def test_get_tasks_by_status_scheduled(worker: Worker):
     from datetime import timedelta
 
@@ -469,6 +498,17 @@ async def test_get_tasks_by_status_scheduled_with_limit(worker: Worker):
         # Test limit
         scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED, limit=2)
         assert len(scheduled) <= 2
+
+
+async def test_get_tasks_by_status_queued(worker: Worker):
+    @worker.task()
+    async def foobar() -> None: ...
+
+    async with worker:
+        tasks = [foobar.enqueue() for _ in range(4)]
+        await worker.enqueue_many(tasks)
+        queued = await worker.get_tasks_by_status(TaskStatus.QUEUED)
+        assert len(queued) == 4
 
 
 async def test_get_tasks_by_status_running(worker: Worker):
