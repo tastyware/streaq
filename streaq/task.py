@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -13,6 +14,8 @@ from typing import (
     overload,
 )
 from uuid import uuid4
+
+from coredis.client import Client
 
 from streaq.types import (
     AsyncTask,
@@ -28,7 +31,7 @@ from streaq.types import (
     Ts,
     TypedCoroutine,
 )
-from streaq.utils import datetime_ms, now_ms, to_ms
+from streaq.utils import asyncify, now_ms
 
 if TYPE_CHECKING:  # pragma: no cover
     from streaq.worker import Worker
@@ -165,62 +168,6 @@ class Task(Generic[P, R]):
             )
         return self
 
-    async def _enqueue(self) -> Task[P, R]:
-        """
-        This is called when the task is awaited.
-        """
-        if self._after:
-            self.after.append(self._after.id)
-        enqueue_time = now_ms()
-        data = await self.serialize(enqueue_time)
-        self.priority = self.priority or self.worker.priorities[-1]
-        expire = to_ms(self.parent.expire or 0)
-        if self.schedule:
-            if isinstance(self.schedule, str):
-                score = self.worker.next_run(self.schedule)
-                # add to cron registry
-                async with self.worker.redis.pipeline(transaction=False) as pipe:
-                    pipe.set(self.worker.cron_data_key + self.id, data)
-                    pipe.hset(self.worker.cron_registry_key, {self.id: self.schedule})
-                    pipe.zadd(self.worker.cron_schedule_key, {self.id: score})
-                    Streaq(pipe).publish_task(
-                        self.worker.stream_key,
-                        self.worker.queue_key,
-                        self.worker.task_key + self.id,
-                        self.worker.dependents_key,
-                        self.worker.dependencies_key,
-                        self.worker.results_key,
-                        self.id,
-                        data,
-                        self.priority,
-                        score,
-                        expire,
-                        enqueue_time,
-                        *self.after,
-                    )
-                return self
-            score = datetime_ms(self.schedule)
-        elif self.delay is not None:
-            score = enqueue_time + to_ms(self.delay)
-        else:
-            score = 0
-        await self.worker.lib.publish_task(
-            self.worker.stream_key,
-            self.worker.queue_key,
-            self.worker.task_key + self.id,
-            self.worker.dependents_key,
-            self.worker.dependencies_key,
-            self.worker.results_key,
-            self.id,
-            data,
-            self.priority,
-            score,
-            expire,
-            enqueue_time,
-            *self.after,
-        )
-        return self
-
     @overload
     def then(
         self: Task[Any, R],
@@ -268,15 +215,29 @@ class Task(Generic[P, R]):
         self._fails_over = True
         return self._triggers
 
-    async def _chain(self) -> Task[P, R]:
-        # traverse backwards
+    async def _recurse(self, lib: Streaq, pipe: Client[str], enqueue_time: int) -> None:
         if self._after:
-            await self._after
+            await self._after._recurse(lib, pipe, enqueue_time)
+            self.after.append(self._after.id)
             if self._after._fails_over:
                 self._prev_source = self._after._prev_source
             else:
                 self._prev_source = self._after.id
-        return await self._enqueue()
+        data = await self.serialize(enqueue_time)
+        self.worker.publish_task(pipe, self, data, enqueue_time, lib=lib)
+
+    async def _chain(self) -> Task[P, R]:
+        now = now_ms()
+        # iterate over chain
+        if self._after:
+            async with self.worker.redis.pipeline(transaction=True) as pipe:
+                lib = Streaq(pipe)
+                await self._recurse(lib, pipe, now)
+        else:
+            await self.worker.publish_task(
+                self.worker.redis, self, await self.serialize(now), now
+            )
+        return self
 
     def __hash__(self) -> int:
         return hash(self.id)
@@ -428,6 +389,10 @@ class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
 
     fn: AsyncTask[P, R]
 
+    @cached_property
+    def runner(self) -> AsyncTask[P, R]:
+        return self.fn
+
     def enqueue(
         self,
         *args: P.args,
@@ -452,6 +417,10 @@ class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
     """
 
     fn: SyncTask[P, R]
+
+    @cached_property
+    def runner(self) -> AsyncTask[P, R]:
+        return asyncify(self.fn, self.worker._limiter)  # pyright: ignore[reportPrivateUsage]
 
     def enqueue(
         self,

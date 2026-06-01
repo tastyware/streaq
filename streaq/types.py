@@ -73,7 +73,7 @@ class StreaqRetry(StreaqError):
         self.schedule = schedule
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StreamMessage:
     """
     Dataclass wrapping data stored in the Redis stream.
@@ -85,7 +85,7 @@ class StreamMessage:
     enqueue_time: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TaskContext:
     """
     Dataclass containing task-specific information like the try count.
@@ -206,7 +206,13 @@ class Streaq(Library[str]):
 
     @wraps(verify_existence=False)
     def refresh_timeout(
-        self, stream_key: KeyT, group_name: str, consumer: str, message_id: str
+        self,
+        stream_key: KeyT,
+        running_set: KeyT,
+        group_name: str,
+        consumer: str,
+        message_id: str,
+        task_id: str,
     ) -> CommandRequest[bool]: ...
 
     @wraps(verify_existence=False)
