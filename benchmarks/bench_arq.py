@@ -21,11 +21,21 @@ async def sleeper(ctx, time: int) -> None:
         await asyncio.sleep(time)
 
 
+async def startup(ctx):
+    ctx["start_time"] = asyncio.get_event_loop().time()
+
+
+async def shutdown(ctx):
+    print(f"finished after {asyncio.get_event_loop().time() - ctx['start_time']}s")
+
+
 class WorkerSettings:
     functions = [sleeper]
     redis_settings = settings
     max_jobs = 32
     burst = True
+    on_startup = startup
+    on_shutdown = shutdown
 
 
 async def main(time: int):

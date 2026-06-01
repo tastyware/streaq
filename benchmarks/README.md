@@ -1,11 +1,9 @@
 # Benchmarks
 
-streaQ's performance significantly improves upon [arq](https://github.com/python-arq/arq), and is on-par with [SAQ](https://github.com/tobymao/saq) and [taskiq](https://github.com/taskiq-python/taskiq). If you want to run these tests yourself, first install the dependencies:
+streaQ's performance significantly improves upon [arq](https://github.com/python-arq/arq), and is on-par with [taskiq](https://github.com/taskiq-python/taskiq). If you want to run these tests yourself, first install the dependencies:
 ```
 $ uv pip install git+https://github.com/Graeme22/arq.git
-$ uv pip install "saq[hiredis]==0.25.2"
-$ uv pip install "taskiq-redis==1.1.0"
-$ uv pip install uvloop
+$ uv pip install "taskiq-redis==1.2.2"
 ```
 
 You can enqueue jobs like so:
@@ -16,33 +14,30 @@ $ python benchmarks/bench_streaq.py --time 1
 And run a worker with one of these commands, adjusting the number of workers as desired:
 ```
 $ arq --workers ? --burst bench_arq.WorkerSettings
-$ saq --quiet bench_saq.settings --workers ?
 $ streaq run --burst --workers ? bench_streaq:worker
 $ taskiq worker --workers ? --max-async-tasks 32 bench_taskiq:broker --max-prefetch 32
 ```
 
-These benchmarks were run with streaQ v6.0.0 on an M4 Mac Mini using asyncio + uvloop. Trio performance is slightly worse.
+These benchmarks were run with streaQ v7.0.0 on an M4 Mac Mini using asyncio + uvloop. Trio performance is slightly worse.
 
 ## Benchmark 1: No-op
 
 This benchmark evaluates the performance when tasks do nothing, representing negligible amounts of work.
-These results are with 20,000 tasks enqueued, a concurrency of `32`, and a variable number of workers.
+These results are with 20,000 tasks enqueued, concurrency of `32`, and a variable number of workers.
 
-| library  | enqueuing | 1 worker | 10 workers | 20 workers | 40 workers |
-| -------- | --------- | -------- | ---------- | ---------- | ---------- |
-| streaq   | 0.45s     | 8.61s    | 3.90s      | 4.18s      | 4.84s      |
-| SAQ      | 1.67s     | 9.86s    | 3.46s      | 3.45s      | 3.93s      |
-| taskiq   | 1.68s     | 6.36s    | 3.26s      | 3.38s      | 6.43s      |
-| arq      | 2.31s     | 62.66s   | 28.10s     | 43.33s     | ☠️         |
+| library  | enqueuing | 1 worker | 10 workers |
+| -------- | --------- | -------- | ---------- |
+| streaq   | 0.57s     | 5.54s    | 2.45s      |
+| taskiq   | 1.60s     | 4.60s    | 3.00s      |
+| arq      | 1.32s     | 62.06s   | 35.88s     |
 
 ## Benchmark 2: Sleep
 
 This benchmark evaluates the performance when tasks sleep for 1 second, representing a small amount of work.
-These results are with 20,000 tasks enqueued, a concurrency of `32`, and a variable number of workers.
+These results are with 20,000 tasks enqueued, concurrency of `32`, and a variable number of workers.
 
-| library  | enqueuing | 10 workers | 20 workers | 40 workers |
-| -------- | --------- | ---------- | ---------- | ---------- |
-| streaq   | 0.44s     | 64.56s     | 32.80s     | 17.88s     |
-| SAQ      | 1.69s     | 64.51s     | 33.56s     | 17.74s     |
-| taskiq   | 1.68s     | 67.53s     | 34.42s     | 18.55s     |
-| arq      | 2.27s     | 176.87s    | 169.47s    | ☠️         |
+| library  | enqueuing | 10 workers | 100 workers |
+| -------- | --------- | ---------- | ----------- |
+| streaq   | 0.57s     | 64.20s     | 7.90s       |
+| taskiq   | 1.60s     | 63.57s     | 12.19s      |
+| arq      | 1.32s     | 178.96s    | 285.99s     |
