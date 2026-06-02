@@ -257,6 +257,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             self._cluster = self._redis = RedisCluster(
                 startup_nodes=[TCPLocation(*n) for n in cluster_nodes],
                 decode_responses=True,
+                max_connections_per_node=True,
                 **redis_kwargs,
             )
         elif isinstance(redis_pool, ClusterConnectionPool):
