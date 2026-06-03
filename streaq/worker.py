@@ -405,6 +405,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         max_schedule_drift: timedelta | int | None = None,
         max_tries: int | None = 3,
         name: str | None = None,
+        retry_on_timeout: bool = False,
         silent: bool = False,
         timeout: timedelta | int | None = timedelta(hours=1),
         ttl: timedelta | int | None = timedelta(minutes=5),
@@ -422,6 +423,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the cron job instead of the function name
+        :param retry_on_timeout:
+            whether to retry the task using the normal retry flow after a timeout
         :param silent: whether to silence task logs; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
@@ -449,6 +452,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     expire=None,
                     max_schedule_drift=max_schedule_drift,
                     max_tries=max_tries,
+                    retry_on_timeout=retry_on_timeout,
                     silent=silent,
                     timeout=timeout,
                     ttl=ttl,
@@ -464,6 +468,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 expire=None,
                 max_schedule_drift=max_schedule_drift,
                 max_tries=max_tries,
+                retry_on_timeout=retry_on_timeout,
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
@@ -490,6 +495,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         expire: timedelta | int | None = None,
         max_tries: int | None = 3,
         name: str | None = None,
+        retry_on_timeout: bool = False,
         silent: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
@@ -503,6 +509,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         expire: timedelta | int | None = None,
         max_tries: int | None = 3,
         name: str | None = None,
+        retry_on_timeout: bool = False,
         silent: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
@@ -516,6 +523,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the task instead of the function name
+        :param retry_on_timeout:
+            whether to retry the task using the normal retry flow after a timeout
         :param silent: whether to silence task logs; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
@@ -537,6 +546,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     expire=expire,
                     max_schedule_drift=None,
                     max_tries=max_tries,
+                    retry_on_timeout=retry_on_timeout,
                     silent=silent,
                     timeout=timeout,
                     ttl=ttl,
@@ -552,6 +562,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 expire=expire,
                 max_schedule_drift=None,
                 max_tries=max_tries,
+                retry_on_timeout=retry_on_timeout,
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
@@ -1191,10 +1202,21 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     self.counters["failed"] -= 1  # this will get incremented later
                 # task timed out normally
                 elif scope.deadline == original_deadline:
-                    if not task.silent:
-                        logger.error(f"task {task.fn_name} … {task_id} timed out")
-                    result = TimeoutError("Task timed out!")
-                    success, done = False, True
+                    if task.retry_on_timeout:
+                        delay = task_try**2 * 1000
+                        schedule = now_ms() + delay
+                        success, done = False, False
+                        self.counters["retried"] += 1
+                        if not task.silent:
+                            logger.error(f"task {task.fn_name} … {task_id} timed out")
+                            logger.info(
+                                f"task {task.fn_name} ↻ {task_id} retrying in {delay}ms"
+                            )
+                    else:
+                        if not task.silent:
+                            logger.error(f"task {task.fn_name} … {task_id} timed out")
+                        result = TimeoutError("Task timed out!")
+                        success, done = False, True
                 # task timed out after grace period
                 else:
                     self.counters["relinquished"] += 1
@@ -1298,6 +1320,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             expire=None,
             max_schedule_drift=None,
             max_tries=None,
+            retry_on_timeout=False,
             silent=False,
             timeout=None,
             ttl=None,

@@ -43,6 +43,7 @@ The ``task`` decorator has several optional arguments that can be used to custom
 - ``expire``: time after which to dequeue the task, if ``None`` will never be dequeued
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to ``3``
 - ``name``: use a custom name for the task instead of the function name
+- ``retry_on_timeout``: whether worker-enforced timeouts should enter the normal retry flow instead of failing immediately; defaults to ``False``
 - ``silent``: whether to silence task logs; defaults to False
 - ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
@@ -52,7 +53,7 @@ For example:
 
 .. code-block:: python
 
-   @worker.task(timeout=3, max_tries=1)
+   @worker.task(timeout=3, max_tries=1, retry_on_timeout=True)
    async def foo(): ...
 
 Enqueuing tasks
@@ -227,6 +228,8 @@ streaQ provides a special exception that you can raise manually inside of your t
        return True
 
 By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` or ``schedule`` parameters to the ``StreaqRetry`` exception.
+
+If you want worker-enforced timeouts to use the same retry flow, pass ``retry_on_timeout=True`` to the task or cron decorator.
 
 Cancelling tasks
 ----------------

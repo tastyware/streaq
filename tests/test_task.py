@@ -48,6 +48,20 @@ async def test_task_timeout(worker: Worker):
         assert isinstance(res.exception, TimeoutError)
 
 
+async def test_task_timeout_retries(worker: Worker):
+    @worker.task(timeout=timedelta(seconds=1), retry_on_timeout=True)
+    async def foobar() -> int:
+        if foobar.context.tries == 1:
+            await sleep(5)
+        return foobar.context.tries
+
+    async with run_worker(worker):
+        task = await foobar.enqueue()
+        res = await task.result(6)
+        assert res.success
+        assert res.result == 2
+
+
 async def test_task_status(worker: Worker):
     @worker.task
     async def foobar() -> None:
