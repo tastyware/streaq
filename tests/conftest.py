@@ -1,18 +1,14 @@
-import logging.config
 import os
 import signal
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from anyio import create_task_group
 
 from streaq import Worker
-from streaq.utils import default_log_config
-
-logging.config.dictConfig(default_log_config(UTC, False))
 
 
 @pytest.fixture(scope="session")
@@ -28,7 +24,7 @@ def redis_url() -> str:
     ]
 )
 def anyio_backend(request: pytest.FixtureRequest) -> str:
-    return request.param
+    return request.param  # type: ignore
 
 
 @pytest.fixture(scope="function")
@@ -58,11 +54,11 @@ def basic(redis_url: str) -> Worker:
     params=["basic", "sentinel", "cluster"], ids=["basic", "sentinel", "cluster"]
 )
 def worker(request: pytest.FixtureRequest) -> Worker:
-    return request.getfixturevalue(request.param)
+    return request.getfixturevalue(request.param)  # type: ignore
 
 
 @asynccontextmanager
-async def run_worker(_worker: Worker) -> AsyncGenerator[None, None]:
+async def run_worker(_worker: Worker[Any]) -> AsyncGenerator[None, None]:
     async with create_task_group() as tg:
         await tg.start(_worker.run_async)
         yield

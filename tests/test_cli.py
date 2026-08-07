@@ -16,13 +16,13 @@ test_module = sys.modules["tests.test_cli"]
 
 
 def test_burst(worker: Worker):
-    setattr(test_module, "test_worker", worker)
+    test_module.test_worker = worker  # type: ignore
     result = runner.invoke(cli, ["run", "tests.test_cli:test_worker", "--burst"])
     assert result.exit_code == 0
 
 
 def test_multiple_workers(worker: Worker):
-    setattr(test_module, "test_worker", worker)
+    test_module.test_worker = worker  # type: ignore
     result = runner.invoke(
         cli, ["run", "--burst", "--workers", "2", "tests.test_cli:test_worker"]
     )
@@ -30,7 +30,7 @@ def test_multiple_workers(worker: Worker):
 
 
 def test_verbose(worker: Worker):
-    setattr(test_module, "test_worker", worker)
+    test_module.test_worker = worker  # type: ignore
     result = runner.invoke(
         cli, ["run", "tests.test_cli:test_worker", "--burst", "--verbose"]
     )

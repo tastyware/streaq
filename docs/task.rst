@@ -359,23 +359,29 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 .. code-block:: python
 
    from typing import Any
-   from streaq.utils import gather, to_tuple
+   from streaq.utils import to_tuple
 
    @worker.task
    async def map(data: list[Any], *, to: str) -> list[Any]:
        task = worker.registry[to]
-       coros = [task.enqueue(*to_tuple(d)).start() for d in data]
-       tasks = await gather(*coros)
-       results = await gather(*[t.result(3) for t in tasks])
-       return [r.result for r in results]
+       tasks = [task.enqueue(*to_tuple(d)) for d in data]
+       await map.worker.enqueue_many(tasks)
+       handles: list[TaskHandle[TaskResult[Any]]] = []
+       async with create_task_group() as tg:
+           for t in tasks:
+               handles.append(tg.start_soon(t.result, 3))
+       return [h.return_value.result for h in handles]
 
    @worker.task
    async def filter(data: list[Any], *, by: str) -> list[Any]:
        task = worker.registry[by]
-       coros = [task.enqueue(*to_tuple(d)).start() for d in data]
-       tasks = await gather(*coros)
-       results = await gather(*[t.result(5) for t in tasks])
-       return [data[i] for i in range(len(data)) if results[i].result]
+       tasks = [task.enqueue(*to_tuple(d)) for d in data]
+       await map.worker.enqueue_many(tasks)
+       handles: list[TaskHandle[TaskResult[Any]]] = []
+       async with create_task_group() as tg:
+           for t in tasks:
+               handles.append(tg.start_soon(t.result, 3))
+       return [data[i] for i in range(len(data)) if handles[i].return_value.result]
 
    async with worker:
        data = [0, 1, 2, 3]

@@ -3,6 +3,7 @@ from datetime import datetime
 from statistics import mean
 from typing import Annotated, Any
 
+from anyio import TaskHandle, create_task_group
 from anyio.functools import lru_cache
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi import status as fast_status
@@ -12,13 +13,8 @@ from pydantic import BaseModel
 from streaq import TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
 from streaq.task import TaskInfo, TaskResult
-from streaq.ui.deps import (
-    get_exception_formatter,
-    get_result_formatter,
-    get_worker,
-    templates,
-)
-from streaq.utils import gather
+from streaq.ui import get_exception_formatter, get_result_formatter, get_worker
+from streaq.ui.deps import templates
 
 router = APIRouter()
 _fmt = "%Y-%m-%d %H:%M:%S"
@@ -50,7 +46,11 @@ async def _get_context(
     async def _get_tasks_by_statuses(
         statuses: tuple[TaskStatus, ...],
     ) -> tuple[list[TaskInfo] | list[TaskResult[Any]], ...]:
-        return await gather(*[worker.get_tasks_by_status(s) for s in statuses])
+        handles: list[TaskHandle[Any, None]] = []
+        async with create_task_group() as tg:
+            for status in statuses:
+                handles.append(tg.start_soon(worker.get_tasks_by_status, status))
+        return tuple(h.return_value for h in handles)
 
     # Fetch all task types - explicit calls for proper typing
     _statuses = tuple(statuses or _STATUS_COLORS.keys())
@@ -62,7 +62,7 @@ async def _get_context(
         counts[status.value] = len(items)
         for item in items:
             color, text_color = _STATUS_COLORS[status]
-            if status == TaskStatus.DONE and not item.success:
+            if status == TaskStatus.DONE and not item.success:  # type: ignore
                 color = "danger"
             dt = datetime.fromtimestamp(item.created_time / 1000, tz=worker.tz)
             tasks.append(
@@ -139,9 +139,12 @@ async def get_task(
     ],
     task_id: str,
 ) -> Any:
-    status, info = await gather(
-        worker.status_by_id(task_id), worker.info_by_id(task_id)
-    )
+    info: TaskInfo | None = None
+    status = TaskStatus.NOT_FOUND
+    async with create_task_group() as tg:
+        _status = tg.start_soon(worker.status_by_id, task_id)
+        info = await worker.info_by_id(task_id)
+        status = await _status
     if status == TaskStatus.NOT_FOUND:
         raise HTTPException(
             status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"

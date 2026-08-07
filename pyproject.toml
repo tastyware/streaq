@@ -54,8 +54,8 @@ authors = [
     { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
-    "anyio>=4.13.0",
-    "coredis>=6.7.0",
+    "anyio>=4.14.2",
+    "coredis>=6.8.0",
     "crontab>=1.0.5",
     "typer>=0.19.2",
     "watchfiles>=1.1.0",
@@ -84,26 +84,38 @@ Changelog = "https://github.com/tastyware/streaq/releases"
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    "pyright>=1.1.406",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
     "pytest-randomly>=4.1.0",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.13.1",
+    "ruff>=0.16.0",
     "sphinx>=8.1.3",
     "sphinx-immaterial>=0.13.6",
     "trio>=0.30.0",
     "uvloop>=0.22.1",
+    "zuban>=0.9.1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = "tests"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+extend-select = ["ANN", "FAST"]
+extend-ignore = ["ANN401"]
 
-[tool.pyright]
-strict = ["streaq/"]
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["DTZ", "ANN201", "TRY002", "ASYNC"]
+
+[tool.ruff.format]
+docstring-code-line-length = 88
+
+[[tool.zuban.overrides]]
+module = ["streaq.types"]
+disable_error_code = ["empty-body"]
+
+[[tool.zuban.overrides]]
+module = ["tests.*"]
+disable_error_code = ["no-untyped-def"]
 
 [tool.coverage.run]
 source = ["streaq"]
@@ -114,6 +126,11 @@ patch = ["subprocess"]
 [tool.coverage.report]
 show_missing = true
 fail_under = 100
+exclude_also = ['# pragma: gated cover\[${COVERAGE_EXCLUDE?}\]']
 
 [tool.coverage.paths]
 streaq = ["streaq", "/app/streaq"]
+
+# TODO: remove
+[tool.uv.sources]
+coredis = { git = "https://github.com/alisaifee/coredis" }

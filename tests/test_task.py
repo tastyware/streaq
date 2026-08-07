@@ -1,16 +1,17 @@
 import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import anyio.lowlevel
 import pytest
-from anyio import sleep
+from anyio import TaskHandle, create_task_group, sleep
 
 from streaq.constants import REDIS_UNIQUE
 from streaq.task import TaskStatus
 from streaq.types import ReturnCoroutine, StreaqError, StreaqRetry
-from streaq.utils import gather
 from streaq.worker import Worker
 from tests.conftest import run_worker
 
@@ -102,7 +103,7 @@ async def test_task_cron(worker: Worker):
 
         @worker.cron("* * * * * *", timeout=None)
         async def cron3() -> None:
-            await sleep(0)
+            await anyio.lowlevel.checkpoint()
 
 
 async def test_task_info(worker: Worker):
@@ -311,8 +312,11 @@ async def test_sync_task(worker: Worker):
         task = await foobar.enqueue()
         task2 = await foobar.enqueue()
         # this would time out if these were running sequentially
-        results = await gather(task.result(3), task2.result(3))
-        assert all(res.success for res in results)
+        handles: list[TaskHandle[Any]] = []
+        async with create_task_group() as tg:
+            handles.append(tg.create_task(task.result(3)))
+            handles.append(tg.create_task(task2.result(3)))
+        assert all(h.return_value.success for h in handles)
 
 
 async def test_unsafe_enqueue(worker: Worker):
@@ -366,10 +370,16 @@ async def test_task_priorities(redis_url: str):
         await worker.enqueue_many(low + high)
 
     async with run_worker(worker):
-        results = await gather(*[t.result(3) for t in high])
-        statuses = await gather(*[t.status() for t in low])
-        assert all(res.success for res in results)
-        assert all(status != TaskStatus.DONE for status in statuses)
+        results: list[TaskHandle[Any]] = []
+        statuses: list[TaskHandle[Any]] = []
+        async with create_task_group() as tg:
+            for task in high:
+                results.append(tg.start_soon(task.result, 3))
+        async with create_task_group() as tg:
+            for task in low:
+                statuses.append(tg.start_soon(task.status))
+        assert all(res.return_value.success for res in results)
+        assert all(status.return_value != TaskStatus.DONE for status in statuses)
 
 
 async def test_scheduled_task(worker: Worker):
@@ -407,17 +417,24 @@ async def test_enqueue_unique_task(worker: Worker):
     async with run_worker(worker):
         task = await foobar.enqueue()
         task2 = await foobar.enqueue()
-        results = await gather(task.result(), task2.result())
+        results: list[TaskHandle[Any]] = []
+        async with create_task_group() as tg:
+            results.append(tg.start_soon(task.result, 3))
+            results.append(tg.start_soon(task2.result, 3))
         assert any(
-            not r.success and isinstance(r.exception, StreaqError) for r in results
+            not r.return_value.success
+            and isinstance(r.return_value.exception, StreaqError)
+            for r in results
         )
-        assert any(r.success and r.result is None for r in results)
+        assert any(
+            r.return_value.success and r.return_value.result is None for r in results
+        )
 
     with pytest.raises(StreaqError):
 
         @worker.task(unique=True)
         async def barfoo() -> None:
-            await sleep(0)
+            await anyio.lowlevel.checkpoint()
 
 
 @pytest.mark.parametrize("wait", [1, 0])
@@ -462,7 +479,7 @@ async def test_middleware(worker: Worker):
 
     @worker.middleware
     def double(task: ReturnCoroutine) -> ReturnCoroutine:
-        async def wrapper(*args, **kwargs) -> Any:
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             result = await task(*args, **kwargs)
             return result * 2
 
@@ -477,7 +494,7 @@ async def test_middleware(worker: Worker):
 
 async def test_middleware_with_dependencies(redis_url: str):
     @asynccontextmanager
-    async def lifespan():
+    async def lifespan() -> AsyncGenerator[int]:
         yield 1
 
     worker = Worker(redis_url=redis_url, queue_name=uuid4().hex, lifespan=lifespan)
@@ -488,7 +505,7 @@ async def test_middleware_with_dependencies(redis_url: str):
 
     @worker.middleware
     def retry(task: ReturnCoroutine) -> ReturnCoroutine:
-        async def wrapper(*args, **kwargs) -> Any:
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             res: int = await task(*args, **kwargs)
             if worker.context + retry.context.tries <= res:
                 raise StreaqRetry("Not enough!")
@@ -544,7 +561,9 @@ async def test_task_pipeline_multiple(worker: Worker):
     async with worker:
         task1 = double.enqueue(1).then(double).then(is_even)
         task2 = double.enqueue(1) | double | double
-        with pytest.raises(StreaqError):
+        with pytest.RaisesGroup(
+            StreaqError, allow_unwrapped=True, flatten_subgroups=True
+        ):
             await worker.enqueue_many([task1, task2])
 
 
@@ -553,7 +572,7 @@ async def test_task_with_custom_name(worker: Worker):
     async def foo() -> int:
         return 42
 
-    async def foobar():
+    async def foobar() -> None:
         return
 
     assert foo.fn_name == "bar"
@@ -561,21 +580,21 @@ async def test_task_with_custom_name(worker: Worker):
         worker.task(name="bar")(foobar)
 
     @worker.task
-    async def bar():
+    async def bar() -> int:
         return 10
 
     async with run_worker(worker):
         task1 = await worker.enqueue_unsafe("bar")
         task2 = await worker.enqueue_unsafe(bar.fn_name)
         task3 = await worker.enqueue_unsafe(foo.fn.__qualname__)
-        res1, res2, res3 = await gather(
-            task1.result(3),
-            task2.result(3),
-            task3.result(3),
-        )
-        assert res1.result == 42
-        assert res2.result == 10
-        assert not res3.success
+        handles: list[TaskHandle[Any]] = []
+        async with create_task_group() as tg:
+            handles.append(tg.start_soon(task1.result, 3))
+            handles.append(tg.start_soon(task2.result, 3))
+            handles.append(tg.start_soon(task3.result, 3))
+        assert handles[0].return_value.result == 42
+        assert handles[1].return_value.result == 10
+        assert not handles[2].return_value.success
 
 
 async def test_cron_with_custom_name(worker: Worker):
@@ -635,7 +654,8 @@ async def test_task_expired(worker: Worker):
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_asyncio_enqueue(anyio_backend: str, worker: Worker):
     @worker.task
-    async def foobar(val: int) -> int: ...
+    async def foobar(val: int) -> int:
+        return 0
 
     import asyncio
 

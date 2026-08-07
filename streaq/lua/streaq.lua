@@ -59,19 +59,13 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
 
   local current_time = argv[1]
 
-  for i = 2, #argv do
-    local priority = argv[i]
-    local queue = queue_key .. priority
-    -- get and delete tasks ready to run from delayed queue (with scores)
-    local tids = redis.call('zrange', queue, 0, current_time, 'byscore', 'withscores')
-    if #tids > 0 then
-      redis.call('zremrangebyscore', queue, 0, current_time)
-
-      local stream = stream_key .. priority
-      -- add ready tasks to live queue, using scheduled fire time as enqueue_time
-      for j = 1, #tids, 2 do
-        redis.call('xadd', stream, '*', 'task_id', tids[j], 'enqueue_time', tids[j + 1])
-      end
+  -- get and delete tasks ready to run from delayed queue (with scores)
+  local tids = redis.call('zrange', queue_key, 0, current_time, 'byscore', 'withscores')
+  if #tids > 0 then
+    redis.call('zremrangebyscore', queue_key, 0, current_time)
+    -- add ready tasks to live queue, using scheduled fire time as enqueue_time
+    for j = 1, #tids, 2 do
+      redis.call('xadd', stream_key, '*', 'task_id', tids[j], 'enqueue_time', tids[j + 1])
     end
   end
 end)
@@ -86,10 +80,9 @@ redis.register_function('publish_task', function(keys, argv)
 
   local task_id = argv[1]
   local task_data = argv[2]
-  local priority = argv[3]
-  local score = argv[4]
-  local expire = argv[5]
-  local current_time = argv[6]
+  local score = argv[3]
+  local expire = argv[4]
+  local current_time = argv[5]
 
   local args
   if expire ~= '0' then
@@ -102,7 +95,7 @@ redis.register_function('publish_task', function(keys, argv)
 
   local modified = 0
   -- additional args are dependencies for task
-  for i = 7, #argv do
+  for i = 6, #argv do
     local dep_id = argv[i]
     -- update dependency DAG if dependency exists
     if redis.call('exists', results_key .. dep_id) ~= 1 then
@@ -116,10 +109,10 @@ redis.register_function('publish_task', function(keys, argv)
   if modified == 0 then
     -- delayed queue
     if score ~= '0' then
-      redis.call('zadd', queue_key .. priority, score, task_id)
+      redis.call('zadd', queue_key, score, task_id)
       -- live queue
     else
-      return redis.call('xadd', stream_key .. priority, '*', 'task_id', task_id, 'enqueue_time', current_time)
+      return redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
     end
   end
 

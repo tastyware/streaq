@@ -1,12 +1,14 @@
+from typing import Any
+
+import anyio.lowlevel
 import pytest
-from anyio import sleep
+from anyio import TaskHandle, create_task_group, sleep
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from streaq import TaskStatus, Worker
 from streaq.ui import router
 from streaq.ui.deps import get_worker
-from streaq.utils import gather
 from tests.conftest import run_worker
 
 pytestmark = pytest.mark.anyio
@@ -35,7 +37,7 @@ async def test_get_pages(worker: Worker):
 
     @worker.cron("* * * * *")
     async def cronjob() -> None:
-        await sleep(0)
+        await anyio.lowlevel.checkpoint()
 
     app.dependency_overrides[get_worker] = lambda: worker
     async with run_worker(worker):
@@ -46,7 +48,10 @@ async def test_get_pages(worker: Worker):
         running = sleeper.enqueue(10)
         queued = sleeper.enqueue(10)
         await worker.enqueue_many([failed, scheduled, done, running, queued])
-        await gather(done.result(2), failed.result(2))  # make sure tasks are done
+        # make sure tasks are done
+        async with create_task_group() as tg:
+            tg.start_soon(done.result, 2)
+            tg.start_soon(failed.result, 2)
         while await running.status() != TaskStatus.RUNNING:
             await sleep(1)
         async with AsyncClient(
@@ -67,16 +72,19 @@ async def test_get_pages(worker: Worker):
             )
             assert res.status_code == 200
             # test fetching tasks in various statuses
-            res = await gather(
-                *[
-                    client.get(f"{prefix}/task/{done.id}"),
-                    client.get(f"{prefix}/task/{running.id}"),
-                    client.get(f"{prefix}/task/{queued.id}"),
-                    client.get(f"{prefix}/task/{scheduled.id}"),
-                    client.get(f"{prefix}/task/{failed.id}"),
-                ]
-            )
-            assert all(r.status_code == 200 for r in res)
+            handles: list[TaskHandle[Any]] = []
+            async with create_task_group() as tg:
+                handles.extend(
+                    tg.create_task(t)
+                    for t in [
+                        client.get(f"{prefix}/task/{done.id}"),
+                        client.get(f"{prefix}/task/{running.id}"),
+                        client.get(f"{prefix}/task/{queued.id}"),
+                        client.get(f"{prefix}/task/{scheduled.id}"),
+                        client.get(f"{prefix}/task/{failed.id}"),
+                    ]
+                )
+            assert all(h.return_value.status_code == 200 for h in handles)
             # test aborting a task manually, redirect, and bad ID
             res = await client.delete(f"{prefix}/task/{scheduled.id}")
             assert res.status_code == 200

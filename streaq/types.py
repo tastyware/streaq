@@ -4,16 +4,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from inspect import iscoroutinefunction
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    ParamSpec,
-    Protocol,
-    TypeAlias,
-    TypeVar,
-    cast,
-    overload,
-)
+from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, TypeAlias, cast, overload
 
 from coredis.commands.function import Library, wraps
 from coredis.commands.request import CommandRequest
@@ -21,12 +12,12 @@ from coredis.response._callbacks import ResponseCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT
-from typing_extensions import TypeIs, TypeVarTuple
+from typing_extensions import TypeIs, TypeVar, TypeVarTuple
 
 if TYPE_CHECKING:
-    from streaq.task import AsyncRegisteredTask, SyncRegisteredTask  # type: ignore
+    from streaq.task import AsyncRegisteredTask, SyncRegisteredTask
 
-C = TypeVar("C", bound=object | None)
+C = TypeVar("C", bound=object | None, default=None)
 P = ParamSpec("P")
 POther = ParamSpec("POther")
 R = TypeVar("R", bound=object | None)
@@ -39,22 +30,16 @@ class StreaqError(Exception):
     Base class for all task queuing errors.
     """
 
-    pass
-
 
 class StreaqCancelled(StreaqError):
     """
-    Similar to ``asyncio.CancelledError`` and ``trio.Cancelled``, but can be raised
-    manually.
+    A cancellation error that can be raised manually.
     """
-
-    pass
 
 
 class StreaqRetry(StreaqError):
     """
-    An exception you can manually raise in your tasks to make sure the task
-    is retried.
+    An exception you can raise in your tasks to retry a task.
 
     :param delay:
         amount of time to wait before retrying the task; if None and schedule
@@ -67,7 +52,7 @@ class StreaqRetry(StreaqError):
         *args: Any,
         delay: timedelta | int | None = None,
         schedule: datetime | None = None,
-    ):
+    ) -> None:
         super().__init__(*args)
         self.delay = delay
         self.schedule = schedule
@@ -101,6 +86,7 @@ class TaskContext:
 ReturnCoroutine: TypeAlias = Callable[..., Coroutine[Any, Any, Any]]
 TypedCoroutine: TypeAlias = Coroutine[Any, Any, R]
 Middleware: TypeAlias = Callable[[ReturnCoroutine], ReturnCoroutine]
+Entries: TypeAlias = dict[str, tuple[StreamEntry, ...]] | None
 
 AsyncCron: TypeAlias = Callable[[], TypedCoroutine[R]]
 SyncCron: TypeAlias = Callable[[], R]
@@ -114,9 +100,21 @@ def is_async_task(
     return iscoroutinefunction(fn)
 
 
+class CronDecorator(Protocol):
+    @overload
+    def __call__(self, fn: AsyncCron[R], /) -> AsyncRegisteredTask[[], R]: ...
+
+    @overload
+    def __call__(self, fn: SyncCron[R], /) -> SyncRegisteredTask[[], R]: ...
+
+    def __call__(
+        self, fn: AsyncCron[R] | SyncCron[R], /
+    ) -> AsyncRegisteredTask[[], R] | SyncRegisteredTask[[], R]: ...
+
+
 class TaskDecorator(Protocol):
     @overload
-    def __call__(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # pyright: ignore[reportOverlappingOverload]
+    def __call__(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...
 
     @overload
     def __call__(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...
@@ -127,13 +125,10 @@ class TaskDecorator(Protocol):
 
 
 class ReadStreamsCallback(
-    ResponseCallback[
-        dict[str, list[list[list[str] | str]]] | None,
-        dict[str, tuple[StreamEntry, ...]] | None,
-    ]
-):
+    ResponseCallback[dict[str, list[list[list[str] | str]]] | None, Entries]
+):  # pragma: gated cover[xreadgroup-no-max-count]
     """
-    Transform Lua script output to same format as XREAD.
+    Transform Lua function output to same format as XREAD.
     """
 
     def transform(
@@ -146,11 +141,12 @@ class ReadStreamsCallback(
                 )
                 for stream_id, entries in cast(list[Any], response)
             }
+        return None
 
 
 class Streaq(Library[str]):
     """
-    FFI stubs for Lua functions in streaq.lua
+    FFI stubs for Lua functions in streaq.lua.
     """
 
     NAME = "streaq"
@@ -167,7 +163,7 @@ class Streaq(Library[str]):
 
     @wraps(verify_existence=False)
     def publish_delayed_tasks(
-        self, queue_key: KeyT, stream_key: KeyT, current_time: int, *priorities: str
+        self, queue_key: KeyT, stream_key: KeyT, current_time: int
     ) -> CommandRequest[None]: ...
 
     @wraps(verify_existence=False)
@@ -181,7 +177,6 @@ class Streaq(Library[str]):
         results_key: KeyT,
         task_id: str,
         task_data: Any,
-        priority: str,
         score: int,
         expire: int,
         current_time: int,
