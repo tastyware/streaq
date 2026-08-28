@@ -43,11 +43,11 @@ jobs:
     - name: Lint with ruff
       run: uv run ruff check streaq/ tests/ example.py
 
-    - name: Type check with zuban (default)
-      run: uv run zuban check streaq/ tests/ example.py
+    - name: Type check with pyright
+      run: uv run pyright streaq/ tests/ example.py
 
-    - name: Type check with zuban (mypy)
-      run: uv run zuban mypy streaq/ tests/ example.py
+    - name: Type check with mypy
+      run: uv run mypy --strict tests/ example.py
 
     - name: Test with pytest
       run: |
