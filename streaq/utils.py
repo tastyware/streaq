@@ -75,7 +75,7 @@ def to_tuple(val: Any) -> tuple[Any, ...]:
     """
     Turn the given value into a tuple of one element if it's not already a tuple.
     """
-    return val if isinstance(val, tuple) else (val,)
+    return val if isinstance(val, tuple) else (val,)  # type: ignore
 
 
 def default_log_config(tz: tzinfo, verbose: bool) -> dict[str, Any]:

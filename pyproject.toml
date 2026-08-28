@@ -54,8 +54,8 @@ authors = [
     { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
-    "anyio>=4.14.2",
-    "coredis>=6.8.0",
+    "anyio>=4.15.0,<5",
+    "coredis>=6.9.0,<7",
     "crontab>=1.0.5",
     "typer>=0.19.2",
     "watchfiles>=1.1.0",
@@ -84,6 +84,8 @@ Changelog = "https://github.com/tastyware/streaq/releases"
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "mypy>=2.3.1",
+    "pyright>=1.1.411",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
     "pytest-randomly>=4.1.0",
@@ -93,7 +95,6 @@ dev = [
     "sphinx-immaterial>=0.13.6",
     "trio>=0.30.0",
     "uvloop>=0.22.1",
-    "zuban>=0.9.1",
 ]
 
 [tool.pytest.ini_options]
@@ -109,11 +110,12 @@ extend-ignore = ["ANN401"]
 [tool.ruff.format]
 docstring-code-line-length = 88
 
-[[tool.zuban.overrides]]
-module = ["streaq.types"]
-disable_error_code = ["empty-body"]
+[tool.pyright]
+typeCheckingMode = "strict"
+reportPrivateUsage = "none"
+reportUnusedFunction = "none"
 
-[[tool.zuban.overrides]]
+[[tool.mypy.overrides]]
 module = ["tests.*"]
 disable_error_code = ["no-untyped-def"]
 
@@ -134,3 +136,4 @@ streaq = ["streaq", "/app/streaq"]
 # TODO: remove
 [tool.uv.sources]
 coredis = { git = "https://github.com/alisaifee/coredis" }
+anyio = { git = "https://github.com/agronholm/anyio" }

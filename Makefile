@@ -10,8 +10,8 @@ install:
 lint:
 	uv run ruff check --fix streaq/ tests/ example.py
 	uv run ruff format streaq/ tests/
-	uv run zuban check streaq/ tests/ example.py
-	uv run zuban mypy streaq/ tests/ example.py
+	uv run pyright streaq/ tests/ example.py
+	uv run mypy --strict tests/ example.py
 
 test:
 	PYTHON_VERSION=$(PYTHON_VERSION) REDIS_VERSION=$(REDIS_VERSION) docker compose run --rm -e COVERAGE_EXCLUDE=$(COVERAGE_EXCLUDE) tests uv run --locked --all-extras --dev pytest -n auto --cov=streaq tests/

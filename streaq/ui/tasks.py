@@ -3,7 +3,7 @@ from datetime import datetime
 from statistics import mean
 from typing import Annotated, Any
 
-from anyio import TaskHandle, create_task_group
+from anyio import amap, gather
 from anyio.functools import lru_cache
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi import status as fast_status
@@ -45,12 +45,8 @@ async def _get_context(
     @lru_cache(ttl=1)
     async def _get_tasks_by_statuses(
         statuses: tuple[TaskStatus, ...],
-    ) -> tuple[list[TaskInfo] | list[TaskResult[Any]], ...]:
-        handles: list[TaskHandle[Any, None]] = []
-        async with create_task_group() as tg:
-            for status in statuses:
-                handles.append(tg.start_soon(worker.get_tasks_by_status, status))
-        return tuple(h.return_value for h in handles)
+    ) -> list[list[TaskInfo] | list[TaskResult[Any]]]:
+        return await amap(worker.get_tasks_by_status, statuses)
 
     # Fetch all task types - explicit calls for proper typing
     _statuses = tuple(statuses or _STATUS_COLORS.keys())
@@ -139,12 +135,9 @@ async def get_task(
     ],
     task_id: str,
 ) -> Any:
-    info: TaskInfo | None = None
-    status = TaskStatus.NOT_FOUND
-    async with create_task_group() as tg:
-        _status = tg.start_soon(worker.status_by_id, task_id)
-        info = await worker.info_by_id(task_id)
-        status = await _status
+    status, info = await gather(
+        worker.status_by_id(task_id), worker.info_by_id(task_id)
+    )
     if status == TaskStatus.NOT_FOUND:
         raise HTTPException(
             status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"

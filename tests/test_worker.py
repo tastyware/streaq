@@ -330,7 +330,7 @@ def test_connection_pool(redis_url: str):
     pool = ConnectionPool.from_url(redis_url, decode_responses=True)
     worker = Worker(redis_pool=pool, queue_name=uuid4().hex)
     worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)
-    assert worker._redis.connection_pool is worker2._redis.connection_pool  # type: ignore
+    assert worker._redis.connection_pool is worker2._redis.connection_pool
 
 
 def test_connection_pool_illegal(redis_url: str):
@@ -345,7 +345,7 @@ def test_cluster_connection_pool():
     )
     worker = Worker(redis_pool=pool, queue_name=f"{{{uuid4().hex}}}")
     worker2 = Worker(redis_pool=pool, queue_name=worker.queue_name)
-    assert worker._redis.connection_pool is worker2._redis.connection_pool  # type: ignore
+    assert worker._redis.connection_pool is worker2._redis.connection_pool
 
 
 async def test_duplicate_tasks(worker: Worker[None]):
@@ -554,7 +554,7 @@ async def test_get_tasks_by_status_done(worker: Worker):
 async def test_get_tasks_by_status_not_found(worker: Worker):
     async with worker:
         with pytest.raises(StreaqError):
-            await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)  # type: ignore
+            await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)
 
 
 async def test_get_tasks_by_status_empty_scheduled(worker: Worker):

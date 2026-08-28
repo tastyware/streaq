@@ -102,7 +102,7 @@ def is_async_task(
 
 class CronDecorator(Protocol):
     @overload
-    def __call__(self, fn: AsyncCron[R], /) -> AsyncRegisteredTask[[], R]: ...
+    def __call__(self, fn: AsyncCron[R], /) -> AsyncRegisteredTask[[], R]: ...  # type: ignore[overload-overlap]
 
     @overload
     def __call__(self, fn: SyncCron[R], /) -> SyncRegisteredTask[[], R]: ...
@@ -114,7 +114,7 @@ class CronDecorator(Protocol):
 
 class TaskDecorator(Protocol):
     @overload
-    def __call__(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...
+    def __call__(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # type: ignore[overload-overlap]
 
     @overload
     def __call__(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...

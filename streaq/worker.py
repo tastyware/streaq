@@ -399,7 +399,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
 
         @overload
-        def wrapped(fn: AsyncCron[R]) -> AsyncRegisteredTask[[], R]: ...
+        def wrapped(fn: AsyncCron[R]) -> AsyncRegisteredTask[[], R]: ...  # type: ignore[overload-overlap]
 
         @overload
         def wrapped(fn: SyncCron[R]) -> SyncRegisteredTask[[], R]: ...
@@ -450,7 +450,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         return wrapped
 
     @overload
-    def task(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...
+    def task(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # type: ignore[overload-overlap]
 
     @overload
     def task(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...
@@ -982,14 +982,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 if to_delete:
                     pipe.delete(to_delete)
                 # mark message as immediately reclaimable
-                if self._supports_max_count:
+                if (
+                    self._supports_max_count
+                ):  # pragma: gated cover[xreadgroup-max-count]
                     pipe.xnack(
                         self.stream_key + msg.priority,
                         REDIS_GROUP,
                         PureToken.FAIL,
                         [msg.message_id],
                     )
-                else:
+                else:  # pragma: gated cover[xreadgroup-no-max-count]
                     pipe.xclaim(
                         self.stream_key + msg.priority,
                         REDIS_GROUP,
@@ -1156,15 +1158,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         for middleware in reversed(self.middlewares):
             wrapped = middleware(wrapped)
         result: Any = None
-        scope = move_on_after(to_seconds(task.timeout), shield=True)
-        original_deadline = scope.deadline
-        self._cancel_scopes[task_id] = scope
         self._running_tasks[msg.priority].add(msg.message_id)
         token = _task_context.set(task_context)
         if not task.silent:
             logger.info(f"task {task.fn_name} □ {task_id} → worker {self.id}")
         try:
-            with scope:
+            with move_on_after(to_seconds(task.timeout), shield=True) as scope:
+                original_deadline = scope.deadline
+                self._cancel_scopes[task_id] = scope
                 result = await wrapped(*args, **kwargs)
         except StreaqRetry as e:
             success, done = False, False
