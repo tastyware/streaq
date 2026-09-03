@@ -10,9 +10,9 @@ from streaq.ui.tasks import router
 from streaq.utils import import_string
 
 __all__ = [
-    "get_worker",
-    "get_result_formatter",
     "get_exception_formatter",
+    "get_result_formatter",
+    "get_worker",
     "router",
 ]
 

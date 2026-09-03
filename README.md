@@ -10,7 +10,7 @@ Fast, async, fully-typed distributed task queue via Redis streams
 
 ## Features
 
-- Up to [5x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than `arq`
+- Up to [14x faster](https://github.com/tastyware/streaq/tree/master/benchmarks) than `arq`
 - Fully typed
 - Comprehensive documentation
 - Support for delayed/scheduled tasks

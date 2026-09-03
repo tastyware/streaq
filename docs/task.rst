@@ -359,22 +359,23 @@ This is useful for ETL pipelines or similar tasks, where each task builds upon t
 .. code-block:: python
 
    from typing import Any
-   from streaq.utils import gather, to_tuple
+   from anyio import gather
+   from streaq.utils import to_tuple
 
    @worker.task
    async def map(data: list[Any], *, to: str) -> list[Any]:
-       task = worker.registry[to]
-       coros = [task.enqueue(*to_tuple(d)).start() for d in data]
-       tasks = await gather(*coros)
+       task = map.worker.registry[to]
+       tasks = [task.enqueue(*to_tuple(d)) for d in data]
+       await map.worker.enqueue_many(tasks)
        results = await gather(*[t.result(3) for t in tasks])
        return [r.result for r in results]
 
    @worker.task
    async def filter(data: list[Any], *, by: str) -> list[Any]:
-       task = worker.registry[by]
-       coros = [task.enqueue(*to_tuple(d)).start() for d in data]
-       tasks = await gather(*coros)
-       results = await gather(*[t.result(5) for t in tasks])
+       task = filter.worker.registry[by]
+       tasks = [task.enqueue(*to_tuple(d)) for d in data]
+       await filter.worker.enqueue_many(tasks)
+       results = await gather(*[t.result(3) for t in tasks])
        return [data[i] for i in range(len(data)) if results[i].result]
 
    async with worker:

@@ -3,7 +3,6 @@ import os
 import pickle
 import secrets
 import signal
-import subprocess
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -12,23 +11,22 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import anyio.lowlevel
 import pytest
-from anyio import create_task_group, fail_after, sleep
+from anyio import TaskHandle, create_task_group, fail_after, open_process, sleep
 from coredis import ClusterConnectionPool, ConnectionPool, RedisCluster
 from coredis.connection import TCPLocation
 
+from streaq import StreaqError, TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
-from streaq.task import TaskStatus
-from streaq.types import StreaqError
-from streaq.utils import gather
-from streaq.worker import Worker
+from streaq.task import TaskResult
 from tests.conftest import run_worker
 
 NAME_STR = "Freddy"
 pytestmark = pytest.mark.anyio
 
 
-async def test_worker_redis(worker: Worker):
+async def test_worker_redis(worker: Worker[None]):
     async with worker:
         await worker.redis.ping()
 
@@ -69,12 +67,12 @@ async def test_health_check(redis_url: str):
         assert worker_health is not None
 
 
-async def test_queue_size(worker: Worker):
+async def test_queue_size(worker: Worker[None]):
     async with worker:
         assert await worker.queue_size() == 0
 
 
-def raise_error(*arg, **kwargs) -> Any:
+def raise_error(*args: Any, **kwargs: Any) -> Any:
     raise Exception("Couldn't serialize/deserialize!")
 
 
@@ -105,7 +103,7 @@ async def test_bad_deserializer(redis_url: str):
             await task.result(3)
 
 
-async def test_custom_serializer(worker: Worker):
+async def test_custom_serializer(worker: Worker[None]):
     worker.serializer = json.dumps
     worker.deserializer = json.loads
 
@@ -118,7 +116,7 @@ async def test_custom_serializer(worker: Worker):
         assert (await task.result(3)).success
 
 
-async def test_uninitialized_worker(worker: Worker):
+async def test_uninitialized_worker(worker: Worker[None]):
     @worker.task
     async def foobar() -> None:
         print(worker.context)
@@ -131,7 +129,7 @@ async def test_uninitialized_worker(worker: Worker):
         await foobar.enqueue()
 
 
-async def test_active_tasks(worker: Worker):
+async def test_active_tasks(worker: Worker[None]):
     @worker.task
     async def foo() -> None:
         await sleep(10)
@@ -166,8 +164,12 @@ async def test_reclaim_backed_up(redis_url: str):
         # run second worker which will pick up prefetched tasks
         await tg.start(worker2.run_async)
 
-        results = await gather(*[t.result(5) for t in tasks])
-        assert any(r.worker_id == worker2.id for r in results)
+        results: list[TaskHandle[TaskResult[None]]] = []
+        async with create_task_group() as tg2:
+            for task in tasks:
+                results.append(tg2.start_soon(task.result, 5))
+        assert any(r.return_value.worker_id == worker2.id for r in results)
+
         tg.cancel_scope.cancel()
 
 
@@ -181,15 +183,17 @@ async def test_reclaim_idle_task(redis_url: str):
     # get task ID
     task = foo.enqueue()
     # run separate worker which will enqueue and pick up task
-    worker = subprocess.Popen(
-        [sys.executable, "tests/failure.py", redis_url, task.id, worker2.queue_name]
-    )
-    async with worker2:
+    async with (
+        await open_process(
+            [sys.executable, "tests/failure.py", redis_url, task.id, worker2.queue_name]
+        ) as process,
+        worker2,
+    ):
         while (await task.status()) == TaskStatus.NOT_FOUND:
             await sleep(1)
-    # kill worker abruptly to disallow cleanup
-    os.kill(worker.pid, signal.SIGKILL)
-    worker.wait()
+        # kill worker abruptly to disallow cleanup
+        os.kill(process.pid, signal.SIGKILL)
+        await process.wait()
 
     async with run_worker(worker2):
         assert (await task.result(10)).success
@@ -273,7 +277,7 @@ async def test_corrupt_signed_data(redis_url: str):
         assert not res.success and isinstance(res.exception, StreaqError)
 
 
-async def test_enqueue_many(worker: Worker):
+async def test_enqueue_many(worker: Worker[None]):
     @worker.task
     async def foobar(val: int) -> int:
         await sleep(1)
@@ -289,7 +293,7 @@ async def test_enqueue_many(worker: Worker):
         assert await worker.queue_size() >= 10
 
 
-async def test_bad_depends_worker(worker: Worker):
+async def test_bad_depends_worker(worker: Worker[None]):
     with pytest.raises(StreaqError):
         print(worker.context)
     with pytest.raises(StreaqError):
@@ -303,7 +307,7 @@ async def test_custom_worker_id(redis_url: str):
     assert worker.id == worker_id
 
 
-async def test_burst_after_execution(worker: Worker):
+async def test_burst_after_execution(worker: Worker[None]):
     @worker.task
     async def sleeper(time: int) -> None:
         await sleep(time)
@@ -315,8 +319,11 @@ async def test_burst_after_execution(worker: Worker):
     with fail_after(3):
         await worker.run_async()
     async with worker:
-        results = await gather(*[t.result(3) for t in tasks])
-        assert all(r.success for r in results)
+        results: list[TaskHandle[TaskResult[None]]] = []
+        async with create_task_group() as tg:
+            for task in tasks:
+                results.append(tg.start_soon(task.result, 3))
+        assert all(r.return_value.success for r in results)
 
 
 def test_connection_pool(redis_url: str):
@@ -341,17 +348,17 @@ def test_cluster_connection_pool():
     assert worker._redis.connection_pool is worker2._redis.connection_pool
 
 
-async def test_duplicate_tasks(worker: Worker):
+async def test_duplicate_tasks(worker: Worker[None]):
     @worker.task(name="foobar")
-    async def foobar(): ...
+    async def foobar() -> None: ...
 
     with pytest.raises(StreaqError):
 
         @worker.task(name="foobar")
-        async def barfoo(): ...
+        async def barfoo() -> None: ...
 
 
-async def test_include_worker(redis_url: str, worker: Worker):
+async def test_include_worker(redis_url: str, worker: Worker[None]):
     if worker._sentinel:
         worker2 = Worker(
             sentinel_nodes=[
@@ -371,7 +378,7 @@ async def test_include_worker(redis_url: str, worker: Worker):
 
     @worker2.task
     async def foobar() -> None:
-        await sleep(0)
+        await anyio.lowlevel.checkpoint()
 
     worker.include(worker2)
     async with run_worker(worker):
@@ -547,7 +554,7 @@ async def test_get_tasks_by_status_done(worker: Worker):
 async def test_get_tasks_by_status_not_found(worker: Worker):
     async with worker:
         with pytest.raises(StreaqError):
-            await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)  # type: ignore
+            await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)
 
 
 async def test_get_tasks_by_status_empty_scheduled(worker: Worker):

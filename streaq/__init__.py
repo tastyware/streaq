@@ -1,12 +1,10 @@
 import logging
 
-VERSION = "7.1.0"
+VERSION = "7.2.0"
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-# ruff: noqa: E402
 
 from .task import TaskStatus
 from .types import StreaqError, StreaqRetry, TaskContext

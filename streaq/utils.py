@@ -1,12 +1,12 @@
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import datetime, timedelta, tzinfo
 from functools import partial, wraps
 from importlib import import_module
 from logging import Formatter
-from typing import Any, TypeVar, overload
+from typing import Any
 
-from anyio import CapacityLimiter, create_task_group
+from anyio import CapacityLimiter
 from anyio.to_thread import run_sync
 
 from streaq.types import P, R, TypedCoroutine
@@ -19,7 +19,7 @@ class TimezoneFormatter(Formatter):
         datefmt: str | None = None,
         tz: tzinfo | None = None,
         **kwargs: Any,
-    ):
+    ) -> None:
         """
         Like a normal formatter, but with a timezone.
         """
@@ -34,7 +34,6 @@ def import_string(dotted_path: str) -> Any:
     """
     Taken from pydantic.utils. Import and return the object at a path.
     """
-
     try:
         module_path, class_name = dotted_path.strip(" ").rsplit(":", 1)
     except ValueError as e:
@@ -55,7 +54,7 @@ def to_seconds(timeout: timedelta | int | None) -> float | None:
     return float(timeout) if timeout is not None else None
 
 
-def to_ms(timeout: timedelta | int | float) -> int:
+def to_ms(timeout: timedelta | float) -> int:
     if isinstance(timeout, timedelta):
         return round(timeout.total_seconds() * 1000)
     return round(timeout * 1000)
@@ -63,7 +62,7 @@ def to_ms(timeout: timedelta | int | float) -> int:
 
 def now_ms() -> int:
     """
-    Get current time in milliseconds.
+    Get the current time in milliseconds.
     """
     return round(time.time() * 1000)
 
@@ -74,8 +73,7 @@ def datetime_ms(dt: datetime) -> int:
 
 def to_tuple(val: Any) -> tuple[Any, ...]:
     """
-    Turn the given value into a tuple of one element, unless it's already a tuple, in
-    which case it's left untouched.
+    Turn the given value into a tuple of one element if it's not already a tuple.
     """
     return val if isinstance(val, tuple) else (val,)  # type: ignore
 
@@ -116,7 +114,7 @@ def asyncify(
     fn: Callable[P, R], limiter: CapacityLimiter | None = None
 ) -> Callable[P, TypedCoroutine[R]]:
     """
-    Taken from asyncer v0.0.8
+    Taken from asyncer v0.0.8.
 
     Take a blocking function and create an async one that receives the same
     positional and keyword arguments, and that when called, calls the original
@@ -154,78 +152,3 @@ def asyncify(
         return await run_sync(call, abandon_on_cancel=True, limiter=limiter)
 
     return wrapper
-
-
-T1 = TypeVar("T1")
-T2 = TypeVar("T2")
-T3 = TypeVar("T3")
-T4 = TypeVar("T4")
-T5 = TypeVar("T5")
-T6 = TypeVar("T6")
-
-
-@overload
-async def gather(
-    awaitable1: Awaitable[T1], awaitable2: Awaitable[T2], /
-) -> tuple[T1, T2]: ...
-
-
-@overload
-async def gather(
-    awaitable1: Awaitable[T1], awaitable2: Awaitable[T2], awaitable3: Awaitable[T3], /
-) -> tuple[T1, T2, T3]: ...
-
-
-@overload
-async def gather(
-    awaitable1: Awaitable[T1],
-    awaitable2: Awaitable[T2],
-    awaitable3: Awaitable[T3],
-    awaitable4: Awaitable[T4],
-    /,
-) -> tuple[T1, T2, T3, T4]: ...
-
-
-@overload
-async def gather(
-    awaitable1: Awaitable[T1],
-    awaitable2: Awaitable[T2],
-    awaitable3: Awaitable[T3],
-    awaitable4: Awaitable[T4],
-    awaitable5: Awaitable[T5],
-    /,
-) -> tuple[T1, T2, T3, T4, T5]: ...
-
-
-@overload
-async def gather(
-    awaitable1: Awaitable[T1],
-    awaitable2: Awaitable[T2],
-    awaitable3: Awaitable[T3],
-    awaitable4: Awaitable[T4],
-    awaitable5: Awaitable[T5],
-    awaitable6: Awaitable[T6],
-    /,
-) -> tuple[T1, T2, T3, T4, T5, T6]: ...
-
-
-@overload
-async def gather(*awaitables: Awaitable[T1]) -> tuple[T1, ...]: ...
-
-
-async def gather(*awaitables: Awaitable[Any]) -> tuple[Any, ...]:
-    """
-    anyio-compatible implementation of asyncio.gather that runs tasks in a task group
-    and collects the results.
-    """
-    if not awaitables:
-        return ()
-    results: list[Any] = [None] * len(awaitables)
-
-    async def runner(awaitable: Awaitable[Any], i: int) -> None:
-        results[i] = await awaitable
-
-    async with create_task_group() as tg:
-        for i, awaitable in enumerate(awaitables):
-            tg.start_soon(runner, awaitable, i)
-    return tuple(results)

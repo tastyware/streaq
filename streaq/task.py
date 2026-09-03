@@ -6,13 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import cached_property
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Concatenate,
-    Generic,
-    overload,
-)
+from typing import TYPE_CHECKING, Any, Concatenate, Generic, cast, overload
 from uuid import uuid4
 
 from coredis.client import Client
@@ -33,7 +27,7 @@ from streaq.types import (
 )
 from streaq.utils import asyncify, now_ms
 
-if TYPE_CHECKING:  # pragma: no cover
+if TYPE_CHECKING:
     from streaq.worker import Worker
 
 _task_context = ContextVar[TaskContext]("_task_context")
@@ -41,7 +35,7 @@ _task_context = ContextVar[TaskContext]("_task_context")
 
 class TaskStatus(StrEnum):
     """
-    Enum of possible task statuses:
+    Enum of possible task statuses.
     """
 
     #: task doesn't exist in Redis
@@ -59,26 +53,25 @@ class TaskStatus(StrEnum):
 @dataclass(frozen=True)
 class TaskInfo:
     """
-    Dataclass containing information about an unfinished task (running or enqueued).
+    Dataclass with information about an unfinished task (running or enqueued).
     """
 
     task_id: str
     fn_name: str
     created_time: int
     args: tuple[Any, ...] = ()
-    kwargs: dict[str, Any] = field(default_factory=lambda: dict())
+    kwargs: dict[str, Any] = field(default_factory=dict[str, Any])
     tries: int = 0
     scheduled: datetime | None = None
-    dependencies: set[str] = field(default_factory=lambda: set())
-    dependents: set[str] = field(default_factory=lambda: set())
+    dependencies: set[str] = field(default_factory=set[str])
+    dependents: set[str] = field(default_factory=set[str])
     status: TaskStatus = TaskStatus.NOT_FOUND
 
 
 @dataclass(frozen=True)
 class TaskResult(Generic[R]):
     """
-    Dataclass wrapping the result of a task with additional information
-    like run time and whether execution terminated successfully.
+    Dataclass wrapping the result of a task with additional info.
     """
 
     task_id: str
@@ -99,7 +92,7 @@ class TaskResult(Generic[R]):
                 "Can't access result for a failed task, use TaskResult.exception "
                 "instead!"
             )
-        return self._result  # type: ignore
+        return cast(R, self._result)
 
     @property
     def exception(self) -> BaseException:
@@ -108,7 +101,7 @@ class TaskResult(Generic[R]):
                 "Can't access exception for a successful task, use TaskResult.result "
                 "instead!"
             )
-        return self._result  # type: ignore
+        return cast(BaseException, self._result)
 
 
 @dataclass(slots=True)
@@ -125,7 +118,7 @@ class Task(Generic[P, R]):
     worker: Worker[Any]
     id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any, Any] | None = None
-    after: list[str] = field(default_factory=lambda: [])
+    after: list[str] = field(default_factory=list[str])
     delay: timedelta | int | None = None
     schedule: datetime | str | None = None
     priority: str | None = None
@@ -180,15 +173,23 @@ class Task(Generic[P, R]):
     @overload
     def then(
         self: Task[Any, tuple[*Ts]],
-        task: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
+        task: Callable[[*Ts], TypedCoroutine[ROther]],
         **kwargs: Any,
     ) -> Task[Any, ROther]: ...
 
-    def then(self: Task[Any, Any], task: Any, **kwargs: Any) -> Task[Any, Any]:
+    @overload
+    def then(
+        self: Task[Any, tuple[*Ts]],
+        task: Callable[[*Ts], ROther],
+        **kwargs: Any,
+    ) -> Task[Any, ROther]: ...
+
+    def then(self: Task[Any, Any], task: Any, *_: Any, **kwargs: Any) -> Task[Any, Any]:
         """
-        Enqueues the given task as a dependent of this one. Positional arguments must
-        come from the previous task's output (tuple outputs will be unpacked), and any
-        additional arguments can be passed as kwargs.
+        Enqueues the given task as a dependent of this one.
+
+        Positional arguments must come from the previous task's output (tuple outputs
+        will be unpacked), and any additional arguments can be passed as kwargs.
 
         :param task: task to feed output to
 
@@ -202,9 +203,10 @@ class Task(Generic[P, R]):
         self, task: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
     ) -> Task[P, R]:
         """
-        Enqueues the given task as a fallback of this one. If this task fails, the
-        other task will be run with the same arguments. If this task succeeds, the
-        other task will be skipped and return the same result.
+        Enqueues the given task as a fallback of this one.
+
+        If this task fails, the other task will be run with the same arguments. If this
+        task succeeds, the other task will be skipped and return the same result.
 
         :param task: task to fall back to
 
@@ -253,8 +255,12 @@ class Task(Generic[P, R]):
 
     @overload
     def __or__(
-        self: Task[Any, tuple[*Ts]],
-        other: Callable[[*Ts], TypedCoroutine[ROther]] | Callable[[*Ts], ROther],
+        self: Task[Any, tuple[*Ts]], other: Callable[[*Ts], TypedCoroutine[ROther]]
+    ) -> Task[Any, ROther]: ...
+
+    @overload
+    def __or__(
+        self: Task[Any, tuple[*Ts]], other: Callable[[*Ts], ROther]
     ) -> Task[Any, ROther]: ...
 
     def __or__(self: Task[Any, Any], other: Any) -> Task[Any, Any]:
@@ -360,7 +366,7 @@ class RegisteredTask:
 
     def build_context(self, id: str, tries: int = 1) -> TaskContext:
         """
-        Creates the context for a task to be run given task metadata
+        Creates the context for a task to be run given task metadata.
         """
         return TaskContext(
             fn_name=self.fn_name,
@@ -384,8 +390,7 @@ class RegisteredTask:
 @dataclass(kw_only=True)
 class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
     """
-    Registered task definition for an async function that allows spawning new tasks to
-    be enqueued.
+    Definition for an async function that can be enqueued.
     """
 
     fn: AsyncTask[P, R]
@@ -400,9 +405,10 @@ class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
         **kwargs: P.kwargs,
     ) -> Task[P, R]:
         """
-        Serialize the task and send it to the queue for later execution by an
-        active worker. Though this isn't async, it should be awaited as it
-        returns an object that should be.
+        Serialize the task and send it to the queue for execution by a worker.
+
+        Though this isn't async, it should be awaited as it returns an object that
+        should be.
         """
         return Task(args, kwargs, self, self.worker)
 
@@ -413,15 +419,14 @@ class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
 @dataclass(kw_only=True)
 class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
     """
-    Registered task definition for a sync function that allows spawning new tasks to be
-    enqueued.
+    Definition for a sync function that can be enqueued.
     """
 
     fn: SyncTask[P, R]
 
     @cached_property
     def runner(self) -> AsyncTask[P, R]:
-        return asyncify(self.fn, self.worker._limiter)  # pyright: ignore[reportPrivateUsage]
+        return asyncify(self.fn, self.worker._limiter)
 
     def enqueue(
         self,
@@ -429,8 +434,9 @@ class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
         **kwargs: P.kwargs,
     ) -> Task[P, R]:
         """
-        Serialize the task and send it to the queue for later execution by an
-        active worker. Though this isn't async, it should be awaited as it
+        Serialize the task and send it to the queue for execution by a worker.
+
+        Though this isn't async, it should be awaited as it
         returns an object that should be.
         """
         return Task(args, kwargs, self, self.worker)
@@ -453,7 +459,9 @@ class RegisteredMiddleware:
     @property
     def context(self) -> TaskContext:
         """
-        Get the current task's unique context. Only available in running middlewares.
+        Get the current task's unique context.
+
+        Only available in running middlewares.
         """
         try:
             return _task_context.get()

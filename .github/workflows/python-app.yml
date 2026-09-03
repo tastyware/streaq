@@ -18,8 +18,14 @@ jobs:
           - "3.13"
           - "3.14"
           - "3.14t"
+        redis-version:
+          - "7.0"  # oldest version supported
+          - "8.0"
+          - "8.10"
     env:
       TERM: 'dumb'
+      PYTHON_VERSION: ${{ matrix.python-version }}
+      REDIS_VERSION: ${{ matrix.redis-version }}
     steps:
     - uses: actions/checkout@v6
       with:
@@ -40,6 +46,9 @@ jobs:
     - name: Type check with pyright
       run: uv run pyright streaq/ tests/ example.py
 
+    - name: Type check with mypy
+      run: uv run mypy --strict tests/ example.py
+
     - name: Test with pytest
       run: |
-        docker compose run --rm tests uv run --locked --all-extras --dev pytest -n auto --dist=loadgroup --cov=streaq tests/
+        docker compose run --rm -e COVERAGE_EXCLUDE=${{ matrix.redis-version == '8.10' && 'xreadgroup-no-max-count' || 'xreadgroup-max-count' }} tests uv run --locked --all-extras --dev pytest -n auto --cov=streaq tests/
