@@ -36,11 +36,15 @@ wheels = [
 
 [[package]]
 name = "anyio"
-version = "4.14.2.post44"
-source = { git = "https://github.com/agronholm/anyio#ae250440c90020b030ba4e83cccc37e9a84512c5" }
+version = "4.15.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
     { name = "typing-extensions", version = "4.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ea/9a/c15a60547004a3f3cea20296c934f827ddd7bdba225a2e7e9fcb5ec48c80/anyio-4.15.0.tar.gz", hash = "sha256:b5c620ed540725e2579c31b17bb995b3bf02c9281c9cace04c7d186380bab85e", size = 276504, upload-time = "2026-09-02T21:46:36.957Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/a6/2b21ce5ebe4d8938a247c9b0dbb7271566ae559b01795c83ea4bb2660ed7/anyio-4.15.0-py3-none-any.whl", hash = "sha256:7ecd9937369ffce8bba0b5ccb9b3a9507b101b0ed50256aecfbab27e6c2acb99", size = 131908, upload-time = "2026-09-02T21:46:35.485Z" },
 ]
 
 [[package]]
@@ -290,8 +294,8 @@ wheels = [
 
 [[package]]
 name = "coredis"
-version = "6.8.0.post1.dev13"
-source = { git = "https://github.com/alisaifee/coredis#7da9273258adfa4dcfe75ebc67e91f0352bacdb2" }
+version = "6.9.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "beartype" },
@@ -300,6 +304,30 @@ dependencies = [
     { name = "packaging" },
     { name = "typing-extensions", version = "4.15.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.15'" },
     { name = "typing-extensions", version = "4.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/82/81/03a1f56c2fdce5d6382cfade9b39522f2f09de00cf6087a857437901dcc6/coredis-6.9.0.tar.gz", hash = "sha256:041a8e93f637deb702b9fdf20656e856069ae53ae17ff51db078934afad0cc52", size = 225240, upload-time = "2026-08-31T05:26:02.807Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/c9/d2b19d6cb7314e95595162060a6da2ebc82474ffa90f8363f350bf220c57/coredis-6.9.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:a5db357ea412ebf2dfdc3ee65391383cd582b8e34d465042cca888a09993ccc0", size = 423875, upload-time = "2026-08-31T05:25:34.786Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/b9/837dac0b8dfac01ba157ab3abf6adb163bf7cab4cd121111c472dd28c5ef/coredis-6.9.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:e958fa5bf5937cec9e347678b71fd8a59805dc4856c23e389aec2ceff25491cc", size = 420749, upload-time = "2026-08-31T05:25:36.276Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/81/a2593fe315b93732e8df204d95ec6363ef6c14afc57bd3be2fb1e913cf16/coredis-6.9.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0d398fc003abb9704b2358ee982def039685d489fa50fee54f6826d604e09cfe", size = 441844, upload-time = "2026-08-31T05:25:37.472Z" },
+    { url = "https://files.pythonhosted.org/packages/46/ef/c6c4f5f13d1a5da599398c3da9d688c22967f4a123dc9fff342788c8f52c/coredis-6.9.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0786fcce2c0a085c54f69b9c2783d68d4d74bf6877e876fc2c98ffab525e1f0c", size = 443424, upload-time = "2026-08-31T05:25:38.692Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/fd/20e658089b9b4ae6ea1acfb0caab6e815fedbdd99bc7054c241ee0a7231c/coredis-6.9.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:9f1013eaa04b29bd77b2758fb91b5d2402e2b99f4b0576d26f31a2fbf207ec1c", size = 428103, upload-time = "2026-08-31T05:25:40.005Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/92/aff48102c046c5370bc67c3211fd8ee125666ca8cbba5968bd45c00215b1/coredis-6.9.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:35ee515a232716b8eadb6d62680b5a3bfce5a6c1708188dd91e0dc084b7ec47e", size = 425063, upload-time = "2026-08-31T05:25:41.316Z" },
+    { url = "https://files.pythonhosted.org/packages/37/72/66a3152ee0f4fff91a34ec0eb6f1838ec5946ea708174e5c85cc24e4fe23/coredis-6.9.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:08456d9c98c2632bb912417330f37d9eef8309bd3d10c8f0e2b2b62d7e394de5", size = 442775, upload-time = "2026-08-31T05:25:42.655Z" },
+    { url = "https://files.pythonhosted.org/packages/84/c4/24f194db453ad028f9c03641e8352624285439039972328d0c591d758850/coredis-6.9.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d7960b6f5c206d86f7cf9c546488c4f1feb6e7ef59ace97b3380ab3ff3c8fe4c", size = 445744, upload-time = "2026-08-31T05:25:43.886Z" },
+    { url = "https://files.pythonhosted.org/packages/da/b6/c2a34042549d1593035fc856a012410de662333b72d88f6f58199cd871ad/coredis-6.9.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:06445b03dd3f440f7c0dd63b4caee21569cd0ce7e314bb0c9f849cb51c0c1177", size = 427100, upload-time = "2026-08-31T05:25:45.613Z" },
+    { url = "https://files.pythonhosted.org/packages/94/34/5e4e983d2b91115fb21e72000f6538a54ecd93dd13aad0b61c02709c07e9/coredis-6.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e6631ea4566f1137e07eb8bcc4ed853404912d15b1701830ce3f59b8f90871a4", size = 423965, upload-time = "2026-08-31T05:25:47.001Z" },
+    { url = "https://files.pythonhosted.org/packages/77/07/59046379b9ca1db103e23de4394c5c59ced2141bffca5d4f209943ce1aa2/coredis-6.9.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:aca97545a57ec47fd70836b7cfaf4157244ca42d257d8c4f7085c7da2f2db50b", size = 442005, upload-time = "2026-08-31T05:25:48.219Z" },
+    { url = "https://files.pythonhosted.org/packages/36/a1/277c4ed46f4f9089af918b1f4d6849bb2250200251f40212c1c3ffc42bab/coredis-6.9.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2398bb27e09744cd05407ff8e0a3db9dba1f95af972e3d6621776497d239d993", size = 445013, upload-time = "2026-08-31T05:25:49.434Z" },
+    { url = "https://files.pythonhosted.org/packages/52/0b/509cc1d1ca33b40e2d24515d5ef10eee2e38f4a130b154ee09bf6693f045/coredis-6.9.0-cp314-cp314-macosx_10_13_x86_64.whl", hash = "sha256:53f11ace8877773027a1117329f7ae6356b260ce67e4b988fbcee0d78febfb91", size = 426911, upload-time = "2026-08-31T05:25:50.756Z" },
+    { url = "https://files.pythonhosted.org/packages/47/29/be2db139f5a0e8322d88d262bc9db902d610e8171e60fad7397a6d58fc96/coredis-6.9.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:5ee639cb8b3140af553442d28e0c7f3dcd73aa84d68e83a37a028a05b1a028a2", size = 423888, upload-time = "2026-08-31T05:25:52.06Z" },
+    { url = "https://files.pythonhosted.org/packages/85/c2/fee5f5479e8da76c1014329df3acbda13f187a144c64ba3d4c30dbaf545f/coredis-6.9.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4559b716dea713fe68d4c238c22e93b567ff60c7d5ad10f4f3d0fb49f711a309", size = 444196, upload-time = "2026-08-31T05:25:53.302Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/65/ece68df741032223cea9d26a2f0e8662b6c6dc74a76e3f272abdff6d1073/coredis-6.9.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:522fca836b1e863803e0474fc400fa83d51ce48dade709f2d6c1acfc6acc5f7f", size = 444960, upload-time = "2026-08-31T05:25:54.687Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/7f/3ddae141736f6574d1120c97ad7473cd0a76a860cb4c4f4bb500f67d126d/coredis-6.9.0-cp314-cp314t-macosx_10_13_x86_64.whl", hash = "sha256:a60bb0d066d876b2ab3d7fd6bee4ec115624d85f82ec64e6d69e9732b551d6ee", size = 438972, upload-time = "2026-08-31T05:25:56.146Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/3e/ccc6287c328de09544db9e492e9269c6eba01e19fb30f809f3d80678c719/coredis-6.9.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:75c8b6590c94946526e717a90224bf223f3371257b2ae71a26f272915a4cb142", size = 436588, upload-time = "2026-08-31T05:25:57.476Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/46/dcc31e69e1ea419c7d18c91fc408711335ffc9dfb26904d57b41ef7c107f/coredis-6.9.0-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7dfbf87856435ba8b22f75d1e9d2f0eaaa95dca2386d81dcab4e9aa4c39d6749", size = 458757, upload-time = "2026-08-31T05:25:58.724Z" },
+    { url = "https://files.pythonhosted.org/packages/77/62/be5c12af7f10004270e9fdad35998660a476ebb44302fadf63aa47369126/coredis-6.9.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a84495e184875df1c0ab8faee22f4335a502532aebc2593baded19c22296ee7f", size = 459116, upload-time = "2026-08-31T05:26:00.192Z" },
+    { url = "https://files.pythonhosted.org/packages/96/b7/98e3be05f8147a659d553670fd80316bc39acd5868dc8e9eb005e9050df2/coredis-6.9.0-py3-none-any.whl", hash = "sha256:651060d697f6b37b9cbbc307d514a965598307a2d55ab7512152a49cf1b1dd90", size = 271409, upload-time = "2026-08-31T05:26:01.571Z" },
 ]
 
 [[package]]
@@ -1391,8 +1419,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", git = "https://github.com/agronholm/anyio" },
-    { name = "coredis", git = "https://github.com/alisaifee/coredis" },
+    { name = "anyio", specifier = ">=4.15.0" },
+    { name = "coredis", specifier = ">=6.9.0" },
     { name = "crontab", specifier = ">=1.0.5" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.117.1" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1.6" },

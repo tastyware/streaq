@@ -54,8 +54,8 @@ authors = [
     { name = "Graeme Holliday", email = "graeme@tastyware.dev" }
 ]
 dependencies = [
-    "anyio>=4.15.0,<5",
-    "coredis>=6.9.0,<7",
+    "anyio>=4.15.0",
+    "coredis>=6.9.0",
     "crontab>=1.0.5",
     "typer>=0.19.2",
     "watchfiles>=1.1.0",
@@ -132,8 +132,3 @@ exclude_also = ['# pragma: gated cover\[${COVERAGE_EXCLUDE?}\]']
 
 [tool.coverage.paths]
 streaq = ["streaq", "/app/streaq"]
-
-# TODO: remove
-[tool.uv.sources]
-coredis = { git = "https://github.com/alisaifee/coredis" }
-anyio = { git = "https://github.com/agronholm/anyio" }

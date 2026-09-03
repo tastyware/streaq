@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import inspect
+import math
 import pickle
 import signal
 from collections import defaultdict
@@ -1158,6 +1159,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         for middleware in reversed(self.middlewares):
             wrapped = middleware(wrapped)
         result: Any = None
+        original_deadline = math.inf
         self._running_tasks[msg.priority].add(msg.message_id)
         token = _task_context.set(task_context)
         if not task.silent:
