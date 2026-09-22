@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Collection, Generator, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Concatenate, Generic, cast, overload
+from typing import TYPE_CHECKING, Any, Concatenate, Generic, cast
 from uuid import uuid4
 
 from coredis.client import Client
@@ -15,14 +15,14 @@ from streaq.types import (
     AsyncTask,
     P,
     POther,
-    R,
+    R_co,
     ReturnCoroutine,
     ROther,
     Streaq,
     StreaqError,
     SyncTask,
+    T,
     TaskContext,
-    Ts,
     TypedCoroutine,
 )
 from streaq.utils import asyncify, now_ms
@@ -69,7 +69,7 @@ class TaskInfo:
 
 
 @dataclass(frozen=True)
-class TaskResult(Generic[R]):
+class TaskResult(Generic[R_co]):
     """
     Dataclass wrapping the result of a task with additional info.
     """
@@ -83,16 +83,16 @@ class TaskResult(Generic[R]):
     finish_time: int
     tries: int
     worker_id: str
-    _result: R | BaseException
+    _result: R_co | BaseException
 
     @property
-    def result(self) -> R:
+    def result(self) -> R_co:
         if not self.success:
             raise StreaqError(
                 "Can't access result for a failed task, use TaskResult.exception "
                 "instead!"
             )
-        return cast(R, self._result)
+        return cast(R_co, self._result)
 
     @property
     def exception(self) -> BaseException:
@@ -105,7 +105,7 @@ class TaskResult(Generic[R]):
 
 
 @dataclass(slots=True)
-class Task(Generic[P, R]):
+class Task(Generic[P, R_co]):
     """
     Represents a task that has been enqueued or scheduled.
 
@@ -132,7 +132,7 @@ class Task(Generic[P, R]):
         delay: timedelta | int | None = None,
         schedule: datetime | str | None = None,
         priority: str | None = None,
-    ) -> Task[P, R]:
+    ) -> Task[P, R_co]:
         """
         Configure the task to modify schedule, queue, or dependencies.
 
@@ -161,30 +161,13 @@ class Task(Generic[P, R]):
             )
         return self
 
-    @overload
     def then(
-        self: Task[Any, R],
-        task: AsyncRegisteredTask[Concatenate[R, POther], ROther]
-        | SyncRegisteredTask[Concatenate[R, POther], ROther],
-        *_: POther.args,  # for some reason we have to define this but it's not used
+        self: Task[Any, R_co],
+        task: AsyncRegisteredTask[Concatenate[R_co, POther], ROther]
+        | SyncRegisteredTask[Concatenate[R_co, POther], ROther],
+        *_: POther.args,  # we have to define this but it's not used
         **kwargs: POther.kwargs,
-    ) -> Task[Concatenate[R, POther], ROther]: ...
-
-    @overload
-    def then(
-        self: Task[Any, tuple[*Ts]],
-        task: Callable[[*Ts], TypedCoroutine[ROther]],
-        **kwargs: Any,
-    ) -> Task[Any, ROther]: ...
-
-    @overload
-    def then(
-        self: Task[Any, tuple[*Ts]],
-        task: Callable[[*Ts], ROther],
-        **kwargs: Any,
-    ) -> Task[Any, ROther]: ...
-
-    def then(self: Task[Any, Any], task: Any, *_: Any, **kwargs: Any) -> Task[Any, Any]:
+    ) -> Task[Concatenate[R_co, POther], ROther]:
         """
         Enqueues the given task as a dependent of this one.
 
@@ -200,8 +183,8 @@ class Task(Generic[P, R]):
         return self._triggers
 
     def otherwise(
-        self, task: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
-    ) -> Task[P, R]:
+        self, task: AsyncRegisteredTask[P, R_co] | SyncRegisteredTask[P, R_co]
+    ) -> Task[P, R_co]:
         """
         Enqueues the given task as a fallback of this one.
 
@@ -228,7 +211,7 @@ class Task(Generic[P, R]):
         data = await self.serialize(enqueue_time)
         self.worker.publish_task(pipe, self, data, enqueue_time, lib=lib)
 
-    async def _chain(self) -> Task[P, R]:
+    async def _chain(self) -> Task[P, R_co]:
         now = now_ms()
         # iterate over chain
         if self._after:
@@ -244,34 +227,39 @@ class Task(Generic[P, R]):
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def __await__(self) -> Generator[Any, None, Task[P, R]]:
+    def __await__(self) -> Generator[Any, None, Task[P, R_co]]:
         return self._chain().__await__()
 
-    @overload
     def __or__(
-        self: Task[Any, R],
-        other: AsyncRegisteredTask[[R], ROther] | SyncRegisteredTask[[R], ROther],
-    ) -> Task[[R], ROther]: ...
-
-    @overload
-    def __or__(
-        self: Task[Any, tuple[*Ts]], other: Callable[[*Ts], TypedCoroutine[ROther]]
-    ) -> Task[Any, ROther]: ...
-
-    @overload
-    def __or__(
-        self: Task[Any, tuple[*Ts]], other: Callable[[*Ts], ROther]
-    ) -> Task[Any, ROther]: ...
-
-    def __or__(self: Task[Any, Any], other: Any) -> Task[Any, Any]:
+        self: Task[Any, R_co],
+        other: AsyncRegisteredTask[[R_co], ROther] | SyncRegisteredTask[[R_co], ROther],
+    ) -> Task[[R_co], ROther]:
         self._triggers = Task((), {}, other, self.worker)
         self._triggers._after = self
         return self._triggers
 
     def __xor__(
-        self, other: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
-    ) -> Task[P, R]:
+        self, other: AsyncRegisteredTask[P, R_co] | SyncRegisteredTask[P, R_co]
+    ) -> Task[P, R_co]:
         return self.otherwise(other)
+
+    def map(
+        self: Task[P, Collection[T]],
+        task: AsyncRegisteredTask[Concatenate[T, POther], ROther]
+        | SyncRegisteredTask[Concatenate[T, POther], ROther],
+        *_: POther.args,  # we have to define this but it's not used
+        **kwargs: POther.kwargs,
+    ) -> Task[[Collection[T]], list[ROther]]:
+        return self.then(self.worker._map, to=task.fn_name, kwargs=kwargs)
+
+    def filter(
+        self: Task[P, Collection[T]],
+        task: AsyncRegisteredTask[Concatenate[T, POther], bool]
+        | SyncRegisteredTask[Concatenate[T, POther], bool],
+        *_: POther.args,  # we have to define this but it's not used
+        **kwargs: POther.kwargs,
+    ) -> Task[[Collection[T]], list[T]]:
+        return self.then(self.worker._filter, by=task.fn_name, kwargs=kwargs)
 
     async def serialize(self, enqueue_time: int) -> Any:
         """
@@ -309,7 +297,7 @@ class Task(Generic[P, R]):
         """
         return await self.worker.status_by_id(self.id)
 
-    async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R]:
+    async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R_co]:
         """
         Wait for and return the task's result, optionally with a timeout.
 
@@ -352,16 +340,15 @@ class RegisteredTask:
     Base task registry definition containing task properties from the decorator.
     """
 
-    expire: timedelta | int | None
-    max_schedule_drift: timedelta | int | None
-    max_tries: int | None
-    retry_timeouts: bool
-    silent: bool
-    timeout: timedelta | int | None
-    ttl: timedelta | int | None
-    unique: bool
+    expire: timedelta | int | None = None
+    max_schedule_drift: timedelta | int | None = None
+    max_tries: int | None = None
+    retry_timeouts: bool = False
+    silent: bool = False
+    timeout: timedelta | int | None = None
+    ttl: timedelta | int | None = None
     fn_name: str
-    crontab: str | None
+    crontab: str | None = None
     worker: Worker[Any]
 
     def build_context(self, id: str, tries: int = 1) -> TaskContext:
@@ -387,23 +374,45 @@ class RegisteredTask:
             raise StreaqError("Context is only available in running tasks!") from e
 
 
+class PipelineMixin(RegisteredTask, Generic[P, R_co]):
+    """
+    Fan-out helpers shared by sync and async registered tasks.
+    """
+
+    def map(
+        self: PipelineMixin[Concatenate[T, POther], R_co],
+        data: Iterable[T],
+        *_: POther.args,  # we have to define this but it's not used
+        **kwargs: POther.kwargs,
+    ) -> Task[[Collection[T]], list[R_co]]:
+        return self.worker._map.enqueue(list(data), to=self.fn_name, kwargs=kwargs)
+
+    def filter(
+        self: PipelineMixin[Concatenate[T, POther], bool],
+        data: Iterable[T],
+        *_: POther.args,  # we have to define this but it's not used
+        **kwargs: POther.kwargs,
+    ) -> Task[[Collection[T]], list[T]]:
+        return self.worker._filter.enqueue(list(data), by=self.fn_name, kwargs=kwargs)
+
+
 @dataclass(kw_only=True)
-class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
+class AsyncRegisteredTask(PipelineMixin[P, R_co]):
     """
     Definition for an async function that can be enqueued.
     """
 
-    fn: AsyncTask[P, R]
+    fn: AsyncTask[P, R_co]
 
     @cached_property
-    def runner(self) -> AsyncTask[P, R]:
+    def runner(self) -> AsyncTask[P, R_co]:
         return self.fn
 
     def enqueue(
         self,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Task[P, R]:
+    ) -> Task[P, R_co]:
         """
         Serialize the task and send it to the queue for execution by a worker.
 
@@ -412,27 +421,27 @@ class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
         """
         return Task(args, kwargs, self, self.worker)
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TypedCoroutine[R]:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TypedCoroutine[R_co]:
         return self.fn(*args, **kwargs)
 
 
 @dataclass(kw_only=True)
-class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
+class SyncRegisteredTask(PipelineMixin[P, R_co]):
     """
     Definition for a sync function that can be enqueued.
     """
 
-    fn: SyncTask[P, R]
+    fn: SyncTask[P, R_co]
 
     @cached_property
-    def runner(self) -> AsyncTask[P, R]:
+    def runner(self) -> AsyncTask[P, R_co]:
         return asyncify(self.fn, self.worker._limiter)
 
     def enqueue(
         self,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Task[P, R]:
+    ) -> Task[P, R_co]:
         """
         Serialize the task and send it to the queue for execution by a worker.
 
@@ -441,7 +450,7 @@ class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
         """
         return Task(args, kwargs, self, self.worker)
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self.fn(*args, **kwargs)
 
 

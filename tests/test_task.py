@@ -1,15 +1,14 @@
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-import anyio.lowlevel
 import pytest
 from anyio import TaskHandle, create_task_group, sleep
 
-from streaq.constants import REDIS_UNIQUE
 from streaq.task import TaskStatus
 from streaq.types import ReturnCoroutine, StreaqError, StreaqRetry
 from streaq.worker import Worker
@@ -84,26 +83,25 @@ async def test_task_status(worker: Worker):
 
 
 async def test_task_cron(worker: Worker):
+    task_id = ""
+
     @worker.cron("30 9 1 1 *")
     async def cron1() -> bool:
         return True
 
     @worker.cron("* * * * * * *")  # once/second
     async def cron2() -> None:
+        nonlocal task_id
+        task_id = cron2.context.task_id
         await sleep(5)
 
     schedule = worker._next_datetime(cron1.crontab)  # type: ignore
     assert schedule.day == 1 and schedule.month == 1
     async with run_worker(worker):
         await sleep(2)
-        # this will be set if task is running
-        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cron2.fn_name)
-
-    with pytest.raises(StreaqError):
-
-        @worker.cron("* * * * * *", timeout=None)
-        async def cron3() -> None:
-            await anyio.lowlevel.checkpoint()
+        # the cron job should have fired and still be executing
+        assert task_id
+        assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
 async def test_task_info(worker: Worker):
@@ -124,7 +122,7 @@ async def test_task_info(worker: Worker):
 
 
 async def test_task_retry(worker: Worker):
-    @worker.task(unique=True, timeout=10)
+    @worker.task(timeout=10)
     async def foobar() -> int:
         if foobar.context.tries < 3:
             raise StreaqRetry("Retrying!")
@@ -409,34 +407,6 @@ async def test_bad_start_params(worker: Worker):
             await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
 
 
-async def test_enqueue_unique_task(worker: Worker):
-    @worker.task(unique=True, timeout=3)
-    async def foobar() -> None:
-        await sleep(1)
-
-    async with run_worker(worker):
-        task = await foobar.enqueue()
-        task2 = await foobar.enqueue()
-        results: list[TaskHandle[Any]] = []
-        async with create_task_group() as tg:
-            results.append(tg.start_soon(task.result, 3))
-            results.append(tg.start_soon(task2.result, 3))
-        assert any(
-            not r.return_value.success
-            and isinstance(r.return_value.exception, StreaqError)
-            for r in results
-        )
-        assert any(
-            r.return_value.success and r.return_value.result is None for r in results
-        )
-
-    with pytest.raises(StreaqError):
-
-        @worker.task(unique=True)
-        async def barfoo() -> None:
-            await anyio.lowlevel.checkpoint()
-
-
 @pytest.mark.parametrize("wait", [1, 0])
 async def test_failed_abort(worker: Worker, wait: int):
     @worker.task(ttl=0)
@@ -450,13 +420,18 @@ async def test_failed_abort(worker: Worker, wait: int):
 
 
 async def test_sync_cron(worker: Worker):
+    task_id = ""
+
     @worker.cron("* * * * * * *")
     def cronjob() -> None:
+        nonlocal task_id
+        task_id = cronjob.context.task_id
         time.sleep(3)
 
     async with run_worker(worker):
         await sleep(2)
-        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
+        assert task_id
+        assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
 async def test_cron_multiple_runs(worker: Worker):
@@ -598,8 +573,12 @@ async def test_task_with_custom_name(worker: Worker):
 
 
 async def test_cron_with_custom_name(worker: Worker):
+    task_id = ""
+
     @worker.cron("* * * * * * *", name="foo")
     async def cronjob() -> None:
+        nonlocal task_id
+        task_id = cronjob.context.task_id
         await sleep(3)
 
     async def cronjob1() -> None:
@@ -611,7 +590,8 @@ async def test_cron_with_custom_name(worker: Worker):
 
     async with run_worker(worker):
         await sleep(2)
-        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
+        assert task_id
+        assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
 @pytest.mark.parametrize("ttl", [60, 0])
@@ -908,3 +888,156 @@ async def test_otherwise_fallback_fails(worker: Worker):
         task = await fail.enqueue(5).otherwise(fail)
         res = await task.result(3)
         assert not res.success
+
+
+async def test_map(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await double.map([0, 1, 2])
+        res = await task.result(5)
+        assert res.success and res.result == [0, 2, 4]
+
+
+async def test_map_empty(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    data: list[int] = []
+    async with run_worker(worker):
+        task = await double.map(data)
+        res = await task.result(5)
+        assert res.success and res.result == []
+
+
+async def test_map_sync_task(worker: Worker):
+    @worker.task
+    def triple(val: int) -> int:
+        return val * 3
+
+    async with run_worker(worker):
+        task = await triple.map([1, 2])
+        res = await task.result(5)
+        assert res.success and res.result == [3, 6]
+
+
+async def test_map_kwargs(worker: Worker):
+    @worker.task
+    async def scale(val: int, factor: int) -> int:
+        return val * factor
+
+    async with run_worker(worker):
+        task = await scale.map([1, 2, 3], factor=3)
+        res = await task.result(5)
+        assert res.success and res.result == [3, 6, 9]
+
+
+async def test_map_child_fails(worker: Worker):
+    @worker.task(max_tries=1)
+    async def boom(val: int) -> int:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.map([1, 2])
+        res = await task.result(5)
+        assert not res.success
+
+
+async def test_filter(worker: Worker):
+    @worker.task
+    async def is_even(val: int) -> bool:
+        return val % 2 == 0
+
+    async with run_worker(worker):
+        task = await is_even.filter([0, 1, 2, 3])
+        res = await task.result(5)
+        assert res.success and res.result == [0, 2]
+
+
+async def test_filter_kwargs(worker: Worker):
+    @worker.task
+    async def divisible(val: int, by: int) -> bool:
+        return val % by == 0
+
+    async with run_worker(worker):
+        task = await divisible.filter([1, 2, 3, 4, 5, 6], by=3)
+        res = await task.result(5)
+        assert res.success and res.result == [3, 6]
+
+
+async def test_map_then_filter(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def over_two(val: int) -> bool:
+        return val > 2
+
+    async with run_worker(worker):
+        task = await double.map([0, 1, 2, 3]).filter(over_two)
+        res = await task.result(5)
+        assert res.success and res.result == [4, 6]
+
+
+async def test_filter_then_map(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def is_even(val: int) -> bool:
+        return val % 2 == 0
+
+    async with run_worker(worker):
+        task = await is_even.filter([0, 1, 2, 3]).map(double)
+        res = await task.result(5)
+        assert res.success and res.result == [0, 4]
+
+
+async def test_map_over_set(worker: Worker):
+    @worker.task
+    async def uniques() -> set[int]:
+        return {1, 2, 3}
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await uniques.enqueue().map(double)
+        res = await task.result(5)
+        assert res.success and sorted(res.result) == [2, 4, 6]
+
+
+async def test_map_over_deque(worker: Worker):
+    @worker.task
+    async def queued() -> deque[int]:
+        return deque([1, 2, 3])
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await queued.enqueue().map(double)
+        res = await task.result(5)
+        assert res.success and res.result == [2, 4, 6]
+
+
+async def test_map_over_dict_keys(worker: Worker):
+    @worker.task
+    async def tally() -> dict[int, str]:
+        return {1: "a", 2: "b"}
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await tally.enqueue().map(double)
+        res = await task.result(5)
+        assert res.success and sorted(res.result) == [2, 4]

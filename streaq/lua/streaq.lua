@@ -196,9 +196,9 @@ redis.register_function('refresh_timeout', function(keys, argv)
   if #redis.call('xpending', stream_key, group_name, message_id, message_id, 1, consumer) > 0 then
     redis.call('xclaim', stream_key, group_name, consumer, 0, message_id, 'justid')
     redis.call('sadd', running_set, task_id)
-    return true
+    return 1
   end
-  return false
+  return 0
 end)
 
 redis.register_function('schedule_cron_job', function(keys, argv)

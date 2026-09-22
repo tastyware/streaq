@@ -20,8 +20,9 @@ if TYPE_CHECKING:
 C = TypeVar("C", bound=object | None, default=None)
 P = ParamSpec("P")
 POther = ParamSpec("POther")
-R = TypeVar("R", bound=object | None)
+R_co = TypeVar("R_co", bound=object | None, covariant=True)
 ROther = TypeVar("ROther", bound=object | None)
+T = TypeVar("T")
 Ts = TypeVarTuple("Ts")
 
 
@@ -84,44 +85,44 @@ class TaskContext:
 
 
 ReturnCoroutine: TypeAlias = Callable[..., Coroutine[Any, Any, Any]]
-TypedCoroutine: TypeAlias = Coroutine[Any, Any, R]
+TypedCoroutine: TypeAlias = Coroutine[Any, Any, R_co]
 Middleware: TypeAlias = Callable[[ReturnCoroutine], ReturnCoroutine]
 Entries: TypeAlias = dict[str, tuple[StreamEntry, ...]] | None
 
-AsyncCron: TypeAlias = Callable[[], TypedCoroutine[R]]
-SyncCron: TypeAlias = Callable[[], R]
-AsyncTask: TypeAlias = Callable[P, TypedCoroutine[R]]
-SyncTask: TypeAlias = Callable[P, R]
+AsyncCron: TypeAlias = Callable[[], TypedCoroutine[R_co]]
+SyncCron: TypeAlias = Callable[[], R_co]
+AsyncTask: TypeAlias = Callable[P, TypedCoroutine[R_co]]
+SyncTask: TypeAlias = Callable[P, R_co]
 
 
 def is_async_task(
-    fn: Callable[P, Awaitable[R]] | Callable[P, R],
-) -> TypeIs[Callable[P, Awaitable[R]]]:
+    fn: Callable[P, Awaitable[R_co]] | Callable[P, R_co],
+) -> TypeIs[Callable[P, Awaitable[R_co]]]:
     return iscoroutinefunction(fn)
 
 
 class CronDecorator(Protocol):
     @overload
-    def __call__(self, fn: AsyncCron[R], /) -> AsyncRegisteredTask[[], R]: ...  # type: ignore[overload-overlap]
+    def __call__(self, fn: AsyncCron[R_co], /) -> AsyncRegisteredTask[[], R_co]: ...  # type: ignore[overload-overlap]
 
     @overload
-    def __call__(self, fn: SyncCron[R], /) -> SyncRegisteredTask[[], R]: ...
+    def __call__(self, fn: SyncCron[R_co], /) -> SyncRegisteredTask[[], R_co]: ...
 
     def __call__(
-        self, fn: AsyncCron[R] | SyncCron[R], /
-    ) -> AsyncRegisteredTask[[], R] | SyncRegisteredTask[[], R]: ...
+        self, fn: AsyncCron[R_co] | SyncCron[R_co], /
+    ) -> AsyncRegisteredTask[[], R_co] | SyncRegisteredTask[[], R_co]: ...
 
 
 class TaskDecorator(Protocol):
     @overload
-    def __call__(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # type: ignore[overload-overlap]
+    def __call__(self, fn: AsyncTask[P, R_co], /) -> AsyncRegisteredTask[P, R_co]: ...  # type: ignore[overload-overlap]
 
     @overload
-    def __call__(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...
+    def __call__(self, fn: SyncTask[P, R_co], /) -> SyncRegisteredTask[P, R_co]: ...
 
     def __call__(
-        self, fn: AsyncTask[P, R] | SyncTask[P, R], /
-    ) -> AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]: ...
+        self, fn: AsyncTask[P, R_co] | SyncTask[P, R_co], /
+    ) -> AsyncRegisteredTask[P, R_co] | SyncRegisteredTask[P, R_co]: ...
 
 
 class ReadStreamsCallback(
@@ -181,7 +182,7 @@ class Streaq(Library[str]):
         expire: int,
         current_time: int,
         *dependencies: str,
-    ) -> CommandRequest[None]: ...
+    ) -> CommandRequest[int | str]: ...
 
     @wraps(callback=ReadStreamsCallback())
     def read_streams(
@@ -208,7 +209,7 @@ class Streaq(Library[str]):
         consumer: str,
         message_id: str,
         task_id: str,
-    ) -> CommandRequest[bool]: ...
+    ) -> CommandRequest[int]: ...
 
     @wraps(verify_existence=False)
     def schedule_cron_job(

@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, tzinfo
+from functools import partial
 from hashlib import sha256
 from textwrap import shorten
 from typing import Any, Generic, Literal, Self, cast, overload
@@ -26,6 +27,7 @@ from anyio import (
     create_task_group,
     current_time,
     fail_after,
+    gather,
     get_cancelled_exc_class,
     move_on_after,
     open_signal_receiver,
@@ -47,7 +49,6 @@ from coredis.commands import CommandRequest
 from coredis.connection import TCPLocation
 from coredis.exceptions import RedisError, StreamConsumerGroupError
 from coredis.response.types import ScoredMember
-from coredis.typing import KeyT
 from crontab import CronTab
 
 from streaq import logger
@@ -69,7 +70,8 @@ from streaq.constants import (
     REDIS_RUNNING_SET,
     REDIS_STREAM,
     REDIS_TASK,
-    REDIS_UNIQUE,
+    UTILITIES_FILTER,
+    UTILITIES_MAP,
 )
 from streaq.task import (
     AsyncRegisteredTask,
@@ -89,7 +91,7 @@ from streaq.types import (
     Entries,
     Middleware,
     P,
-    R,
+    R_co,
     StreamMessage,
     Streaq,
     StreaqCancelled,
@@ -100,7 +102,7 @@ from streaq.types import (
     TaskDecorator,
     is_async_task,
 )
-from streaq.utils import datetime_ms, now_ms, to_ms, to_seconds, to_tuple
+from streaq.utils import datetime_ms, now_ms, to_ms, to_seconds
 
 
 @asynccontextmanager
@@ -287,6 +289,21 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._fallback_key = self.prefix + REDIS_FALLBACK
         self._supports_max_count = False
         self._streams = {self.stream_key + p: ">" for p in self.priorities}
+        self._filter: AsyncRegisteredTask[..., list[Any]] = AsyncRegisteredTask(
+            fn=partial(_filter, self),
+            fn_name=UTILITIES_FILTER,
+            worker=self,
+            max_tries=1,
+            ttl=300,
+        )
+        self._map: AsyncRegisteredTask[..., list[Any]] = AsyncRegisteredTask(
+            fn=partial(_map, self),
+            fn_name=UTILITIES_MAP,
+            worker=self,
+            max_tries=1,
+            ttl=300,
+        )
+        self._utilties = {UTILITIES_FILTER: self._filter, UTILITIES_MAP: self._map}
 
     def include(self, other: Worker[Any]) -> None:
         """
@@ -376,9 +393,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         name: str | None = None,
         retry_timeouts: bool = False,
         silent: bool = False,
-        timeout: timedelta | int | None = timedelta(hours=1),
+        timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
-        unique: bool = True,
     ) -> CronDecorator:
         """
         Register a task to be run at regular intervals as specified.
@@ -387,7 +403,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             crontab for scheduling, follows the specification
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param max_schedule_drift:
-            maximum amount of time a cron task can be delayed from its scheduled
+            maximum amount of seconds a cron task can be delayed from its scheduled
             execution time before getting discarded. If None, no check is performed.
         :param max_tries:
             number of times to retry the task should it fail during execution
@@ -396,20 +412,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param silent: whether to silence task logs; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
-        :param unique: whether multiple instances of the task can exist simultaneously
         """
 
         @overload
-        def wrapped(fn: AsyncCron[R]) -> AsyncRegisteredTask[[], R]: ...  # type: ignore[overload-overlap]
+        def wrapped(fn: AsyncCron[R_co]) -> AsyncRegisteredTask[[], R_co]: ...  # type: ignore[overload-overlap]
 
         @overload
-        def wrapped(fn: SyncCron[R]) -> SyncRegisteredTask[[], R]: ...
+        def wrapped(fn: SyncCron[R_co]) -> SyncRegisteredTask[[], R_co]: ...
 
         def wrapped(
-            fn: AsyncCron[R] | SyncCron[R],
+            fn: AsyncCron[R_co] | SyncCron[R_co],
         ) -> Any:
-            if unique and timeout is None:
-                raise StreaqError("Unique tasks must have a timeout set!")
             if (fn_name := name or fn.__qualname__) in self.registry:
                 raise StreaqError(
                     f"A task named {fn_name} has already been registered!"
@@ -424,7 +437,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     silent=silent,
                     timeout=timeout,
                     ttl=ttl,
-                    unique=unique,
                     fn_name=fn_name,
                     crontab=tab,
                     worker=self,
@@ -440,7 +452,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
-                unique=unique,
                 fn_name=fn_name,
                 crontab=tab,
                 worker=self,
@@ -451,10 +462,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         return wrapped
 
     @overload
-    def task(self, fn: AsyncTask[P, R], /) -> AsyncRegisteredTask[P, R]: ...  # type: ignore[overload-overlap]
+    def task(self, fn: AsyncTask[P, R_co], /) -> AsyncRegisteredTask[P, R_co]: ...  # type: ignore[overload-overlap]
 
     @overload
-    def task(self, fn: SyncTask[P, R], /) -> SyncRegisteredTask[P, R]: ...
+    def task(self, fn: SyncTask[P, R_co], /) -> SyncRegisteredTask[P, R_co]: ...
 
     @overload
     def task(
@@ -467,12 +478,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         silent: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
-        unique: bool = False,
     ) -> TaskDecorator: ...
 
     def task(
         self,
-        fn: AsyncTask[P, R] | SyncTask[P, R] | None = None,
+        fn: AsyncTask[P, R_co] | SyncTask[P, R_co] | None = None,
         *,
         expire: timedelta | int | None = None,
         max_tries: int | None = 3,
@@ -481,7 +491,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         silent: bool = False,
         timeout: timedelta | int | None = None,
         ttl: timedelta | int | None = timedelta(minutes=5),
-        unique: bool = False,
     ) -> Any:
         """
         Register a task with the worker which can later be enqueued.
@@ -495,14 +504,11 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param silent: whether to silence task logs; defaults to False
         :param timeout: time after which to abort the task, if None will never time out
         :param ttl: time to store results in Redis, if None will never expire
-        :param unique: whether multiple instances of the task can exist simultaneously
         """
 
         def wrapped(
-            fn: AsyncTask[P, R] | SyncTask[P, R],
-        ) -> AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]:
-            if unique and timeout is None:
-                raise StreaqError("Unique tasks must have a timeout set!")
+            fn: AsyncTask[P, R_co] | SyncTask[P, R_co],
+        ) -> AsyncRegisteredTask[P, R_co] | SyncRegisteredTask[P, R_co]:
             if (fn_name := name or fn.__qualname__) in self.registry:
                 raise StreaqError(
                     f"A task named {fn_name} has already been registered!"
@@ -517,7 +523,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     silent=silent,
                     timeout=timeout,
                     ttl=ttl,
-                    unique=unique,
                     fn_name=fn_name,
                     crontab=None,
                     worker=self,
@@ -533,7 +538,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
-                unique=unique,
                 fn_name=fn_name,
                 crontab=None,
                 worker=self,
@@ -891,7 +895,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         silent: bool,
         ttl: timedelta | int | None,
         triggers: str | None,
-        lock_key: str | None,
         tries: int,
         otherwise: str | None,
     ) -> None:
@@ -900,9 +903,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         task_id = msg.task_id
         stream_key = self.stream_key + msg.priority
-        to_delete: list[KeyT] = []
-        if lock_key:
-            to_delete.append(lock_key)
         if finish:
             data = {
                 "f": fn_name,
@@ -931,18 +931,15 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         self._results_set, {task_id: now_ms() + to_ms(ttl or 1e11)}
                     )
                     pipe.set(self.results_key + task_id, result, ex=ttl)
-                to_delete.extend([self._retry_key + task_id, self.task_key + task_id])
-                pipe.delete(to_delete)
+                pipe.delete([self._retry_key + task_id, self.task_key + task_id])
                 pipe.srem(self._abort_key, [task_id])
                 if success:
                     if not silent:
                         output = shorten(str(return_value), width=32)
                         logger.info(f"task {fn_name} ■ {task_id} ← {output}")
                     if triggers:
-                        args = await self.serialize(to_tuple(return_value))
-                        pipe.set(
-                            self._previous_key + task_id, args, ex=timedelta(minutes=5)
-                        )
+                        args = await self.serialize((return_value,))
+                        pipe.set(self._previous_key + task_id, args)
                     command = lib.update_dependents(
                         self.prefix + REDIS_DEPENDENTS,
                         self.prefix + REDIS_DEPENDENCIES,
@@ -974,14 +971,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
                 pipe.xdel(stream_key, [msg.message_id])
                 pipe.srem(self._running_set, [task_id])
-                if to_delete:
-                    pipe.delete(to_delete)
                 pipe.zadd(self.queue_key + msg.priority, {task_id: schedule})
         else:
             async with self.redis.pipeline(transaction=True) as pipe:
                 pipe.srem(self._running_set, [task_id])
-                if to_delete:
-                    pipe.delete(to_delete)
                 # mark message as immediately reclaimable
                 if (
                     self._supports_max_count
@@ -1020,16 +1013,16 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 msg.message_id,
                 task_id,
             )
+        if not await active:
+            logger.warning(f"task ↩ {task_id} reclaimed from worker {self.id}")
+            self.counters["relinquished"] += 1
+            return None
         task_try = await _task_try
         if not (raw := await _raw):
             logger.warning(f"task † {task_id} expired")
             return await self.finish_failed_task(
                 msg, StreaqError("Task expired!"), task_try, 0
             )
-        if not await active:
-            logger.warning(f"task ↩ {task_id} reclaimed from worker {self.id}")
-            self.counters["relinquished"] += 1
-            return None
 
         try:
             data: dict[str, Any] = await self.deserialize(raw)
@@ -1038,7 +1031,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return await self.finish_failed_task(msg, e, task_try, 0)
 
         otherwise: str | None = data.get("O")
-        if (fn_name := data["f"]) not in self.registry:
+        task = self.registry.get(fn_name := data["f"]) or self._utilties.get(fn_name)
+        if not task:
             logger.error(f"task {fn_name} ⊘ {task_id} skipped, missing function")
             return await self.finish_failed_task(
                 msg,
@@ -1048,7 +1042,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=data["f"],
                 otherwise=otherwise,
             )
-        task = self.registry[fn_name]
 
         if await abort:
             if not task.silent:
@@ -1093,33 +1086,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 otherwise=otherwise,
             )
 
-        timeout = (
-            None if task.timeout is None else self.idle_timeout + to_ms(task.timeout)
-        )
-        lock_key = None
-        if task.unique:
-            lock_key = self.prefix + REDIS_UNIQUE + fn_name
-            locked = await self.redis.set(
-                lock_key, task_id, get=True, condition=PureToken.NX, px=timeout
-            )
-            # allow retries of the same task but not new ones
-            if locked and locked != task_id:
-                if not task.silent:
-                    logger.warning(
-                        f"task {fn_name} ↯ {task_id} clashed with unique task {locked}"
-                    )
-                return await self.finish_failed_task(
-                    msg,
-                    StreaqError(
-                        "Task is unique and another instance of the same task is "
-                        "already running!"
-                    ),
-                    task_try,
-                    data["t"],
-                    fn_name=fn_name,
-                    ttl=task.ttl,
-                    otherwise=otherwise,
-                )
         if data.get("F") and (
             parent_raw := await self.redis.get(self._fallback_key + task_id)
         ):
@@ -1140,7 +1106,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 silent=True,
                 ttl=task.ttl,
                 triggers=data.get("T"),
-                lock_key=lock_key,
                 tries=task_try,
                 otherwise=data.get("O"),
             )
@@ -1255,7 +1220,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 silent=task.silent,
                 ttl=task.ttl,
                 triggers=data.get("T"),
-                lock_key=lock_key,
                 tries=task_try,
                 otherwise=otherwise,
             )
@@ -1310,8 +1274,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         This is unsafe because it doesn't check if the task is registered with the
         worker and doesn't enforce types, so it should only be used if you need to
         separate the task queuing and task execution code. You also lose the ability to
-        control certain parameters like uniqueness and queue expiration time. Consider
-        using type stubs instead as explained `here <https://streaq.readthedocs.io/en/latest/integrations.html#separating-enqueuing-from-task-definitions>`_.
+        control certain parameters like queue expiration time. Consider using type stubs
+        instead as explained `here <https://streaq.readthedocs.io/en/latest/integrations.html#separating-enqueuing-from-task-definitions>`_.
 
         :param fn_name: name of the function to run
         :param args: positional arguments for the task
@@ -1319,20 +1283,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :return: task object
         """
-        registered = AsyncRegisteredTask(
-            fn=_placeholder,
-            expire=None,
-            max_schedule_drift=None,
-            max_tries=None,
-            retry_timeouts=False,
-            silent=False,
-            timeout=None,
-            ttl=None,
-            unique=False,
-            fn_name=fn_name,
-            crontab=None,
-            worker=self,
-        )
+        registered = AsyncRegisteredTask(fn=_placeholder, fn_name=fn_name, worker=self)
         return Task(args, kwargs, registered, self)
 
     async def enqueue_many(self, tasks: Sequence[Task[Any, Any]]) -> None:
@@ -1372,7 +1323,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         data: Any,
         enqueue_time: int,
         lib: Streaq | None = None,
-    ) -> CommandRequest[None]:
+    ) -> CommandRequest[int | str]:
         task.priority = task.priority or self.priorities[-1]
         expire = to_ms(task.parent.expire or 0)
         if isinstance(task.schedule, str):
@@ -1468,7 +1419,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             ]
             done = pipe.exists([self.results_key + task_id])
             running = pipe.sismember(self._running_set, task_id)
-            data = pipe.exists([self.task_key + task_id])
+            data = pipe.strlen(self.task_key + task_id)
             dependencies = pipe.exists([self.dependencies_key + task_id])
 
         if await done:
@@ -1563,16 +1514,14 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 if (res := await command) or otherwise:
                     await self.fail_task_dependents(res, otherwise)
                 return True
-            if not (_raw := await val):
-                # check for 0, works with timedelta
-                if timeout is not None and not timeout:
-                    return False
+            if await val:
+                # task finished, don't leave a stale abort flag
+                await self.redis.srem(self._abort_key, [task_id])
+            else:
                 # wait for result if not available
                 with move_on_after(to_seconds(timeout)):
                     msg = await anext(pubsub)
-                    _raw = cast(str, msg["data"])
-                    # build result
-                    data = await self.deserialize(_raw)
+                    data = await self.deserialize(msg["data"])
                     return not data["s"] and isinstance(data["r"], StreaqCancelled)
             return False
 
@@ -1888,3 +1837,35 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return await out if self._async_deserializer else out
         except Exception as e:
             raise StreaqError(f"Failed to deserialize data: {data}") from e
+
+
+async def _map(
+    worker: Worker[Any],
+    data: list[Any],
+    *,
+    to: str,
+    kwargs: dict[str, Any] | None = None,
+) -> list[Any]:
+    target = worker.registry[to]
+    tasks: list[Task[Any, Any]] = [
+        Task((d,), kwargs or {}, target, worker) for d in data
+    ]
+    await worker.enqueue_many(tasks)
+    results = await gather(*[t.result() for t in tasks])
+    return [r.result for r in results]
+
+
+async def _filter(
+    worker: Worker[Any],
+    data: list[Any],
+    *,
+    by: str,
+    kwargs: dict[str, Any] | None = None,
+) -> list[Any]:
+    target = worker.registry[by]
+    tasks: list[Task[Any, Any]] = [
+        Task((d,), kwargs or {}, target, worker) for d in data
+    ]
+    await worker.enqueue_many(tasks)
+    results = await gather(*[t.result() for t in tasks])
+    return [d for d, r in zip(data, results) if r.result]

@@ -47,7 +47,6 @@ The ``task`` decorator has several optional arguments that can be used to custom
 - ``silent``: whether to silence task logs; defaults to False
 - ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
-- ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
 
 For example:
 
@@ -354,61 +353,21 @@ streaQ also supports task pipelining via the dependency graph, allowing you to d
 
    TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, start_time=1743469913901, finish_time=1743469913902, tries=1, worker_id='ca5bd9eb', _result=True)
 
-This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. With a little work, you can build common pipelining utilities from these building blocks:
+This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. streaQ also packages some common pipelining utilities building on this foundation:
 
 .. code-block:: python
 
-   from typing import Any
-   from anyio import gather
-   from streaq.utils import to_tuple
-
-   @worker.task
-   async def map(data: list[Any], *, to: str) -> list[Any]:
-       task = map.worker.registry[to]
-       tasks = [task.enqueue(*to_tuple(d)) for d in data]
-       await map.worker.enqueue_many(tasks)
-       results = await gather(*[t.result(3) for t in tasks])
-       return [r.result for r in results]
-
-   @worker.task
-   async def filter(data: list[Any], *, by: str) -> list[Any]:
-       task = filter.worker.registry[by]
-       tasks = [task.enqueue(*to_tuple(d)) for d in data]
-       await filter.worker.enqueue_many(tasks)
-       results = await gather(*[t.result(3) for t in tasks])
-       return [data[i] for i in range(len(data)) if results[i].result]
-
    async with worker:
        data = [0, 1, 2, 3]
-       t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
+       t1 = await double.map(data).filter(is_even)
        print(await t1.result())
-       t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
+       t2 = await is_even.filter(data).map(double)
        print(await t2.result())
 
 .. code-block:: python
 
-   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb', _result=[0, 2, 4, 6])
-   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb', _result=[0, 4])
-
-.. warning::
-   For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
-
-   Here's an example that takes advantage of this behavior:
-
-   .. code-block:: python
-
-      @worker.task
-      async def tuplify(input: int) -> tuple[int, int]:
-          return (input, input)
-
-      @worker.task
-      async def untuple(first: int, second: int, *, third: int = 0) -> int:
-          return first + second + third
-
-      async with worker:
-          task = await tuplify.enqueue(3).then(untuple, third=3)
-          res = await task.result(3)
-          print(res.result)  # 9
+   TaskResult(fn_name='_streaq_filter', enqueue_time=1751712228859, success=True, start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb', _result=[0, 2, 4, 6])
+   TaskResult(fn_name='_streaq_map', enqueue_time=1751712228923, success=True, start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb', _result=[0, 4])
 
 If you don't need to pass additional arguments, tasks can be pipelined using the ``|`` operator as a convenience:
 
