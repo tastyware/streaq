@@ -9,7 +9,7 @@ from typing import Any
 from anyio import CapacityLimiter
 from anyio.to_thread import run_sync
 
-from streaq.types import P, R, TypedCoroutine
+from streaq.types import P, R_co, TypedCoroutine
 
 
 class TimezoneFormatter(Formatter):
@@ -71,13 +71,6 @@ def datetime_ms(dt: datetime) -> int:
     return round(dt.timestamp() * 1000)
 
 
-def to_tuple(val: Any) -> tuple[Any, ...]:
-    """
-    Turn the given value into a tuple of one element if it's not already a tuple.
-    """
-    return val if isinstance(val, tuple) else (val,)  # type: ignore
-
-
 def default_log_config(tz: tzinfo, verbose: bool) -> dict[str, Any]:
     """
     Setup default config. for dictConfig.
@@ -111,8 +104,8 @@ def default_log_config(tz: tzinfo, verbose: bool) -> dict[str, Any]:
 
 
 def asyncify(
-    fn: Callable[P, R], limiter: CapacityLimiter | None = None
-) -> Callable[P, TypedCoroutine[R]]:
+    fn: Callable[P, R_co], limiter: CapacityLimiter | None = None
+) -> Callable[P, TypedCoroutine[R_co]]:
     """
     Taken from asyncer v0.0.8.
 
@@ -147,7 +140,7 @@ def asyncify(
     """
 
     @wraps(fn)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R_co:
         call = partial(fn, *args, **kwargs)
         return await run_sync(call, abandon_on_cancel=True, limiter=limiter)
 
