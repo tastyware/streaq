@@ -42,6 +42,7 @@ class TaskData(BaseModel):
 async def _get_context(
     worker: Worker[Any], base_url: str, statuses: list[TaskStatus] | None
 ) -> dict[str, Any]:
+    # TODO: single select, not multi-select
     @lru_cache(ttl=1)
     async def _get_tasks_by_statuses(
         statuses: tuple[TaskStatus, ...],
@@ -222,7 +223,7 @@ async def get_workers(
     cursor = 0
     while True:
         cursor, keys = await worker.redis.scan(
-            cursor=cursor, match=worker.prefix + REDIS_HEALTH + "*", count=500
+            cursor=cursor, match=worker._prefix + REDIS_HEALTH + "*", count=500
         ).route(worker.queue_name)
         worker_keys.extend(keys)
         if cursor == 0:
@@ -261,8 +262,8 @@ async def get_cronjobs(
 ) -> Any:
     async with worker.redis.pipeline(transaction=True) as pipe:
         commands = (
-            pipe.hgetall(worker.cron_registry_key),
-            pipe.zrange(worker.cron_schedule_key, 0, -1, withscores=True),
+            pipe.hgetall(worker._cron_registry_key),
+            pipe.zrange(worker._cron_schedule_key, 0, -1, withscores=True),
         )
     registry, schedule = await commands[0], await commands[1]
     ordered_names = [str(k) for k, _ in schedule]

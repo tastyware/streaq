@@ -48,6 +48,8 @@ class TaskStatus(StrEnum):
     SCHEDULED = "scheduled"
     #: task was completed
     DONE = "done"
+    #: task is in dead letter queue
+    DEAD = "dead"
 
 
 @dataclass(frozen=True)
@@ -209,7 +211,7 @@ class Task(Generic[P, R_co]):
             else:
                 self._prev_source = self._after.id
         data = await self.serialize(enqueue_time)
-        self.worker.publish_task(pipe, self, data, enqueue_time, lib=lib)
+        self.worker._publish_task(pipe, self, data, enqueue_time, lib=lib)
 
     async def _chain(self) -> Task[P, R_co]:
         now = now_ms()
@@ -219,7 +221,7 @@ class Task(Generic[P, R_co]):
                 lib = Streaq(pipe)
                 await self._recurse(lib, pipe, now)
         else:
-            await self.worker.publish_task(
+            await self.worker._publish_task(
                 self.worker.redis, self, await self.serialize(now), now
             )
         return self

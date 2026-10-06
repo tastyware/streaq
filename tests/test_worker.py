@@ -62,7 +62,7 @@ async def test_health_check(redis_url: str):
     )
     async with run_worker(worker):
         await sleep(1)
-        health_key = f"{worker.prefix}{REDIS_HEALTH}:{worker.id}"
+        health_key = f"{worker._prefix}{REDIS_HEALTH}:{worker.id}"
         worker_health = await worker.redis.get(health_key)
         assert worker_health is not None
 
@@ -208,7 +208,7 @@ async def test_change_cron_schedule(redis_url: str):
     async with run_worker(worker):
         await sleep(2)
         assert worker.next_run(foo1.crontab) == int(  # type: ignore
-            (await worker.redis.zscore(worker.cron_schedule_key, foo1.fn_name)) or 0
+            (await worker.redis.zscore(worker._cron_schedule_key, foo1.fn_name)) or 0
         )
 
     worker2 = Worker(redis_url=redis_url, queue_name=worker.queue_name)
@@ -216,7 +216,7 @@ async def test_change_cron_schedule(redis_url: str):
     async with run_worker(worker2):
         await sleep(2)
         assert worker.next_run(foo1.crontab) != int(  # type: ignore
-            (await worker2.redis.zscore(worker.cron_schedule_key, foo1.fn_name)) or 0
+            (await worker2.redis.zscore(worker._cron_schedule_key, foo1.fn_name)) or 0
         )
 
 
@@ -269,7 +269,7 @@ async def test_corrupt_signed_data(redis_url: str):
     async with worker:
         task = await foo.enqueue()
         await worker.redis.set(
-            worker.task_key + task.id, pickle.dumps({"f": "This is an attack!"})
+            worker._task_key + task.id, pickle.dumps({"f": "This is an attack!"})
         )
 
     async with run_worker(worker):

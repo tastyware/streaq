@@ -94,7 +94,7 @@ Task priorities
 
 Sometimes, certain critical tasks should "skip the line" and receive priority over other tasks. streaQ supports this by allowing you to specify a priority when enqueuing tasks. If a low priority queue is backed up, you can use a high priority queue to ensure that critical tasks are executed quickly.
 
-By passing the ``priorities`` argument on worker creation, you can create an arbitrary number of queues with your priority ordering. (Please take into account that there will be a slight performance penalty per additional queue.)
+By passing the ``priorities`` argument on worker creation, you can create an arbitrary number of queues with your priority ordering. (Please take into account that there will be a slight performance penalty per additional queue. Consider spinning up separate workers with different queue names instead.)
 
 .. code-block:: python
 
@@ -407,3 +407,30 @@ You can also use the ``^`` operator as a convenience:
        await (fails.enqueue(3) ^ double)
 
 Note that ``await`` is higher precedence than ``^`` so the parentheses are necessary!
+
+Idempotence
+-----------
+
+streaQ tasks are idempotent by default, keyed on their task ID:
+
+.. code-block:: python
+
+   async with worker:
+       task = await sleeper.enqueue(1)
+       t1 = await task
+       # second enqueue does nothing
+       t2 = await task
+       # both point to the same result object
+       assert await t1.result() == await t2.result()
+
+Each call to `enqueue()` creates a new task with an auto-generated UUID. Idempotency guarantees last as long as a task's TTL. If you need to ensure idempotency keys are consistent between streaQ and your database, you can set a task's ID manually before enqueuing:
+
+.. code-block:: python
+
+   task = sleeper.enqueue(1)
+   task.id = "my-uuid"
+   res = await task  # enqueue is deduped here
+
+.. warning::
+
+   Be careful when using the `expire` parameter when you need idempotency, as you could potentially undermine idempotency guarantees if the task gets dequeued between the first and second calls!

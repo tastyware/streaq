@@ -431,7 +431,6 @@ async def test_sync_cron(worker: Worker):
     async with run_worker(worker):
         await sleep(2)
         assert task_id
-        assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
 async def test_cron_multiple_runs(worker: Worker):

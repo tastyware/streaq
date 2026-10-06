@@ -1,6 +1,7 @@
 REDIS_ABORT = ":aborted"
 REDIS_CHANNEL = ":channels:"
 REDIS_CRON = ":cron:"
+REDIS_DEAD = ":queues:dead:"
 REDIS_DEPENDENCIES = ":task:dependencies:"
 REDIS_DEPENDENTS = ":task:dependents:"
 REDIS_FALLBACK = ":task:fallback:"
