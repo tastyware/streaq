@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Concatenate, Generic, cast
-from uuid import uuid4
+from uuid import NAMESPACE_OID, uuid4, uuid5
 
+from coredis import PureToken
 from coredis.client import Client
 
 from streaq.types import (
@@ -120,7 +121,6 @@ class Task(Generic[P, R_co]):
     worker: Worker[Any]
     id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any, Any] | None = None
-    after: list[str] = field(default_factory=list[str])
     delay: timedelta | int | None = None
     schedule: datetime | str | None = None
     priority: str | None = None
@@ -130,37 +130,37 @@ class Task(Generic[P, R_co]):
 
     def start(
         self,
-        after: str | Iterable[str] | None = None,
         delay: timedelta | int | None = None,
         schedule: datetime | str | None = None,
         priority: str | None = None,
+        id: str | None = None,
     ) -> Task[P, R_co]:
         """
-        Configure the task to modify schedule, queue, or dependencies.
+        Configure the task to modify schedule, queue, or ID.
 
-        :param after: task ID(s) to wait for before running this task
         :param delay: duration to wait before running the task
         :param schedule:
             datetime at which to run the task, or crontab for repeated scheduling,
             follows the specification
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param priority: priority queue to insert the task
+        :param id: custom ID for the task
 
         :return: self
         """
-        # merge _after and after into a single list[str]
-        if isinstance(after, str):
-            self.after.append(after)
-        elif after:
-            self.after.extend(after)
+        if delay and schedule:
+            raise StreaqError(
+                "Use one of 'delay' or 'schedule' when enqueuing tasks, not both!"
+            )
+        if id:
+            if self._after:
+                raise StreaqError(
+                    "Only the first task in a chain can have a custom ID!"
+                )
+            self.id = id
         self.delay = delay
         self.schedule = schedule
         self.priority = priority
-        if (delay and schedule) or (delay and after) or (schedule and after):
-            raise StreaqError(
-                "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not "
-                "multiple!"
-            )
         return self
 
     def then(
@@ -205,13 +205,17 @@ class Task(Generic[P, R_co]):
     async def _recurse(self, lib: Streaq, pipe: Client[str], enqueue_time: int) -> None:
         if self._after:
             await self._after._recurse(lib, pipe, enqueue_time)
-            self.after.append(self._after.id)
             if self._after._fails_over:
                 self._prev_source = self._after._prev_source
             else:
                 self._prev_source = self._after.id
+        if self._triggers:
+            self._triggers.id = uuid5(NAMESPACE_OID, self.id).hex
         data = await self.serialize(enqueue_time)
-        self.worker._publish_task(pipe, self, data, enqueue_time, lib=lib)
+        if self._after:
+            pipe.set(self.worker._task_key + self.id, data, condition=PureToken.NX)
+        else:
+            self.worker._publish_task(pipe, self, data, enqueue_time, lib=lib)
 
     async def _chain(self) -> Task[P, R_co]:
         now = now_ms()
@@ -343,7 +347,6 @@ class RegisteredTask:
     """
 
     expire: timedelta | int | None = None
-    max_schedule_drift: timedelta | int | None = None
     max_tries: int | None = None
     retry_timeouts: bool = False
     silent: bool = False

@@ -416,7 +416,7 @@ streaQ tasks are idempotent by default, keyed on their task ID:
 .. code-block:: python
 
    async with worker:
-       task = await sleeper.enqueue(1)
+       task = sleeper.enqueue(1)
        t1 = await task
        # second enqueue does nothing
        t2 = await task
@@ -427,9 +427,7 @@ Each call to `enqueue()` creates a new task with an auto-generated UUID. Idempot
 
 .. code-block:: python
 
-   task = sleeper.enqueue(1)
-   task.id = "my-uuid"
-   res = await task  # enqueue is deduped here
+   task = await sleeper.enqueue(1).start(id="my-uuid")
 
 .. warning::
 

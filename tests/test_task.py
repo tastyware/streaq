@@ -286,6 +286,24 @@ async def test_task_dependency_failed(worker: Worker):
         assert isinstance(res.exception, StreaqError)
 
 
+async def test_task_dependency_already_failed(worker: Worker):
+    @worker.task
+    async def foobar() -> None:
+        raise Exception("Oh no!")
+
+    @worker.task
+    async def do_nothing() -> None:
+        pass
+
+    async with run_worker(worker):
+        task = await foobar.enqueue().start()
+        assert not (await task.result(3)).success
+        dep = await do_nothing.enqueue().start(after=task.id)
+        res = await dep.result(3)
+        assert not res.success
+        assert isinstance(res.exception, StreaqError)
+
+
 async def test_task_dependency_aborted(worker: Worker):
     @worker.task
     async def foobar() -> None:

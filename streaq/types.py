@@ -158,11 +158,6 @@ class Streaq(Library[str]):
     ) -> CommandRequest[None]: ...
 
     @wraps(verify_existence=False)
-    def fail_dependents(
-        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str, skip_id: str
-    ) -> CommandRequest[list[str]]: ...
-
-    @wraps(verify_existence=False)
     def publish_delayed_tasks(
         self, queue_key: KeyT, stream_key: KeyT, current_time: int
     ) -> CommandRequest[None]: ...
@@ -173,16 +168,13 @@ class Streaq(Library[str]):
         stream_key: KeyT,
         queue_key: KeyT,
         task_key: KeyT,
-        dependents_key: KeyT,
-        dependencies_key: KeyT,
         results_key: KeyT,
         task_id: str,
         task_data: Any,
         score: int,
         expire: int,
         current_time: int,
-        *dependencies: str,
-    ) -> CommandRequest[int | str]: ...
+    ) -> CommandRequest[None]: ...
 
     @wraps(callback=ReadStreamsCallback())
     def read_streams(
@@ -194,11 +186,6 @@ class Streaq(Library[str]):
         idle: int,
         *priorities: str,
     ) -> CommandRequest[Any]: ...
-
-    @wraps(verify_existence=False)
-    def update_dependents(
-        self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str
-    ) -> CommandRequest[list[str]]: ...
 
     @wraps(verify_existence=False)
     def refresh_timeout(

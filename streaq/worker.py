@@ -161,7 +161,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     :param sentinel_kwargs: extra arguments to pass to sentinel (but not instances)
     :param cluster_nodes: list of (address, port) tuples to create cluster from
     :param id: custom worker ID
-    :param dlq_ttl: length of time to preserve failed tasks in the dead-letter queue
+    :param dlq_ttl:
+        time to preserve failed tasks in a dead-letter queue, if 0 DLQ is disabled
     """
 
     def __init__(
@@ -191,7 +192,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         sentinel_kwargs: dict[str, Any] | None = None,
         cluster_nodes: list[tuple[str, int]] | None = None,
         id: str | None = None,
-        dlq_ttl: timedelta | int | None = timedelta(days=7),
+        dlq_ttl: timedelta | int | None = 0,
     ) -> None:
         # Redis connection
         redis_kwargs = redis_kwargs or {}
@@ -393,7 +394,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self,
         tab: str,
         *,
-        max_schedule_drift: timedelta | int | None = None,
+        expire: timedelta | int | None = None,
         max_tries: int | None = 3,
         name: str | None = None,
         retry_timeouts: bool = False,
@@ -407,9 +408,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param tab:
             crontab for scheduling, follows the specification
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
-        :param max_schedule_drift:
-            maximum amount of seconds a cron task can be delayed from its scheduled
-            execution time before getting discarded. If None, no check is performed.
+        :param expire:
+            maximum amount of seconds a task may drift from its scheduled execution
+            time. If None, no check is performed.
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the cron job instead of the function name
@@ -435,8 +436,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             if is_async_task(fn):
                 task = AsyncRegisteredTask(
                     fn=fn,
-                    expire=None,
-                    max_schedule_drift=max_schedule_drift,
+                    expire=expire,
                     max_tries=max_tries,
                     retry_timeouts=retry_timeouts,
                     silent=silent,
@@ -450,8 +450,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 return task
             _task = SyncRegisteredTask(
                 fn=fn,
-                expire=None,
-                max_schedule_drift=max_schedule_drift,
+                expire=expire,
                 max_tries=max_tries,
                 retry_timeouts=retry_timeouts,
                 silent=silent,
@@ -525,14 +524,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 task = AsyncRegisteredTask(
                     fn=fn,
                     expire=expire,
-                    max_schedule_drift=None,
                     max_tries=max_tries,
                     retry_timeouts=retry_timeouts,
                     silent=silent,
                     timeout=timeout,
                     ttl=ttl,
                     fn_name=fn_name,
-                    crontab=None,
                     worker=self,
                 )
                 self.registry[fn_name] = task
@@ -540,14 +537,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             _task = SyncRegisteredTask(
                 fn=fn,
                 expire=expire,
-                max_schedule_drift=None,
                 max_tries=max_tries,
                 retry_timeouts=retry_timeouts,
                 silent=silent,
                 timeout=timeout,
                 ttl=ttl,
                 fn_name=fn_name,
-                crontab=None,
                 worker=self,
             )
             self.registry[fn_name] = _task
@@ -698,9 +693,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                                 tasks,
                                 justid=True,
                             )
-                    if self.dlq_ttl is not None:
-                        for priority in self.priorities:
-                            pipe.zremrangebyscore(self._dead_key + priority, 0, now)
+                    for priority in self.priorities:
+                        pipe.zremrangebyscore(self._dead_key + priority, 0, now)
                 await sleep(timeout)
 
     async def _read_streams_legacy(
@@ -845,15 +839,17 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 await self.schedule_cron_jobs(ready)
             await sleep(max(0, 0.5 - current_time() + start_time))
 
-    async def finish_failed_task(
+    async def fail_task(
         self,
         msg: StreamMessage,
         exc: BaseException,
         tries: int,
         created_time: int,
+        start_time: int | None = None,
         fn_name: str = "Unknown",
-        ttl: timedelta | int | None = 300,
+        ttl: timedelta | int | None = None,
         otherwise: str | None = None,
+        counter: str = "failed",
     ) -> None:
         """
         Serialize a failed task with metadata and handle failure.
@@ -866,24 +862,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             "et": msg.enqueue_time,
             "s": False,
             "r": exc,
-            "st": now,
+            "st": start_time or now,
             "ft": now,
             "t": tries,
             "w": self.id,
         }
         raw = await self.serialize(data)
-        self.counters["failed"] += 1
-        stream_key = self._stream_key + msg.priority
+        self.counters[counter] += 1
 
         async with self.redis.pipeline(transaction=True) as pipe:
-            lib = Streaq(pipe)
             pipe.delete([self._retry_key + task_id])
             pipe.publish(self._channel_key + task_id, raw).route(self.queue_name)
             pipe.srem(self._abort_key, [task_id])
-            pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
-            pipe.xdel(stream_key, [msg.message_id])
-            pipe.srem(self._running_set, [task_id])
-            self._park_task(pipe, msg.task_id, msg.priority, raw, now)
+            self._release_task(pipe, msg)
+            self._park_task(pipe, msg.task_id, msg.priority, raw, now, ttl)
             command = lib.fail_dependents(
                 self._prefix + REDIS_DEPENDENTS,
                 self._prefix + REDIS_DEPENDENCIES,
@@ -916,6 +908,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_id = msg.task_id
         stream_key = self._stream_key + msg.priority
         if finish:
+            if not success:
+                return await self.fail_task(
+                    msg,
+                    return_value,
+                    tries,
+                    created_time,
+                    start_time=start_time,
+                    fn_name=fn_name,
+                    ttl=ttl,
+                    otherwise=otherwise,
+                    counter="failed",
+                )
             data = {
                 "f": fn_name,
                 "ct": created_time,
@@ -931,60 +935,39 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
             async with self.redis.pipeline(transaction=True) as pipe:
                 lib = Streaq(pipe)
-                pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
-                pipe.xdel(stream_key, [msg.message_id])
+                self._release_task(pipe, msg)
                 pipe.publish(self._channel_key + task_id, result).route(self.queue_name)
-                if success:
-                    self.counters["completed"] += 1
-                else:
-                    self.counters["failed"] += 1
-                pipe.srem(self._running_set, [task_id])
                 if ttl != 0:
                     pipe.zadd(
                         self._results_set, {task_id: now_ms() + to_ms(ttl or 1e11)}
                     )
                     pipe.set(self._results_key + task_id, result, ex=ttl)
-                pipe.set(self._task_key + task_id, "", ex=ttl)  # tombstone
-                pipe.delete([self._retry_key + task_id])
+                pipe.delete([self._task_key + task_id, self._retry_key + task_id])
                 pipe.srem(self._abort_key, [task_id])
-                if success:
-                    if not silent:
-                        output = shorten(str(return_value), width=32)
-                        logger.info(f"task {fn_name} ■ {task_id} ← {output}")
-                    if triggers:
-                        args = await self.serialize((return_value,))
-                        pipe.set(self._previous_key + task_id, args)
-                    command = lib.update_dependents(
-                        self._prefix + REDIS_DEPENDENTS,
-                        self._prefix + REDIS_DEPENDENCIES,
-                        task_id,
-                    )
-                else:
-                    command = lib.fail_dependents(
-                        self._prefix + REDIS_DEPENDENTS,
-                        self._prefix + REDIS_DEPENDENCIES,
-                        task_id,
-                        otherwise or "",
-                    )
+                self.counters["completed"] += 1
+                if not silent:
+                    output = shorten(str(return_value), width=32)
+                    logger.info(f"task {fn_name} ■ {task_id} ← {output}")
+                if triggers:
+                    args = await self.serialize((return_value,))
+                    pipe.set(self._previous_key + task_id, args)
+                command = lib.update_dependents(
+                    self._prefix + REDIS_DEPENDENTS,
+                    self._prefix + REDIS_DEPENDENCIES,
+                    task_id,
+                )
             if (res := await command) or otherwise:
-                if success:
-                    async with self.redis.pipeline(transaction=False) as pipe:
-                        now = now_ms()
-                        for dep_id in res:
-                            if dep_id == otherwise:
-                                pipe.set(self._fallback_key + dep_id, result)
-                            else:
-                                logger.info(f"↳ dependent {dep_id} triggered")
-                            pipe.xadd(
-                                stream_key, {"task_id": dep_id, "enqueue_time": now}
-                            )
-                else:
-                    await self.fail_task_dependents(res, otherwise)
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    now = now_ms()
+                    for dep_id in res:
+                        if dep_id == otherwise:
+                            pipe.set(self._fallback_key + dep_id, result)
+                        else:
+                            logger.info(f"↳ dependent {dep_id} triggered")
+                        pipe.xadd(stream_key, {"task_id": dep_id, "enqueue_time": now})
         elif schedule:
             async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
-                pipe.xdel(stream_key, [msg.message_id])
-                pipe.srem(self._running_set, [task_id])
+                self._release_task(pipe, msg)
                 pipe.zadd(self._queue_key + msg.priority, {task_id: schedule})
         else:
             async with self.redis.pipeline(transaction=True) as pipe:
@@ -1033,22 +1016,20 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return None
         task_try = await _task_try
         if not (raw := await _raw):
-            logger.warning(f"task † {task_id} expired")
-            return await self.finish_failed_task(
-                msg, StreaqError("Task expired!"), task_try, 0
-            )
+            logger.fatal(f"task † {task_id} expired")
+            return await self.fail_task(msg, StreaqError("Task expired!"), task_try, 0)
 
         try:
             data: dict[str, Any] = await self.deserialize(raw)
         except StreaqError as e:
             logger.error(f"task ☒ {task_id} failed to deserialize")
-            return await self.finish_failed_task(msg, e, task_try, 0)
+            return await self.fail_task(msg, e, task_try, 0)
 
         otherwise: str | None = data.get("O")
         task = self.registry.get(fn_name := data["f"]) or self._utilties.get(fn_name)
         if not task:
             logger.error(f"task {fn_name} ⊘ {task_id} skipped, missing function")
-            return await self.finish_failed_task(
+            return await self.fail_task(
                 msg,
                 StreaqError(f"Missing function {fn_name}!"),
                 task_try,
@@ -1060,7 +1041,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         if await abort:
             if not task.silent:
                 logger.info(f"task {fn_name} ⊘ {task_id} aborted prior to run")
-            return await self.finish_failed_task(
+            return await self.fail_task(
                 msg,
                 StreaqCancelled("Task aborted prior to run!"),
                 task_try,
@@ -1073,7 +1054,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 logger.warning(
                     f"task {fn_name} × {task_id} failed after {task.max_tries} retries"
                 )
-            return await self.finish_failed_task(
+            return await self.fail_task(
                 msg,
                 StreaqError("Max retry attempts reached for task!"),
                 task_try,
@@ -1081,14 +1062,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=fn_name,
                 otherwise=otherwise,
             )
-        if task.max_schedule_drift is not None and now_ms() - msg.enqueue_time > to_ms(
-            task.max_schedule_drift
-        ):
+        if task.expire is not None and now_ms() - data["t"] > to_ms(task.expire):
             if not task.silent:
                 logger.warning(
                     f"task {fn_name} ⊘ {task_id} missed scheduled time, skipping"
                 )
-            return await self.finish_failed_task(
+            return await self.fail_task(
                 msg,
                 StreaqError("Cron task exceeded max schedule drift!"),
                 task_try,
@@ -1266,7 +1245,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             for dep_id in dependents:
                 logger.info(f"task dependent × {dep_id} failed")
                 to_delete.append(self._prefix + REDIS_TASK + dep_id)
-                pipe.set(self._results_key + dep_id, result, ex=self.dlq_ttl)
+                if self.dlq_ttl != 0:
+                    pipe.set(self._results_key + dep_id, result, ex=self.dlq_ttl)
                 pipe.publish(self._channel_key + dep_id, result).route(self.queue_name)
             if to_delete:
                 expire_at = (
@@ -1336,7 +1316,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         data: Any,
         enqueue_time: int,
         lib: Streaq | None = None,
-    ) -> CommandRequest[int | str]:
+    ) -> CommandRequest[None]:
         task.priority = task.priority or self.priorities[-1]
         expire = to_ms(task.parent.expire or 0)
         if isinstance(task.schedule, str):
@@ -1350,19 +1330,18 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             score = enqueue_time + to_ms(task.delay)
         else:
             score = 0
+        if expire and score:
+            expire += score - enqueue_time
         return (lib or self._lib).publish_task(
             self._stream_key + task.priority,
             self._queue_key + task.priority,
             self._task_key + task.id,
-            self._dependents_key,
-            self._dependencies_key,
-            self._results_key,
+            self._results_key + task.id,
             task.id,
             data,
             score,
             expire,
             enqueue_time,
-            *task.after,
         )
 
     def _park_task(
@@ -1372,15 +1351,40 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         priority: str,
         raw: Any,
         now: int,
+        ttl: timedelta | int | None,
     ) -> None:
         if self.dlq_ttl != 0:
+            exp_ms = now + to_ms(self.dlq_ttl or 1e11)
             pipe.set(self._results_key + task_id, raw, ex=self.dlq_ttl)
-            pipe.zadd(self._results_set, {task_id: now + to_ms(self.dlq_ttl or 1e11)})
-            pipe.zadd(self._dead_key + priority, {task_id: now})
+            pipe.zadd(self._results_set, {task_id: exp_ms})
+            pipe.zadd(self._dead_key + priority, {task_id: exp_ms})
             if self.dlq_ttl:
                 pipe.expire(self._task_key + task_id, self.dlq_ttl)
         else:
             pipe.delete([self._task_key + task_id])
+
+    def _release_task(self, pipe: Client[str], msg: StreamMessage) -> None:
+        stream_key = self._stream_key + msg.priority
+        if self._supports_max_count:  # pragma: gated cover[xreadgroup-max-count]
+            pipe.xackdel(stream_key, REDIS_GROUP, [msg.message_id])
+        else:  # pragma: gated cover[xreadgroup-no-max-count]
+            pipe.xack(stream_key, REDIS_GROUP, [msg.message_id])
+            pipe.xdel(stream_key, [msg.message_id])
+        pipe.srem(self._running_set, [msg.task_id])
+
+    def _trigger_dependents(
+        self, pipe: Client[str], task_id: str, otherwise: str | None
+    ) -> CommandRequest[set[str]]:
+        if otherwise:
+            logger.info(f"↳ fallback {otherwise} triggered")
+            pipe.delete([self._dependencies_key + otherwise])
+            pipe.xadd(
+                self._stream_key + self.priorities[-1],
+                {"task_id": otherwise, "enqueue_time": now_ms()},
+            )
+        dependents = pipe.smembers(self._dependents_key + task_id)
+        pipe.delete([self._dependents_key + task_id])
+        return dependents
 
     async def queue_size(self, include_scheduled: bool = True) -> int:
         """
