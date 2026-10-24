@@ -1,6 +1,7 @@
 import logging
 
 VERSION = "8.0.0"
+_MAJOR_VERSION = VERSION.split(".")[0]
 __version__ = VERSION
 
 logger = logging.getLogger(__name__)

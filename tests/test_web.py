@@ -14,7 +14,7 @@ from tests.conftest import run_worker
 pytestmark = pytest.mark.anyio
 
 
-async def test_no_override():
+def test_no_override():
     with pytest.raises(HTTPException):
         _ = get_worker()
 
@@ -62,15 +62,12 @@ async def test_get_pages(worker: Worker):
             assert res.status_code == 303
             res = await client.get(f"{prefix}/queue")
             assert res.status_code == 200
-            res = await client.patch(
-                f"{prefix}/queue",
-                data={
-                    "functions": [sleeper.fn_name],
-                    "statuses": ["queued", "running", "done"],
-                    "sort": "desc",
-                },
-            )
-            assert res.status_code == 200
+            for status in TaskStatus:
+                res = await client.patch(
+                    f"{prefix}/queue",
+                    data={"functions": [sleeper.fn_name], "status": status.value},
+                )
+                assert res.status_code == 200
             # test fetching tasks in various statuses
             handles: list[TaskHandle[Any]] = []
             async with create_task_group() as tg:

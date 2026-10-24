@@ -115,7 +115,7 @@ We can run this script with ``$ python script.py``. You should see output like:
 
 .. code-block:: python
 
-   TaskInfo(fn_name='fetch', enqueue_time=1756365588232, tries=0, scheduled=datetime.datetime(2025, 8, 28, 7, 19, 51, 232000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+   TaskInfo(fn_name='fetch', enqueue_time=1756365588232, tries=0, scheduled=datetime.datetime(2025, 8, 28, 7, 19, 51, 232000, tzinfo=datetime.timezone.utc))
    TaskResult(fn_name='fetch', enqueue_time=1756365588232, success=True, start_time=1756365591327, finish_time=1756365592081, tries=1, worker_id='12195ce1', _result=303659)
 
 And the worker logs should look like this:

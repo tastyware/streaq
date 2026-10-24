@@ -69,7 +69,7 @@ async def test_task_status(worker: Worker):
 
     async with worker:
         task = foobar.enqueue()
-        assert await task.status() == TaskStatus.NOT_FOUND
+        assert await task.status() is None
         await task.start()
         assert await task.status() == TaskStatus.QUEUED
         task2 = await foobar.enqueue().start(delay=5)
@@ -222,26 +222,20 @@ async def test_task_failed_abort(worker: Worker):
         assert not await task.abort()
 
 
-async def test_task_nonexistent_or_finished_dependency(worker: Worker):
-    @worker.task
-    async def foobar() -> None:
-        pass
-
-    async with run_worker(worker):
-        task = await foobar.enqueue().start(after="nonexistent")
-        with pytest.raises(TimeoutError):
-            await task.result(3)
-
-
 async def test_task_dependency(worker: Worker):
     @worker.task
-    async def foobar() -> None:
+    async def foobar() -> int:
         await sleep(1)
+        return 1
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start(delay=1)
-        task2 = await foobar.enqueue().start(after=task.id)
-        assert await task2.status() == TaskStatus.SCHEDULED
+        task = foobar.enqueue().start(delay=1)
+        task2 = await task.then(double)()
+        assert await task2.status() == TaskStatus.QUEUED
         await task.result(3)
         result = await task2.result(3)
         assert result.success
@@ -249,70 +243,30 @@ async def test_task_dependency(worker: Worker):
             _ = result.exception
 
 
-async def test_task_dependency_multiple(worker: Worker):
-    @worker.task
-    async def foobar() -> None:
-        await sleep(1)
-
-    async with run_worker(worker):
-        task = await foobar.enqueue().start()
-        task2 = await foobar.enqueue().start(after=task.id)
-        task3 = await foobar.enqueue().start(after=[task.id, task2.id])
-        assert await task2.status() == TaskStatus.SCHEDULED
-        assert await task3.status() == TaskStatus.SCHEDULED
-        res1 = await task.result(3)
-        assert res1.success
-        assert await task3.status() == TaskStatus.SCHEDULED
-        res2 = await task2.result(3)
-        assert res2.success
-        res3 = await task3.result(3)
-        assert res3.success
-
-
 async def test_task_dependency_failed(worker: Worker):
     @worker.task
-    async def foobar() -> None:
+    async def foobar() -> int:
         raise Exception("Oh no!")
 
     @worker.task
-    async def do_nothing() -> None:
+    async def do_nothing(val: int) -> None:
         pass
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start(delay=1)
-        dep = await do_nothing.enqueue().start(after=task.id)
-        res = await dep.result(3)
-        assert not res.success
-        assert isinstance(res.exception, StreaqError)
-
-
-async def test_task_dependency_already_failed(worker: Worker):
-    @worker.task
-    async def foobar() -> None:
-        raise Exception("Oh no!")
-
-    @worker.task
-    async def do_nothing() -> None:
-        pass
-
-    async with run_worker(worker):
-        task = await foobar.enqueue().start()
-        assert not (await task.result(3)).success
-        dep = await do_nothing.enqueue().start(after=task.id)
-        res = await dep.result(3)
+        task = await foobar.enqueue().then(do_nothing)()
+        res = await task.result(3)
         assert not res.success
         assert isinstance(res.exception, StreaqError)
 
 
 async def test_task_dependency_aborted(worker: Worker):
     @worker.task
-    async def foobar() -> None:
-        pass
+    async def foobar(val: int) -> int:
+        return val + 1
 
     async with worker:
-        dep = await foobar.enqueue()
-        task = await foobar.enqueue().start(after=dep.id)
-        await dep.abort(timeout=0)
+        task = await foobar.enqueue(1).then(foobar)()
+        await task.abort(timeout=0)
     async with run_worker(worker):
         res = await task.result(3)
         assert not res.success
@@ -357,9 +311,9 @@ async def test_chained_failed_dependencies(worker: Worker):
         pass
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start(delay=timedelta(seconds=3))
-        dep1 = await child.enqueue().start(after=task.id)
-        dep2 = await child.enqueue().start(after=[task.id, dep1.id])
+        task = foobar.enqueue().start(delay=timedelta(seconds=3))
+        dep1 = task.then(child, forward=False)()
+        dep2 = await dep1.then(child, forward=False)()
         await sleep(1)
         assert await task.abort(3)
         res1 = await dep1.result(3)
@@ -419,10 +373,6 @@ async def test_bad_start_params(worker: Worker):
     async with worker:
         with pytest.raises(StreaqError):
             await foobar.enqueue().start(delay=1, schedule=datetime.now())
-        with pytest.raises(StreaqError):
-            await foobar.enqueue().start(delay=1, after="foobar")
-        with pytest.raises(StreaqError):
-            await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
 
 
 @pytest.mark.parametrize("wait", [1, 0])
@@ -525,20 +475,9 @@ async def test_task_pipeline(worker: Worker):
         return val % 2 == 0
 
     async with run_worker(worker):
-        task = await double.enqueue(1).then(double).then(is_even)
+        task = await double.enqueue(1).then(double)().then(is_even)()
         res = await task.result(3)
         assert res.result and res.success
-
-
-async def test_task_pipeline_shorthand(worker: Worker):
-    @worker.task
-    async def double(val: int) -> int:
-        return val * 2
-
-    async with run_worker(worker):
-        task = await (double.enqueue(1) | double | double)
-        res = await task.result(3)
-        assert res.success and res.result == 8
 
 
 async def test_task_pipeline_multiple(worker: Worker):
@@ -551,8 +490,8 @@ async def test_task_pipeline_multiple(worker: Worker):
         return val % 2 == 0
 
     async with worker:
-        task1 = double.enqueue(1).then(double).then(is_even)
-        task2 = double.enqueue(1) | double | double
+        task1 = double.enqueue(1).then(double)().then(is_even)()
+        task2 = double.enqueue(1).then(double)().then(double)()
         with pytest.RaisesGroup(
             StreaqError, allow_unwrapped=True, flatten_subgroups=True
         ):
@@ -710,7 +649,7 @@ async def test_otherwise_fallback(worker: Worker):
         return val // 2
 
     async with run_worker(worker):
-        task = await maybe_fail.enqueue(1).otherwise(halve)
+        task = await maybe_fail.enqueue(1).otherwise(halve)()
         res = await task.result(3)
         assert res.success and res.result == 0
 
@@ -727,26 +666,9 @@ async def test_otherwise_skipped_on_success(worker: Worker):
         return val // 2
 
     async with run_worker(worker):
-        task = await maybe_fail.enqueue(2).otherwise(halve)
+        task = await maybe_fail.enqueue(2).otherwise(halve)()
         res = await task.result(3)
         assert res.success and res.result == 4
-
-
-async def test_otherwise_shorthand(worker: Worker):
-    @worker.task
-    async def maybe_fail(val: int) -> int:
-        if val % 2 != 0:
-            raise ValueError("odd")
-        return val * 2
-
-    @worker.task
-    async def halve(val: int) -> int:
-        return val // 2
-
-    async with run_worker(worker):
-        task = await (maybe_fail.enqueue(1) ^ halve)
-        res = await task.result(3)
-        assert res.success and res.result == 0
 
 
 async def test_otherwise_then_after_fail(worker: Worker):
@@ -763,7 +685,7 @@ async def test_otherwise_then_after_fail(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await fail_task.enqueue(5).otherwise(fallback).then(add_one)
+        task = await fail_task.enqueue(5).otherwise(fallback)().then(add_one)()
         res = await task.result(3)
         assert res.success
         assert res.result == 106  # fallback(5)+1
@@ -783,7 +705,7 @@ async def test_otherwise_then_after_success(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await ok.enqueue(5).otherwise(fallback).then(add_one)
+        task = await ok.enqueue(5).otherwise(fallback)().then(add_one)()
         res = await task.result(3)
         assert res.success and res.result == 11
 
@@ -802,7 +724,7 @@ async def test_otherwise_after_then_fails(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await produce.enqueue(5).then(fail_consumer).otherwise(fallback)
+        task = await produce.enqueue(5).then(fail_consumer)().otherwise(fallback)()
         res = await task.result(3)
         assert res.success and res.result == 11
 
@@ -821,7 +743,7 @@ async def test_otherwise_after_then_succeeds(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await produce.enqueue(5).then(consume).otherwise(fallback)
+        task = await produce.enqueue(5).then(consume)().otherwise(fallback)()
         res = await task.result(3)
         assert res.success and res.result == 110
 
@@ -840,7 +762,7 @@ async def test_chained_otherwise_first_fails(worker: Worker):
         return -999
 
     async with run_worker(worker):
-        task = await fail_task.enqueue(5).otherwise(ok).otherwise(never)
+        task = await fail_task.enqueue(5).otherwise(ok)().otherwise(never)()
         res = await task.result(3)
         assert res.success and res.result == 6
 
@@ -859,7 +781,7 @@ async def test_chained_otherwise_all_fail(worker: Worker):
         return val * 10
 
     async with run_worker(worker):
-        task = await fail1.enqueue(5).otherwise(fail2).otherwise(final)
+        task = await fail1.enqueue(5).otherwise(fail2)().otherwise(final)()
         res = await task.result(3)
         assert res.success and res.result == 50
 
@@ -874,7 +796,7 @@ async def test_otherwise_retries_exhaust(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await always_fail.enqueue(5).otherwise(fallback)
+        task = await always_fail.enqueue(5).otherwise(fallback)()
         res = await task.result(5)
         assert res.success and res.result == 6
 
@@ -891,7 +813,7 @@ async def test_otherwise_retry_eventually_succeeds(worker: Worker):
         return -1
 
     async with run_worker(worker):
-        task = await flaky.enqueue(5).otherwise(fallback)
+        task = await flaky.enqueue(5).otherwise(fallback)()
         res = await task.result(5)
         assert res.success and res.result == 10
 
@@ -902,7 +824,7 @@ async def test_otherwise_fallback_fails(worker: Worker):
         raise ValueError
 
     async with run_worker(worker):
-        task = await fail.enqueue(5).otherwise(fail)
+        task = await fail.enqueue(5).otherwise(fail)()
         res = await task.result(3)
         assert not res.success
 
@@ -913,7 +835,7 @@ async def test_map(worker: Worker):
         return val * 2
 
     async with run_worker(worker):
-        task = await double.map([0, 1, 2])
+        task = await double.map([0, 1, 2])()
         res = await task.result(5)
         assert res.success and res.result == [0, 2, 4]
 
@@ -925,7 +847,7 @@ async def test_map_empty(worker: Worker):
 
     data: list[int] = []
     async with run_worker(worker):
-        task = await double.map(data)
+        task = await double.map(data)()
         res = await task.result(5)
         assert res.success and res.result == []
 
@@ -936,7 +858,7 @@ async def test_map_sync_task(worker: Worker):
         return val * 3
 
     async with run_worker(worker):
-        task = await triple.map([1, 2])
+        task = await triple.map([1, 2])()
         res = await task.result(5)
         assert res.success and res.result == [3, 6]
 
@@ -947,7 +869,7 @@ async def test_map_kwargs(worker: Worker):
         return val * factor
 
     async with run_worker(worker):
-        task = await scale.map([1, 2, 3], factor=3)
+        task = await scale.map([1, 2, 3])(factor=3)
         res = await task.result(5)
         assert res.success and res.result == [3, 6, 9]
 
@@ -958,7 +880,7 @@ async def test_map_child_fails(worker: Worker):
         raise ValueError("nope")
 
     async with run_worker(worker):
-        task = await boom.map([1, 2])
+        task = await boom.map([1, 2])()
         res = await task.result(5)
         assert not res.success
 
@@ -969,7 +891,7 @@ async def test_filter(worker: Worker):
         return val % 2 == 0
 
     async with run_worker(worker):
-        task = await is_even.filter([0, 1, 2, 3])
+        task = await is_even.filter([0, 1, 2, 3])()
         res = await task.result(5)
         assert res.success and res.result == [0, 2]
 
@@ -980,7 +902,7 @@ async def test_filter_kwargs(worker: Worker):
         return val % by == 0
 
     async with run_worker(worker):
-        task = await divisible.filter([1, 2, 3, 4, 5, 6], by=3)
+        task = await divisible.filter([1, 2, 3, 4, 5, 6])(by=3)
         res = await task.result(5)
         assert res.success and res.result == [3, 6]
 
@@ -995,7 +917,7 @@ async def test_map_then_filter(worker: Worker):
         return val > 2
 
     async with run_worker(worker):
-        task = await double.map([0, 1, 2, 3]).filter(over_two)
+        task = await double.map([0, 1, 2, 3])().filter(over_two)()
         res = await task.result(5)
         assert res.success and res.result == [4, 6]
 
@@ -1010,7 +932,7 @@ async def test_filter_then_map(worker: Worker):
         return val % 2 == 0
 
     async with run_worker(worker):
-        task = await is_even.filter([0, 1, 2, 3]).map(double)
+        task = await is_even.filter([0, 1, 2, 3])().map(double)()
         res = await task.result(5)
         assert res.success and res.result == [0, 4]
 
@@ -1025,7 +947,7 @@ async def test_map_over_set(worker: Worker):
         return val * 2
 
     async with run_worker(worker):
-        task = await uniques.enqueue().map(double)
+        task = await uniques.enqueue().map(double)()
         res = await task.result(5)
         assert res.success and sorted(res.result) == [2, 4, 6]
 
@@ -1040,7 +962,7 @@ async def test_map_over_deque(worker: Worker):
         return val * 2
 
     async with run_worker(worker):
-        task = await queued.enqueue().map(double)
+        task = await queued.enqueue().map(double)()
         res = await task.result(5)
         assert res.success and res.result == [2, 4, 6]
 
@@ -1055,6 +977,6 @@ async def test_map_over_dict_keys(worker: Worker):
         return val * 2
 
     async with run_worker(worker):
-        task = await tally.enqueue().map(double)
+        task = await tally.enqueue().map(double)()
         res = await task.result(5)
         assert res.success and sorted(res.result) == [2, 4]

@@ -44,7 +44,7 @@ redis.register_function('publish_task', function(keys, argv)
   local current_time = argv[5]
 
   -- idempotency if result exists
-  if redis.call('exists', results_key) == 1 then return 0 end
+  if redis.call('exists', results_key) == 1 then return end
   -- idempotency if payload exists
   local res
   if expire ~= '0' then
@@ -130,10 +130,37 @@ redis.register_function('schedule_cron_job', function(keys, argv)
   local task_id = argv[1]
   local score = argv[2]
   local member = argv[3]
+  local expire = argv[4]
 
   -- check if another worker already handled this
   if redis.call('zadd', cron_key, 'gt', 'ch', score, member) ~= 0 then
     redis.call('zadd', queue_key, score, task_id)
     redis.call('copy', data_key, task_key)
+    if expire ~= '0' then
+      redis.call('pexpire', task_key, expire)
+    end
   end
+end)
+
+redis.register_function('requeue_task', function(keys, argv)
+  local dead_key = keys[1]
+  local stream_key = keys[2]
+  local task_key = keys[3]
+  local previous_key = keys[4]
+  local results_key = keys[5]
+  local retry_key = keys[6]
+  local results_set = keys[7]
+
+  local task_id = argv[1]
+  local current_time = argv[2]
+
+  if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
+  if redis.call('exists', task_key) == 0 then return 0 end
+  redis.call('del', results_key, retry_key)
+  redis.call('zrem', results_set, task_id)
+  -- don't let the payload expire while it waits in the queue
+  redis.call('persist', task_key)
+  redis.call('persist', previous_key)
+  redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
+  return 1
 end)

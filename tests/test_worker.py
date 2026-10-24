@@ -189,7 +189,7 @@ async def test_reclaim_idle_task(redis_url: str):
         ) as process,
         worker2,
     ):
-        while (await task.status()) == TaskStatus.NOT_FOUND:
+        while not await task.status():
             await sleep(1)
         # kill worker abruptly to disallow cleanup
         os.kill(process.pid, signal.SIGKILL)
@@ -286,9 +286,8 @@ async def test_enqueue_many(worker: Worker[None]):
     async with worker:
         tasks = [foobar.enqueue(i) for i in range(10)]
         delayed = foobar.enqueue(1).start(delay=1)
-        depends = foobar.enqueue(1).start(after=delayed.id)
         cron = foobar.enqueue(1).start(schedule="0 0 1 1 *")
-        tasks.extend([delayed, depends, cron])
+        tasks.extend([delayed, cron])
         await worker.enqueue_many(tasks)
         assert await worker.queue_size() >= 10
 
@@ -465,7 +464,6 @@ async def test_no_grace_period(worker: Worker):
 
 
 async def test_get_tasks_by_status_scheduled(worker: Worker):
-    from datetime import timedelta
 
     @worker.task()
     async def delayed_task(x: int) -> int:
@@ -491,7 +489,6 @@ async def test_get_tasks_by_status_scheduled(worker: Worker):
 
 
 async def test_get_tasks_by_status_scheduled_with_limit(worker: Worker):
-    from datetime import timedelta
 
     @worker.task()
     async def delayed_task() -> None:
@@ -551,12 +548,6 @@ async def test_get_tasks_by_status_done(worker: Worker):
         assert result.result == 10
 
 
-async def test_get_tasks_by_status_not_found(worker: Worker):
-    async with worker:
-        with pytest.raises(StreaqError):
-            await worker.get_tasks_by_status(TaskStatus.NOT_FOUND)
-
-
 async def test_get_tasks_by_status_empty_scheduled(worker: Worker):
     async with worker:
         scheduled = await worker.get_tasks_by_status(TaskStatus.SCHEDULED)
@@ -569,34 +560,30 @@ async def test_get_tasks_by_status_empty_done(worker: Worker):
         assert completed == []
 
 
-async def test_cron_max_schedule_drift_stale(worker: Worker):
-    @worker.cron("* * * * *", max_schedule_drift=timedelta(seconds=5))
+async def test_expire_anchored_at_due_time(worker: Worker):
+    @worker.cron("* * * * *", expire=1)
     async def every_minute() -> None: ...
 
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
-        # simulate previously enqueued with old timestamp
-        task = await every_minute.enqueue().start(schedule=datetime(2022, 2, 22))
-        result = await task.result(5)
-        assert not result.success
-        assert "max schedule drift" in str(result.exception)
-        tg.cancel_scope.cancel()
-
-
-async def test_cron_max_schedule_drift_fresh(worker: Worker):
-    @worker.cron("* * * * *", max_schedule_drift=timedelta(seconds=5))
-    async def every_minute() -> None: ...
-
-    async with create_task_group() as tg:
-        await tg.start(worker.run_async)
-        # simulate previously enqueued with old timestamp
-        task = await every_minute.enqueue()
+    async with run_worker(worker):
+        task = await every_minute.enqueue().start(delay=2)
         result = await task.result(5)
         assert result.success
-        tg.cancel_scope.cancel()
 
 
-async def test_cron_no_max_schedule_drift(worker: Worker):
+async def test_expire_stale_run(worker: Worker):
+    @worker.cron("* * * * *", expire=1)
+    async def every_minute() -> None: ...
+
+    async with worker:
+        task = await every_minute.enqueue().start(delay=1)
+    await sleep(3)
+    async with run_worker(worker):
+        result = await task.result(5)
+        assert not result.success
+        assert "expired" in str(result.exception)
+
+
+async def test_cron_no_expire(worker: Worker):
     @worker.cron("* * * * *")
     async def every_minute() -> None: ...
 

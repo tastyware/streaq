@@ -4,7 +4,17 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from inspect import iscoroutinefunction
-from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, TypeAlias, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    NotRequired,
+    ParamSpec,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    cast,
+    overload,
+)
 
 from coredis.commands.function import Library, wraps
 from coredis.commands.request import CommandRequest
@@ -34,7 +44,7 @@ class StreaqError(Exception):
 
 class StreaqCancelled(StreaqError):
     """
-    A cancellation error that can be raised manually.
+    Raised when tasks are aborted.
     """
 
 
@@ -59,16 +69,37 @@ class StreaqRetry(StreaqError):
         self.schedule = schedule
 
 
-@dataclass(frozen=True, slots=True)
-class StreamMessage:
+class StreamMessage(TypedDict):
     """
-    Dataclass wrapping data stored in the Redis stream.
+    Schema for data stored in the Redis stream.
     """
 
     message_id: str
     task_id: str
     priority: str
-    enqueue_time: int
+    enqueue_time: str
+    success: NotRequired[str]
+
+
+class TaskData(TypedDict):
+    """
+    Schema for task blob stored in Redis.
+    """
+
+    #: fn_name
+    f: str
+    #: args
+    a: tuple[Any, ...]
+    #: kwargs
+    k: dict[str, Any]
+    #: enqueue_time
+    t: int
+    #: fallback
+    F: NotRequired[str]
+    #: child
+    C: NotRequired[str]
+    #: ignore parent output
+    I: NotRequired[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,4 +239,19 @@ class Streaq(Library[str]):
         task_id: str,
         score: int,
         member: str,
+        expire: int,
     ) -> CommandRequest[None]: ...
+
+    @wraps(verify_existence=False)
+    def requeue_task(
+        self,
+        dead_key: KeyT,
+        stream_key: KeyT,
+        task_key: KeyT,
+        previous_key: KeyT,
+        results_key: KeyT,
+        retry_key: KeyT,
+        results_set: KeyT,
+        task_id: str,
+        current_time: int,
+    ) -> CommandRequest[int]: ...

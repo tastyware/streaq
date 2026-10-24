@@ -2,7 +2,7 @@ import trio
 
 from streaq import Worker
 
-worker = Worker(redis_url="redis://localhost:6379", anyio_backend="trio")
+worker = Worker(redis_url="redis://localhost:6379", anyio_backend="trio", dlq_ttl=5)
 
 
 @worker.task

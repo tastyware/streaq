@@ -34,12 +34,8 @@
               <td>{{ task_try }}</td>
             </tr>
             <tr>
-              <th scope="row">Dependencies</th>
-              <td>{{ dependencies }}</td>
-            </tr>
-            <tr>
-              <th scope="row">Dependents</th>
-              <td>{{ dependents }}</td>
+              <th scope="row">Child</th>
+              <td>{{ child or "" }}</td>
             </tr>
             {% else %}
             <tr>
@@ -48,12 +44,12 @@
             </tr>
             <tr>
               <th scope="row">Result</th>
-                <td>
-                  <div class="border rounded p-2 overflow-y-auto overflow-x-auto bg-light"
-                       style="max-height: 300px; max-width: 100ch; white-space: pre;">
-                      {{- result|trim -}}
-                  </div>
-                </td>
+              <td>
+                <div class="border rounded p-2 overflow-y-auto overflow-x-auto bg-light"
+                  style="max-height: 300px; max-width: 100ch; white-space: pre;">
+                  {{- result|trim -}}
+                </div>
+              </td>
             </tr>
             <tr>
               <th scope="row">Enqueued time</th>
@@ -78,7 +74,16 @@
       {% if not is_done %}
       <button type="button" class="btn btn-danger" hx-delete="{{ base_url }}task/{{ task_id }}" hx-indicator="#spinner">
         Abort Task
-        <img id="spinner" class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg"/>
+        <img id="spinner" class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg" />
+      </button>
+      {% endif %}
+      {% if is_dead %}
+      <button type="button" class="btn btn-primary" hx-post="{{ base_url }}task/{{ task_id }}/requeue">
+        Requeue Task
+      </button>
+      <button type="button" class="btn btn-danger" hx-delete="{{ base_url }}task/{{ task_id }}/purge"
+        hx-confirm="Permanently delete task {{ task_id }}?">
+        Purge Task
       </button>
       {% endif %}
     </div>
