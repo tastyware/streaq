@@ -301,6 +301,8 @@ class Task(Generic[P, R_co]):
         return bind
 
     async def _recurse(self, lib: Streaq, pipe: Client[str], enqueue_time: int) -> None:
+        if self.parent.expire:
+            raise StreaqError("Tasks with expire can't be pipelined!")
         if self._after:
             await self._after._recurse(lib, pipe, enqueue_time)
         if self._triggers:

@@ -3,7 +3,6 @@ from datetime import datetime
 from statistics import mean
 from typing import Annotated, Any
 
-from anyio import gather
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi import status as fast_status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -131,14 +130,13 @@ async def get_task(
     ],
     task_id: str,
 ) -> Any:
-    status, info = await gather(
-        worker.status_by_id(task_id), worker.info_by_id(task_id)
-    )
+    status = await worker.status_by_id(task_id)
     if not status:
         raise HTTPException(
             status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
         )
     color, text_color = _STATUS_COLORS[status]
+    info = await worker.info_by_id(task_id) if status != TaskStatus.DEAD else None
     if info and info.status != TaskStatus.DEAD:
         function = info.fn_name
         created_time = info.created_time
