@@ -1,6 +1,6 @@
-#!lua name=streaq
+#!lua name=streaq_v7
 
-redis.register_function('create_groups', function(keys, argv)
+redis.register_function('streaq_v7_create_groups', function(keys, argv)
   local stream_key = keys[1]
   local group_name = argv[1]
 
@@ -14,7 +14,7 @@ redis.register_function('create_groups', function(keys, argv)
   end
 end)
 
-redis.register_function('fail_dependents', function(keys, argv)
+redis.register_function('streaq_v7_fail_dependents', function(keys, argv)
   local dependents_key = keys[1]
   local dependencies_key = keys[2]
 
@@ -53,7 +53,7 @@ redis.register_function('fail_dependents', function(keys, argv)
   return failed
 end)
 
-redis.register_function('publish_delayed_tasks', function(keys, argv)
+redis.register_function('streaq_v7_publish_delayed_tasks', function(keys, argv)
   local queue_key = keys[1]
   local stream_key = keys[2]
 
@@ -70,7 +70,7 @@ redis.register_function('publish_delayed_tasks', function(keys, argv)
   end
 end)
 
-redis.register_function('publish_task', function(keys, argv)
+redis.register_function('streaq_v7_publish_task', function(keys, argv)
   local stream_key = keys[1]
   local queue_key = keys[2]
   local task_key = keys[3]
@@ -119,7 +119,7 @@ redis.register_function('publish_task', function(keys, argv)
   return 1
 end)
 
-redis.register_function('read_streams', function(keys, argv)
+redis.register_function('streaq_v7_read_streams', function(keys, argv)
   local stream_key = keys[1]
 
   local group_name = argv[1]
@@ -161,7 +161,7 @@ redis.register_function('read_streams', function(keys, argv)
   return entries
 end)
 
-redis.register_function('update_dependents', function(keys, argv)
+redis.register_function('streaq_v7_update_dependents', function(keys, argv)
   local dependents_key = keys[1]
   local dependencies_key = keys[2]
 
@@ -184,7 +184,7 @@ redis.register_function('update_dependents', function(keys, argv)
   return runnable
 end)
 
-redis.register_function('refresh_timeout', function(keys, argv)
+redis.register_function('streaq_v7_refresh_timeout', function(keys, argv)
   local stream_key = keys[1]
   local running_set = keys[2]
 
@@ -201,7 +201,7 @@ redis.register_function('refresh_timeout', function(keys, argv)
   return false
 end)
 
-redis.register_function('schedule_cron_job', function(keys, argv)
+redis.register_function('streaq_v7_schedule_cron_job', function(keys, argv)
   local cron_key = keys[1]
   local queue_key = keys[2]
   local data_key = keys[3]

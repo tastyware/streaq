@@ -149,24 +149,26 @@ class Streaq(Library[str]):
     FFI stubs for Lua functions in streaq.lua.
     """
 
-    NAME = "streaq"
+    # Redis functions are global to the server, so names carry the major version
+    # to keep different streaQ versions on a shared server from clashing
+    NAME = "streaq_v7"
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_create_groups")
     def create_groups(
         self, stream_key: KeyT, group_name: str, *priorities: str
     ) -> CommandRequest[None]: ...
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_fail_dependents")
     def fail_dependents(
         self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str, skip_id: str
     ) -> CommandRequest[list[str]]: ...
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_publish_delayed_tasks")
     def publish_delayed_tasks(
         self, queue_key: KeyT, stream_key: KeyT, current_time: int
     ) -> CommandRequest[None]: ...
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_publish_task")
     def publish_task(
         self,
         stream_key: KeyT,
@@ -183,7 +185,7 @@ class Streaq(Library[str]):
         *dependencies: str,
     ) -> CommandRequest[None]: ...
 
-    @wraps(callback=ReadStreamsCallback())
+    @wraps(callback=ReadStreamsCallback(), function_name=f"{NAME}_read_streams")
     def read_streams(
         self,
         stream_key: KeyT,
@@ -194,12 +196,12 @@ class Streaq(Library[str]):
         *priorities: str,
     ) -> CommandRequest[Any]: ...
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_update_dependents")
     def update_dependents(
         self, dependents_key: KeyT, dependencies_key: KeyT, task_id: str
     ) -> CommandRequest[list[str]]: ...
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_refresh_timeout")
     def refresh_timeout(
         self,
         stream_key: KeyT,
@@ -210,7 +212,7 @@ class Streaq(Library[str]):
         task_id: str,
     ) -> CommandRequest[bool]: ...
 
-    @wraps(verify_existence=False)
+    @wraps(verify_existence=False, function_name=f"{NAME}_schedule_cron_job")
     def schedule_cron_job(
         self,
         cron_key: KeyT,

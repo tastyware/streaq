@@ -1,13 +1,15 @@
 import json
 import os
 import pickle
+import re
 import secrets
 import signal
 import sys
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -16,10 +18,13 @@ import pytest
 from anyio import TaskHandle, create_task_group, fail_after, open_process, sleep
 from coredis import ClusterConnectionPool, ConnectionPool, RedisCluster
 from coredis.connection import TCPLocation
+from coredis.exceptions import ResponseError
 
-from streaq import StreaqError, TaskStatus, Worker
+import streaq
+from streaq import VERSION, StreaqError, TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
 from streaq.task import TaskResult
+from streaq.types import Streaq
 from tests.conftest import run_worker
 
 NAME_STR = "Freddy"
@@ -607,3 +612,39 @@ async def test_cron_no_max_schedule_drift(worker: Worker):
         result = await task.result(5)
         assert result.success
         tg.cancel_scope.cancel()
+
+
+async def test_coexists_with_unversioned_library(redis_url: str):
+    worker = Worker(redis_url=redis_url, queue_name=uuid4().hex)
+
+    @worker.task()
+    async def foobar() -> bool:
+        return True
+
+    async with create_task_group() as tg:
+        await tg.start(worker.run_async)
+        # simulate an older streaQ worker on the same server loading its library
+        await worker.redis.function_load(
+            "#!lua name=streaq\n"
+            "redis.register_function('publish_delayed_tasks', function() end)",
+            replace=True,
+        )
+        try:
+            task = await foobar.enqueue().start(delay=1)
+            result = await task.result(5)
+            assert result.success
+        finally:
+            # parallel runs of this test share the stub library
+            with suppress(ResponseError):
+                await worker.redis.function_delete("streaq")
+        tg.cancel_scope.cancel()
+
+
+def test_lua_names_carry_major_version():
+    library = f"streaq_v{VERSION.split('.')[0]}"
+    assert Streaq.NAME == library
+    code = (Path(streaq.__file__).parent / "lua/streaq.lua").read_text()
+    assert code.startswith(f"#!lua name={library}\n")
+    functions = re.findall(r"register_function\('(\w+)'", code)
+    assert functions
+    assert all(name.startswith(f"{library}_") for name in functions)
