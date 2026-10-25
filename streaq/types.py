@@ -4,9 +4,11 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from inspect import iscoroutinefunction
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
+    Concatenate,
     NotRequired,
     ParamSpec,
     Protocol,
@@ -16,13 +18,15 @@ from typing import (
     overload,
 )
 
-from coredis.commands.function import Library, wraps
+from coredis.commands.function import Library, LibraryT, wraps
 from coredis.commands.request import CommandRequest
 from coredis.response._callbacks import ResponseCallback
 from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT
 from typing_extensions import TypeIs, TypeVar, TypeVarTuple
+
+from streaq.constants import VERSION
 
 if TYPE_CHECKING:
     from streaq.task import AsyncRegisteredTask, SyncRegisteredTask
@@ -176,24 +180,42 @@ class ReadStreamsCallback(
         return None
 
 
+_postfix = f"_v{VERSION.replace('.', '_')}"
+_name = "streaq" + _postfix
+_code = (Path(__file__).parent / "lua/streaq.lua").read_text()
+_code = _code.replace("', function(keys", f"{_postfix}', function(keys")
+_code = _code.replace("name=streaq", f"name={_name}")
+
+
+def ffi(
+    func: Callable[Concatenate[LibraryT, P], CommandRequest[T]],
+) -> Callable[Concatenate[LibraryT, P], CommandRequest[T]]:
+    """
+    Like coredis' ``wraps``, but maps to the versioned Lua function name.
+    """
+
+    return wraps(function_name=func.__name__ + _postfix, verify_existence=False)(func)
+
+
 class Streaq(Library[str]):
     """
     FFI stubs for Lua functions in streaq.lua.
     """
 
-    NAME = "streaq"
+    CODE = _code
+    NAME = _name
 
-    @wraps(verify_existence=False)
+    @ffi
     def create_groups(
         self, stream_key: KeyT, group_name: str, *priorities: str
     ) -> CommandRequest[None]: ...
 
-    @wraps(verify_existence=False)
+    @ffi
     def publish_delayed_tasks(
         self, queue_key: KeyT, stream_key: KeyT, current_time: int
     ) -> CommandRequest[None]: ...
 
-    @wraps(verify_existence=False)
+    @ffi
     def publish_task(
         self,
         stream_key: KeyT,
@@ -207,7 +229,7 @@ class Streaq(Library[str]):
         current_time: int,
     ) -> CommandRequest[None]: ...
 
-    @wraps(callback=ReadStreamsCallback())
+    @ffi
     def read_streams(
         self,
         stream_key: KeyT,
@@ -218,7 +240,7 @@ class Streaq(Library[str]):
         *priorities: str,
     ) -> CommandRequest[Any]: ...
 
-    @wraps(verify_existence=False)
+    @ffi
     def refresh_timeout(
         self,
         stream_key: KeyT,
@@ -229,7 +251,7 @@ class Streaq(Library[str]):
         task_id: str,
     ) -> CommandRequest[int]: ...
 
-    @wraps(verify_existence=False)
+    @ffi
     def schedule_cron_job(
         self,
         cron_key: KeyT,
@@ -242,7 +264,7 @@ class Streaq(Library[str]):
         expire: int,
     ) -> CommandRequest[None]: ...
 
-    @wraps(verify_existence=False)
+    @ffi
     def requeue_task(
         self,
         dead_key: KeyT,

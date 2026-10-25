@@ -232,7 +232,7 @@ class Task(Generic[P, R_co]):
 
         :param task: task to fall back to
         :param forward:
-            whether to replays task's args/kwargs, otherwise uses provided ones
+            whether to replay task's args/kwargs, otherwise uses provided ones
 
         :return: callable for creating a new, fallback task object
         """

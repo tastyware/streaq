@@ -408,7 +408,7 @@ You can also use the ``^`` operator as a convenience:
 
 Note that ``await`` is higher precedence than ``^`` so the parentheses are necessary!
 
-Idempotence
+Idempotency
 -----------
 
 streaQ tasks are idempotent by default, keyed on their task ID:

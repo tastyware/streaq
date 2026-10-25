@@ -17,9 +17,9 @@ from anyio import TaskHandle, create_task_group, fail_after, open_process, sleep
 from coredis import ClusterConnectionPool, ConnectionPool, RedisCluster
 from coredis.connection import TCPLocation
 
-from streaq import StreaqError, TaskStatus, Worker
+from streaq import StreaqError, StreaqRetry, TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
-from streaq.task import TaskResult
+from streaq.task import Task, TaskResult
 from tests.conftest import run_worker
 
 NAME_STR = "Freddy"
@@ -594,3 +594,289 @@ async def test_cron_no_expire(worker: Worker):
         result = await task.result(5)
         assert result.success
         tg.cancel_scope.cancel()
+
+
+async def test_dlq_parks(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def raises() -> None:
+        raise ValueError("nope")
+
+    @worker.task(timeout=1)
+    async def times_out() -> None:
+        await sleep(3)
+
+    @worker.task(max_tries=1)
+    async def retries() -> None:
+        raise StreaqRetry("again", delay=0)
+
+    async with run_worker(worker):
+        tasks = [
+            await raises.enqueue(),
+            await times_out.enqueue(),
+            await retries.enqueue(),
+            await worker.enqueue_unsafe("missing"),
+        ]
+        for task in tasks:
+            assert not (await task.result(5)).success
+            assert await task.status() == TaskStatus.DEAD
+            info = await task.info()
+            assert info and info.status == TaskStatus.DEAD
+        dead = await worker.get_tasks_by_status(TaskStatus.DEAD)
+        assert {r.task_id for r in dead} == {t.id for t in tasks}
+
+
+async def test_dlq_parks_bad_payload(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def foobar() -> None:
+        pass
+
+    # write the payload in a format the worker can't read
+    worker.serializer, worker.deserializer = json.dumps, json.loads
+    async with worker:
+        task = await foobar.enqueue()
+    worker.serializer, worker.deserializer = pickle.dumps, pickle.loads
+    async with run_worker(worker):
+        res = await task.result(5)
+        assert not res.success and isinstance(res.exception, StreaqError)
+        assert await task.status() == TaskStatus.DEAD
+
+
+async def test_dlq_doesnt_park(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task(expire=1)
+    async def expires() -> None:
+        pass
+
+    @worker.task
+    async def sleeper(time: int) -> None:
+        await sleep(time)
+
+    @worker.task
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    @worker.task
+    async def child(_: None) -> None:
+        pass
+
+    async with worker:
+        expired = await expires.enqueue()
+    await sleep(2)
+    async with run_worker(worker):
+        running = await sleeper.enqueue(5)
+        delayed = await sleeper.enqueue(0).start(delay=10)
+        parent = boom.enqueue()
+        dependent = await parent.then(child)()
+        await sleep(1)
+        assert await running.abort(3)
+        assert await delayed.abort(3)
+        tasks: list[Task[..., None]] = [expired, running, delayed, parent, dependent]
+        for task in tasks:
+            assert not (await task.result(5)).success
+            assert await task.status() == TaskStatus.DONE
+        dead = await worker.get_tasks_by_status(TaskStatus.DEAD)
+        assert not {r.task_id for r in dead} & {t.id for t in tasks}
+
+
+async def test_failed_result_kept_for_dlq_ttl(worker: Worker):
+    worker.dlq_ttl = 3
+
+    @worker.task(ttl=1)
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.enqueue()
+        await task.result(5)
+        await sleep(2)
+        assert await task.status() == TaskStatus.DEAD
+
+
+async def test_failed_result_kept_for_ttl(worker: Worker):
+    @worker.task(ttl=1)
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.enqueue()
+        assert await task.status() is not None
+        await task.result(5)
+        await sleep(2)
+        assert await task.status() is None
+
+
+async def test_dlq_ttl_none_persists(worker: Worker):
+    worker.dlq_ttl = None
+
+    @worker.task(expire=1)
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.enqueue()
+        await task.result(5)
+        # payload would have expired here without the persist
+        await sleep(2)
+        assert await task.status() == TaskStatus.DEAD
+
+
+async def test_dead_sweep(worker: Worker):
+    worker.dlq_ttl = 1
+    worker.idle_timeout = 1000
+
+    @worker.task
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.enqueue()
+        await task.result(5)
+        assert await worker.get_tasks_by_status(TaskStatus.DEAD)
+        await sleep(3)
+        # the result outlives dlq_ttl, so only the sweep can empty the listing
+        assert await task.status() == TaskStatus.DONE
+        assert await worker.get_tasks_by_status(TaskStatus.DEAD) == []
+
+
+async def test_get_tasks_by_status_dead_empty(worker: Worker):
+    worker.dlq_ttl = 60
+    async with worker:
+        assert await worker.get_tasks_by_status(TaskStatus.DEAD) == []
+
+
+async def test_requeue(worker: Worker):
+    worker.dlq_ttl = 60
+    calls: list[int] = []
+
+    @worker.task
+    async def flaky() -> int:
+        calls.append(flaky.context.tries)
+        if len(calls) == 1:
+            raise ValueError("first time")
+        return flaky.context.tries
+
+    async with run_worker(worker):
+        task = await flaky.enqueue()
+        assert not (await task.result(5)).success
+        assert await worker.requeue_by_id(task.id)
+        res = await task.result(5)
+        # retry count was reset
+        assert res.success and res.result == 1
+        assert await task.status() == TaskStatus.DONE
+
+
+async def test_requeue_concurrent(worker: Worker):
+    worker.dlq_ttl = 60
+    calls: list[int] = []
+
+    @worker.task
+    async def flaky() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("first time")
+
+    async with run_worker(worker):
+        task = await flaky.enqueue()
+        await task.result(5)
+        handles: list[TaskHandle[bool]] = []
+        async with create_task_group() as tg:
+            for _ in range(2):
+                handles.append(tg.start_soon(worker.requeue_by_id, task.id))
+        assert sorted(h.return_value for h in handles) == [False, True]
+        assert (await task.result(5)).success
+        await sleep(1)
+        assert len(calls) == 2
+
+
+async def test_requeue_chained_link_keeps_args(worker: Worker):
+    worker.dlq_ttl = 60
+    calls: list[int] = []
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def flaky_add(val: int) -> int:
+        calls.append(val)
+        if len(calls) == 1:
+            raise ValueError("first time")
+        return val + 1
+
+    async with run_worker(worker):
+        child = await double.enqueue(2).then(flaky_add)()
+        assert not (await child.result(5)).success
+        assert await worker.requeue_by_id(child.id)
+        res = await child.result(5)
+        assert res.success and res.result == 5
+        assert calls == [4, 4]
+
+
+async def test_purge(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.enqueue()
+        await task.result(5)
+        assert await worker.purge_by_id(task.id)
+        assert await task.status() is None
+        assert await worker.get_tasks_by_status(TaskStatus.DEAD) == []
+
+
+async def test_requeue_purge_not_dead(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def foobar() -> None:
+        pass
+
+    async with run_worker(worker):
+        task = await foobar.enqueue()
+        assert (await task.result(5)).success
+        for task_id in (task.id, "nonexistent"):
+            assert not await worker.requeue_by_id(task_id)
+            assert not await worker.purge_by_id(task_id)
+        assert await task.status() == TaskStatus.DONE
+
+
+async def test_abort_and_failure_counters(worker: Worker):
+    @worker.task
+    async def boom() -> None:
+        raise ValueError("nope")
+
+    @worker.task
+    async def sleeper(time: int) -> None:
+        await sleep(time)
+
+    async with run_worker(worker):
+        failed = await boom.enqueue()
+        running = await sleeper.enqueue(5)
+        delayed = await sleeper.enqueue(0).start(delay=10)
+        await failed.result(5)
+        await sleep(1)
+        assert await running.abort(3)
+        assert await delayed.abort(3)
+        assert worker.counters["failed"] == 1
+        assert worker.counters["aborted"] == 2
+
+
+async def test_enqueue_many_rejects_chains(worker: Worker):
+    @worker.task
+    async def foobar(val: int) -> int:
+        return val
+
+    async with worker:
+        root = foobar.enqueue(1)
+        tail = root.then(foobar)()
+        for task in (root, tail):
+            with pytest.RaisesGroup(StreaqError, flatten_subgroups=True):
+                await worker.enqueue_many([task])

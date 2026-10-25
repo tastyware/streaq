@@ -100,3 +100,38 @@ async def test_get_pages(worker: Worker):
             # test aborting nonexistent cron job
             res = await client.delete(f"{prefix}/cron/nonexistent")
             assert res.status_code == 404
+
+
+async def test_dead_task_routes(worker: Worker):
+    app = FastAPI()
+    prefix = "/streaq"
+    app.include_router(router, prefix=prefix)
+    app.dependency_overrides[get_worker] = lambda: worker
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def fails() -> None:
+        raise Exception("Oh no!")
+
+    async with run_worker(worker):
+        requeued = await fails.enqueue()
+        purged = await fails.enqueue()
+        await requeued.result(5)
+        await purged.result(5)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # queue page renders the DEAD card when the DLQ is on
+            res = await client.get(f"{prefix}/queue")
+            assert res.status_code == 200
+            res = await client.get(f"{prefix}/task/{requeued.id}")
+            assert res.status_code == 200
+            res = await client.post(f"{prefix}/task/{requeued.id}/requeue")
+            assert res.status_code == 200
+            res = await client.delete(f"{prefix}/task/{purged.id}/purge")
+            assert res.status_code == 200
+            # no longer dead
+            res = await client.post(f"{prefix}/task/{purged.id}/requeue")
+            assert res.status_code == 404
+            res = await client.delete(f"{prefix}/task/{purged.id}/purge")
+            assert res.status_code == 404

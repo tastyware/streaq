@@ -20,7 +20,6 @@ from anyio import (
     AsyncContextManagerMixin,
     CancelScope,
     CapacityLimiter,
-    Path,
     TaskHandle,
     create_memory_object_stream,
     create_task_group,
@@ -69,6 +68,7 @@ from streaq.constants import (
     REDIS_TASK,
     UTILITIES_FILTER,
     UTILITIES_MAP,
+    VERSION,
 )
 from streaq.task import (
     AsyncRegisteredTask,
@@ -89,6 +89,7 @@ from streaq.types import (
     Middleware,
     P,
     R_co,
+    ReadStreamsCallback,
     StreamMessage,
     Streaq,
     StreaqCancelled,
@@ -268,10 +269,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._count = 0
         self._stream_empty = False
         # precalculate Redis prefixes
-        from streaq import _MAJOR_VERSION
-
-        # include major version in queue name to prevent clashes
-        self._prefix = REDIS_PREFIX + f"v{_MAJOR_VERSION}:" + self.queue_name
+        major_version = VERSION.split(".")[0]
+        self._prefix = REDIS_PREFIX + f"v{major_version}:" + self.queue_name
         self._cron_data_key = self._prefix + REDIS_CRON + "data:"
         self._cron_registry_key = self._prefix + REDIS_CRON + "jobs"
         self._cron_schedule_key = self._prefix + REDIS_CRON + "schedule"
@@ -343,8 +342,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             await stack.enter_async_context(self._redis.__asynccontextmanager__())
             logger.debug(f"Redis connection established in worker {self.id}")
             # register lua scripts from library
-            text = await (Path(__file__).parent / "lua/streaq.lua").read_text()
-            self._lib = await Streaq(self._redis, code=text, replace=True)
+            if not await self._redis.function_list(Streaq.NAME):
+                await self._redis.function_load(Streaq.CODE, replace=True)  # type: ignore
+            self._lib = Streaq(self._redis)
             # check if new XREADGROUP arguments are supported
             await self._check_xreadgroup_compatibility()
             self._cancelled_class = get_cancelled_exc_class()
@@ -706,7 +706,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             count,
             self.idle_timeout,
             *self.priorities,
-        )
+        ).transform(ReadStreamsCallback())
 
     async def _read_streams_max_count(
         self, count: int, block: bool = False
@@ -877,7 +877,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 pipe.set(self._results_key + task_id, raw, px=keep)
                 pipe.zadd(self._results_set, {task_id: now + (keep or to_ms(1e11))})
             keys = [self._task_key + task_id, self._previous_key + task_id]
-            if park and self.dlq_ttl != 0:
+            # don't park tasks with dependencies
+            if park and not child and self.dlq_ttl != 0:
                 pipe.zadd(
                     self._dead_key + msg["priority"],
                     {task_id: now + to_ms(self.dlq_ttl or 1e11)},
@@ -1521,7 +1522,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             dt = None
             if await result:
                 status = TaskStatus.DEAD
-            elif running:
+            elif await running:
                 status = TaskStatus.RUNNING
             else:
                 status = TaskStatus.QUEUED
