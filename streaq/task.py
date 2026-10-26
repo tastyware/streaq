@@ -50,12 +50,14 @@ class TaskStatus(StrEnum):
     DONE = "done"
     #: task is in dead letter queue
     DEAD = "dead"
+    #: task is waiting on its parent
+    DEPENDS = "depends"
 
 
 @dataclass(frozen=True)
 class TaskInfo:
     """
-    Dataclass with information about an unfinished task (running or enqueued).
+    Dataclass with information about an unfinished or dead task.
     """
 
     task_id: str
@@ -136,6 +138,8 @@ class Task(Generic[P, R_co]):
         """
         Configure the task to modify schedule, queue, or ID.
 
+        Only the first task of a chain can be configured.
+
         :param delay: duration to wait before running the task
         :param schedule:
             datetime at which to run the task, or crontab for repeated scheduling,
@@ -187,7 +191,7 @@ class Task(Generic[P, R_co]):
 
         :param task: task to run afterwards
         :param forward:
-            whether to forward task's result, prepending it to the next one's args
+            whether to pass this task's result as the next one's first argument
 
         :return: callable for creating a new, dependent task object
         """
@@ -257,7 +261,8 @@ class Task(Generic[P, R_co]):
         | SyncRegisteredTask[Concatenate[T, POther], ROther],
     ) -> Callable[POther, Task[[Collection[T]], list[ROther]]]:
         """
-        Run the given task on each item of this task's output in parallel.
+        Run the given task on each item of this task's output in parallel. Additional
+        arguments are duplicated per call.
 
         :param task: task to run for each item
 
@@ -310,9 +315,10 @@ class Task(Generic[P, R_co]):
         data = await self.serialize(enqueue_time)
         if self._after:
             pipe.set(self.worker._task_key + self.id, data, condition=PureToken.NX)
+            pipe.sadd(self.worker._depends_set, [self.id])
         else:
             if isinstance(self.schedule, str):
-                raise StreaqError("Cron tasks can't be chained!")
+                raise StreaqError("Cron tasks can't be pipelined!")
             self.worker._publish_task(pipe, self, data, enqueue_time, lib=lib)
 
     async def _chain(self) -> Task[P, R_co]:
@@ -353,6 +359,8 @@ class Task(Generic[P, R_co]):
                 data["F"] = self._after.id
             if self._triggers:
                 data["C"] = self._triggers.id
+            if self._fails_over:
+                data["O"] = 1
             if self._ignores_output:
                 data["I"] = 1
             return await self.worker.serialize(data)
@@ -452,7 +460,8 @@ class PipelineMixin(RegisteredTask, Generic[P, R_co]):
         self: PipelineMixin[Concatenate[T, POther], R_co], data: Iterable[T]
     ) -> Callable[POther, Task[[Collection[T]], list[R_co]]]:
         """
-        Run this task on each item of this task's output in parallel.
+        Run this task on each item given in parallel. Additional arguments are
+        duplicated per call.
 
         :param data: items to run tasks on and aggregate
 

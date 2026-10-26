@@ -660,27 +660,89 @@ async def test_dlq_doesnt_park(worker: Worker):
     async def boom() -> None:
         raise ValueError("nope")
 
-    @worker.task
-    async def child(_: None) -> None:
-        pass
-
     async with worker:
         expired = await expires.enqueue()
     await sleep(2)
     async with run_worker(worker):
         running = await sleeper.enqueue(5)
         delayed = await sleeper.enqueue(0).start(delay=10)
-        parent = boom.enqueue()
-        dependent = await parent.then(child)()
+        fails = boom.enqueue()
+        fallback = await fails.otherwise(sleeper, forward=False)(0)
         await sleep(1)
         assert await running.abort(3)
         assert await delayed.abort(3)
-        tasks: list[Task[..., None]] = [expired, running, delayed, parent, dependent]
+        assert (await fallback.result(5)).success
+        tasks: list[Task[..., None]] = [expired, running, delayed, fails]
         for task in tasks:
             assert not (await task.result(5)).success
             assert await task.status() == TaskStatus.DONE
         dead = await worker.get_tasks_by_status(TaskStatus.DEAD)
         assert not {r.task_id for r in dead} & {t.id for t in tasks}
+
+
+async def test_dlq_holds_child(worker: Worker):
+    worker.dlq_ttl = 60
+    calls: list[int] = []
+
+    @worker.task
+    async def flaky() -> int:
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("nope")
+        return 1
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        parent = flaky.enqueue()
+        child = await parent.then(double)()
+        await parent.result(5)
+        assert await parent.status() == TaskStatus.DEAD
+        assert await child.status() == TaskStatus.DEPENDS
+        # requeueing the parent resumes the chain
+        assert await worker.requeue_by_id(parent.id)
+        assert (await child.result(5)).result == 2
+
+
+async def test_dlq_purge_fails_child(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def boom() -> int:
+        raise ValueError("nope")
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        parent = boom.enqueue()
+        child = await parent.then(double)()
+        await parent.result(5)
+        assert await worker.purge_by_id(parent.id)
+        res = await child.result(5)
+        assert not res.success and "Dependency failed" in str(res.exception)
+
+
+async def test_dlq_sweep_fails_child(worker: Worker):
+    worker.dlq_ttl = 1
+    worker.idle_timeout = 1000
+
+    @worker.task
+    async def boom() -> int:
+        raise ValueError("nope")
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        parent = boom.enqueue()
+        child = await parent.then(double)()
+        res = await child.result(5)
+        assert not res.success and "Dependency failed" in str(res.exception)
 
 
 async def test_failed_result_kept_for_dlq_ttl(worker: Worker):

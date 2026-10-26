@@ -23,6 +23,7 @@ _STATUS_COLORS: dict[TaskStatus, tuple[str, str]] = {
     TaskStatus.SCHEDULED: ("secondary", "light"),
     TaskStatus.QUEUED: ("info", "dark"),
     TaskStatus.DEAD: ("dark", "light"),
+    TaskStatus.DEPENDS: ("light", "dark"),
 }
 
 
@@ -46,6 +47,7 @@ async def _get_context(
         streams = [pipe.xlen(worker._stream_key + p) for p in worker.priorities]
         _dead = [pipe.zcard(worker._dead_key + p) for p in worker.priorities]
         _running = pipe.scard(worker._running_set)
+        _depends = pipe.scard(worker._depends_set)
         results = pipe.zcard(worker._results_set)
     running, dead = await _running, sum([await d for d in _dead])
     color, text_color = _STATUS_COLORS[status]
@@ -75,6 +77,7 @@ async def _get_context(
         "running": running,
         "done": max(0, await results - dead),
         "dead": dead,
+        "depends": await _depends,
         "dlq": worker.dlq_ttl != 0,
         "is_dead": status == TaskStatus.DEAD,
         "is_abortable": status
@@ -301,8 +304,7 @@ async def requeue_task(
 ) -> None:
     if not await worker.requeue_by_id(task_id):
         raise HTTPException(
-            status_code=fast_status.HTTP_409_CONFLICT,
-            detail="Timed out requeuing dead task!",
+            status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
         )
     if redirect:
         url = request.url_for("get_task", task_id=task_id).path
@@ -319,8 +321,7 @@ async def purge_task(
 ) -> None:
     if not await worker.purge_by_id(task_id):
         raise HTTPException(
-            status_code=fast_status.HTTP_409_CONFLICT,
-            detail="Timed out purging task from DLQ!",
+            status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
         )
     if redirect:
         response.headers["HX-Redirect"] = request.url_for("get_tasks").path

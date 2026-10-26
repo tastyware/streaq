@@ -8,8 +8,25 @@ from fastapi.templating import Jinja2Templates
 
 from streaq import Worker
 
+
+def humanize(count: int) -> str:
+    """
+    Shorten large counts for display, eg 1234567890 -> 1.235B.
+    """
+    if count < 1000:
+        return str(count)
+    value = float(count)
+    for unit in ("K", "M", "B"):
+        value /= 1000
+        # check after rounding, so 999999999 shows as 1.000B instead of 1000.000M
+        if round(value, 3) < 1000:
+            return f"{value:.3f}{unit}"
+    return f"{value / 1000:.3f}T"
+
+
 BASE_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(BASE_DIR))
+templates.env.filters["humanize"] = humanize
 
 
 def get_worker() -> Worker[Any]:

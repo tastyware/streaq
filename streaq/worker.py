@@ -55,6 +55,7 @@ from streaq.constants import (
     REDIS_CHANNEL,
     REDIS_CRON,
     REDIS_DEAD,
+    REDIS_DEPENDS_SET,
     REDIS_GROUP,
     REDIS_HEALTH,
     REDIS_PREFIX,
@@ -285,6 +286,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         self._results_set = self._prefix + REDIS_RESULTS_SET
         self._retry_key = self._prefix + REDIS_RETRY
         self._running_set = self._prefix + REDIS_RUNNING_SET
+        self._depends_set = self._prefix + REDIS_DEPENDS_SET
         self._supports_max_count = False
         self._streams = {self._stream_key + p: ">" for p in self.priorities}
         self._filter: AsyncRegisteredTask[..., list[Any]] = AsyncRegisteredTask(
@@ -402,6 +404,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         :param expire:
             maximum amount of seconds a task may drift from its scheduled execution
             time. If None, no check is performed.
+        :param expire:
+            time beyond scheduled run time at which to dequeue the task, if None will
+            never be dequeued. Not compatible with strong idempotency guarantees or
+            dead-letter queue.
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the cron job instead of the function name
@@ -492,7 +498,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :param expire:
             time after which to dequeue the task, if None will never be dequeued. Not
-            compatible with strong idempotency guarantees.
+            compatible with strong idempotency guarantees, dead-letter queue, or
+            pipelined dependencies.
         :param max_tries:
             number of times to retry the task should it fail during execution
         :param name: use a custom name for the task instead of the function name
@@ -684,8 +691,25 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                                 tasks,
                                 justid=True,
                             )
-                    for priority in self.priorities:
-                        pipe.zremrangebyscore(self._dead_key + priority, 0, now)
+                    expired = [
+                        pipe.zrange(
+                            self._dead_key + p, 0, now, sortby=PureToken.BYSCORE
+                        )
+                        for p in self.priorities
+                    ]
+                # expired dead tasks fail the children they were holding back
+                async with self.redis.pipeline(transaction=False) as pipe:
+                    lib = Streaq(pipe)
+                    for priority, ids in zip(self.priorities, expired):
+                        for task_id in await ids:
+                            lib.purge_task(
+                                self._dead_key + priority,
+                                self._stream_key + priority,
+                                self._depends_set,
+                                task_id,
+                                uuid5(NAMESPACE_OID, task_id).hex,
+                                now,
+                            )
                 await sleep(timeout)
 
     async def _read_streams_legacy(
@@ -841,6 +865,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         args: tuple[Any, ...] | None = None,
         reason: str = "failed",
         park: bool = True,
+        fails_over: bool = False,
     ) -> None:
         """
         Serialize a failed task with metadata and handle failure.
@@ -861,6 +886,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         raw = await self.serialize(data)
         previous = await self.serialize(args) if child and args is not None else None
         self.counters[reason] += 1
+        # fallbacks handle the failure, so there's nothing to park
+        park = park and self.dlq_ttl != 0 and not fails_over
 
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.delete([self._retry_key + task_id])
@@ -877,8 +904,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 pipe.set(self._results_key + task_id, raw, px=keep)
                 pipe.zadd(self._results_set, {task_id: now + (keep or to_ms(1e11))})
             keys = [self._task_key + task_id, self._previous_key + task_id]
-            # don't park tasks with dependencies
-            if park and not child and self.dlq_ttl != 0:
+            if park:
                 pipe.zadd(
                     self._dead_key + msg["priority"],
                     {task_id: now + to_ms(self.dlq_ttl or 1e11)},
@@ -891,10 +917,12 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             else:
                 pipe.delete(keys)
 
-            if child:
+            # a parked task holds back its child until it's requeued or purged
+            if child and not park:
                 logger.info(f"↳ dependent {child} triggered")
                 if previous is not None:
                     pipe.set(self._previous_key + child, previous)
+                pipe.srem(self._depends_set, [child])
                 pipe.xadd(
                     self._stream_key + msg["priority"],
                     {"task_id": child, "enqueue_time": now, "success": 0},
@@ -916,6 +944,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         tries: int,
         child: str | None,
         args: tuple[Any, ...] | None,
+        fails_over: bool = False,
     ) -> None:
         """
         Cleanup for a task that executed successfully or will be retried.
@@ -937,6 +966,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                     args=args,
                     reason="aborted" if aborted else "failed",
                     park=not aborted,
+                    fails_over=fails_over,
                 )
             data = {
                 "f": fn_name,
@@ -976,6 +1006,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                         self._previous_key + child,
                         await self.serialize((return_value,)),
                     )
+                    pipe.srem(self._depends_set, [child])
                     pipe.xadd(
                         stream_key,
                         {"task_id": child, "enqueue_time": now, "success": 1},
@@ -1047,6 +1078,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return await self.fail_task(msg, e, task_try, 0)
 
         child = data.get("C")
+        fails_over = bool(data.get("O"))
         if previous is None or data.get("I"):
             args = data["a"]
         else:
@@ -1062,6 +1094,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 fn_name=data["f"],
                 child=child,
                 args=args,
+                fails_over=fails_over,
             )
 
         if await abort:
@@ -1093,6 +1126,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 ttl=task.ttl,
                 child=child,
                 args=args,
+                fails_over=fails_over,
             )
 
         fallback = data.get("F")
@@ -1233,6 +1267,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 tries=task_try,
                 child=child,
                 args=args,
+                fails_over=fails_over,
             )
 
     def enqueue_unsafe(
@@ -1264,7 +1299,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Enqueue multiple tasks for immediate execution.
 
         This uses a Redis pipeline, so it's more efficient than awaiting each
-        individual task.
+        individual task. Pipelined tasks aren't supported.
 
         :param tasks: sequence of task objects to enqueue
 
@@ -1401,6 +1436,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             ]
             done = pipe.exists([self._results_key + task_id])
             running = pipe.sismember(self._running_set, task_id)
+            depends = pipe.sismember(self._depends_set, task_id)
             data = pipe.strlen(self._task_key + task_id)
 
         _len = await data
@@ -1411,6 +1447,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         score = any([await d for d in delayed])
         if score:
             return TaskStatus.SCHEDULED
+        elif await depends:
+            return TaskStatus.DEPENDS
         elif _len:
             return TaskStatus.QUEUED
 
@@ -1496,7 +1534,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         :param task_id: ID of the task to get info for
 
-        :return: task info, unless task has finished or doesn't exist
+        :return: task info, or None if task has finished or doesn't exist
         """
         async with self.redis.pipeline(transaction=False) as pipe:
             delayed = [
@@ -1509,6 +1547,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             )
             try_count = pipe.get(self._retry_key + task_id)
             running = pipe.sismember(self._running_set, task_id)
+            depends = pipe.sismember(self._depends_set, task_id)
         raw, previous = await payloads
         if not raw:
             return None
@@ -1524,6 +1563,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 status = TaskStatus.DEAD
             elif await running:
                 status = TaskStatus.RUNNING
+            elif await depends:
+                status = TaskStatus.DEPENDS
             else:
                 status = TaskStatus.QUEUED
         return TaskInfo(
@@ -1581,7 +1622,8 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     async def purge_by_id(self, task_id: str) -> bool:
         """
-        Remove a task from the dead-letter queue, deleting its data and result.
+        Remove a task from the dead-letter queue, deleting its data and result. If it
+        was holding back a dependent task, that task fails.
 
         :param task_id: ID of the dead task to purge
 
@@ -1589,21 +1631,29 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         """
         async with self.redis.pipeline(transaction=False) as pipe:
             scores = [pipe.zscore(self._dead_key + p, task_id) for p in self.priorities]
-        if all([await s is None for s in scores]):
-            return False
-        async with self.redis.pipeline(transaction=True) as pipe:
-            for p in self.priorities:
-                pipe.zrem(self._dead_key + p, [task_id])
-            pipe.zrem(self._results_set, [task_id])
-            pipe.delete(
-                [
-                    self._results_key + task_id,
-                    self._task_key + task_id,
-                    self._previous_key + task_id,
-                    self._retry_key + task_id,
-                ]
-            )
-        return True
+        for priority, score in zip(self.priorities, scores):
+            if await score is not None:
+                purged = await self._lib.purge_task(
+                    self._dead_key + priority,
+                    self._stream_key + priority,
+                    self._depends_set,
+                    task_id,
+                    uuid5(NAMESPACE_OID, task_id).hex,
+                    now_ms(),
+                )
+                if purged:
+                    async with self.redis.pipeline(transaction=True) as pipe:
+                        pipe.zrem(self._results_set, [task_id])
+                        pipe.delete(
+                            [
+                                self._results_key + task_id,
+                                self._task_key + task_id,
+                                self._previous_key + task_id,
+                                self._retry_key + task_id,
+                            ]
+                        )
+                return bool(purged)
+        return False
 
     @overload
     async def get_tasks_by_status(
@@ -1617,7 +1667,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     @overload
     async def get_tasks_by_status(
         self,
-        status: Literal[TaskStatus.RUNNING],
+        status: Literal[TaskStatus.RUNNING, TaskStatus.DEPENDS],
         *,
         limit: int = ...,
     ) -> list[TaskInfo]: ...
@@ -1638,14 +1688,6 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         limit: int = ...,
         priority: str | None = ...,
     ) -> list[TaskResult[Any]]: ...
-
-    @overload
-    async def get_tasks_by_status(
-        self,
-        status: TaskStatus,
-        *,
-        limit: int = ...,
-    ) -> list[TaskInfo] | list[TaskResult[Any]]: ...
 
     async def get_tasks_by_status(
         self,
@@ -1669,6 +1711,9 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             return await self._get_queued_tasks(priority, limit)
         elif status == TaskStatus.RUNNING:
             return await self._get_running_tasks(limit)
+        elif status == TaskStatus.DEPENDS:
+            task_ids = list(await self.redis.smembers(self._depends_set))[:limit]
+            return await self._get_info_for_ids(status, task_ids)
         elif status == TaskStatus.DEAD:
             return await self._get_dead_tasks(priority, limit)
         return await self._get_completed_tasks(limit)

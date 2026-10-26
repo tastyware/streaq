@@ -164,3 +164,20 @@ redis.register_function('requeue_task', function(keys, argv)
   redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
   return 1
 end)
+
+redis.register_function('purge_task', function(keys, argv)
+  local dead_key = keys[1]
+  local stream_key = keys[2]
+  local depends_set = keys[3]
+
+  local task_id = argv[1]
+  local child_id = argv[2]
+  local current_time = argv[3]
+
+  if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
+  -- a parked task holds back its child, so fail it now
+  if redis.call('srem', depends_set, child_id) == 1 then
+    redis.call('xadd', stream_key, '*', 'task_id', child_id, 'enqueue_time', current_time, 'success', 0)
+  end
+  return 1
+end)

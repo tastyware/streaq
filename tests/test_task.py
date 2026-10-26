@@ -235,7 +235,7 @@ async def test_task_dependency(worker: Worker):
     async with run_worker(worker):
         task = foobar.enqueue().start(delay=1)
         task2 = await task.then(double)()
-        assert await task2.status() == TaskStatus.QUEUED
+        assert await task2.status() == TaskStatus.DEPENDS
         await task.result(3)
         result = await task2.result(3)
         assert result.success
@@ -1116,8 +1116,22 @@ async def test_cron_chain_raises(worker: Worker):
         return val * 2
 
     async with worker:
-        with pytest.raises(StreaqError, match="can't be chained"):
+        with pytest.raises(StreaqError, match="can't be pipelined"):
             await cronjob.enqueue().start(schedule="* * * * *").then(double)()
+
+
+async def test_expire_chain_raises(worker: Worker):
+    @worker.task(expire=1)
+    async def expires() -> int:
+        return 1
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with worker:
+        with pytest.raises(StreaqError, match="expire"):
+            await expires.enqueue().then(double)()
 
 
 async def test_registered_map_extra_args(worker: Worker):
@@ -1258,3 +1272,19 @@ async def test_info_queued(worker: Worker):
         task = await foobar.enqueue()
         info = await task.info()
         assert info and info.status == TaskStatus.QUEUED
+
+
+async def test_depends_status(worker: Worker):
+    @worker.task
+    async def sleeper(time: int) -> int:
+        await sleep(time)
+        return time
+
+    async with run_worker(worker):
+        child = await sleeper.enqueue(1).then(sleeper)()
+        assert await child.status() == TaskStatus.DEPENDS
+        info = await child.info()
+        assert info and info.status == TaskStatus.DEPENDS
+        waiting = await worker.get_tasks_by_status(TaskStatus.DEPENDS)
+        assert child.id in {t.task_id for t in waiting}
+        assert (await child.result(5)).result == 1

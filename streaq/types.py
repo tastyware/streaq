@@ -101,6 +101,8 @@ class TaskData(TypedDict):
     F: NotRequired[str]
     #: child
     C: NotRequired[str]
+    #: child is a fallback
+    O: NotRequired[int]
     #: ignore parent output
     I: NotRequired[int]
 
@@ -274,5 +276,16 @@ class Streaq(Library[str]):
         retry_key: KeyT,
         results_set: KeyT,
         task_id: str,
+        current_time: int,
+    ) -> CommandRequest[int]: ...
+
+    @ffi
+    def purge_task(
+        self,
+        dead_key: KeyT,
+        stream_key: KeyT,
+        depends_set: KeyT,
+        task_id: str,
+        child_id: str,
         current_time: int,
     ) -> CommandRequest[int]: ...
