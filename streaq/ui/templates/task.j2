@@ -71,19 +71,28 @@
           </tbody>
         </table>
       </div>
+      <style>
+        /* while a request is in flight, swap the label for the bars, keeping the width */
+        .btn { position: relative; }
+        .btn .htmx-indicator { display: none; position: absolute; inset: 0; margin: auto; height: 1.25em; }
+        .btn.htmx-request .htmx-indicator { display: block; }
+        .btn.htmx-request .label { visibility: hidden; }
+      </style>
       {% if not is_done %}
-      <button type="button" class="btn btn-danger" hx-delete="{{ base_url }}task/{{ task_id }}" hx-indicator="#spinner">
-        Abort Task
-        <img id="spinner" class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg" />
+      <button type="button" class="btn btn-danger" hx-delete="{{ base_url }}task/{{ task_id }}">
+        <span class="label">Abort Task</span>
+        <img class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg" />
       </button>
       {% endif %}
       {% if is_dead %}
       <button type="button" class="btn btn-primary" hx-post="{{ base_url }}task/{{ task_id }}/requeue">
-        Requeue Task
+        <span class="label">Requeue Task</span>
+        <img class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg" />
       </button>
       <button type="button" class="btn btn-danger" hx-delete="{{ base_url }}task/{{ task_id }}/purge"
         hx-confirm="Permanently delete task {{ task_id }}?">
-        Purge Task
+        <span class="label">Purge Task</span>
+        <img class="htmx-indicator" src="https://www.tastyware.dev/static/bars.svg" />
       </button>
       {% endif %}
     </div>

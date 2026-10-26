@@ -83,9 +83,21 @@ async def test_get_pages(worker: Worker):
                 )
             assert all(h.return_value.status_code == 200 for h in handles)
             # test aborting a task manually, redirect, and bad ID
-            res = await client.delete(f"{prefix}/task/{scheduled.id}")
+            res = await client.delete(f"{prefix}/task/{running.id}")
             assert res.status_code == 200
             assert res.headers["HX-Redirect"] == f"{prefix}/queue"
+            # abortable listings have a row action, which doesn't redirect
+            res = await client.patch(
+                f"{prefix}/queue",
+                data={"functions": [sleeper.fn_name], "status": "queued"},
+            )
+            assert f"task/{queued.id}?redirect=false" in res.text
+            res = await client.delete(f"{prefix}/task/{queued.id}?redirect=false")
+            assert res.status_code == 200
+            assert "HX-Redirect" not in res.headers
+            # finished tasks can't be aborted
+            res = await client.delete(f"{prefix}/task/{done.id}")
+            assert res.status_code == 409
             res = await client.get(f"{prefix}/task/nonexistent")
             assert res.status_code == 404
             # test getting workers page
@@ -116,14 +128,24 @@ async def test_dead_task_routes(worker: Worker):
     async with run_worker(worker):
         requeued = await fails.enqueue()
         purged = await fails.enqueue()
+        listed = await fails.enqueue()
         await requeued.result(5)
         await purged.result(5)
+        await listed.result(5)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             # queue page renders the DEAD card when the DLQ is on
             res = await client.get(f"{prefix}/queue")
             assert res.status_code == 200
+            # dead listing has row actions, which don't redirect
+            res = await client.patch(
+                f"{prefix}/queue", data={"functions": [fails.fn_name], "status": "dead"}
+            )
+            assert "requeue?redirect=false" in res.text
+            res = await client.post(f"{prefix}/task/{listed.id}/requeue?redirect=false")
+            assert res.status_code == 200
+            assert "HX-Redirect" not in res.headers
             res = await client.get(f"{prefix}/task/{requeued.id}")
             assert res.status_code == 200
             res = await client.post(f"{prefix}/task/{requeued.id}/requeue")

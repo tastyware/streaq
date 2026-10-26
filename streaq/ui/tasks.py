@@ -76,6 +76,9 @@ async def _get_context(
         "done": max(0, await results - dead),
         "dead": dead,
         "dlq": worker.dlq_ttl != 0,
+        "is_dead": status == TaskStatus.DEAD,
+        "is_abortable": status
+        in (TaskStatus.SCHEDULED, TaskStatus.QUEUED, TaskStatus.RUNNING),
     }
 
 
@@ -199,9 +202,14 @@ async def abort_task(
     response: Response,
     worker: Annotated[Worker[Any], Depends(get_worker)],
     task_id: str,
+    redirect: bool = True,
 ) -> None:
-    await worker.abort_by_id(task_id, timeout=3)
-    response.headers["HX-Redirect"] = request.url_for("get_tasks").path
+    if not await worker.abort_by_id(task_id, timeout=3):
+        raise HTTPException(
+            status_code=fast_status.HTTP_409_CONFLICT, detail="Timed out aborting task!"
+        )
+    if redirect:
+        response.headers["HX-Redirect"] = request.url_for("get_tasks").path
 
 
 @router.get("/workers", response_class=HTMLResponse)
@@ -289,12 +297,16 @@ async def requeue_task(
     response: Response,
     worker: Annotated[Worker[Any], Depends(get_worker)],
     task_id: str,
+    redirect: bool = True,
 ) -> None:
     if not await worker.requeue_by_id(task_id):
         raise HTTPException(
-            status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
+            status_code=fast_status.HTTP_409_CONFLICT,
+            detail="Timed out requeuing dead task!",
         )
-    response.headers["HX-Redirect"] = request.url_for("get_task", task_id=task_id).path
+    if redirect:
+        url = request.url_for("get_task", task_id=task_id).path
+        response.headers["HX-Redirect"] = url
 
 
 @router.delete("/task/{task_id}/purge")
@@ -303,9 +315,12 @@ async def purge_task(
     response: Response,
     worker: Annotated[Worker[Any], Depends(get_worker)],
     task_id: str,
+    redirect: bool = True,
 ) -> None:
     if not await worker.purge_by_id(task_id):
         raise HTTPException(
-            status_code=fast_status.HTTP_404_NOT_FOUND, detail="Task not found!"
+            status_code=fast_status.HTTP_409_CONFLICT,
+            detail="Timed out purging task from DLQ!",
         )
-    response.headers["HX-Redirect"] = request.url_for("get_tasks").path
+    if redirect:
+        response.headers["HX-Redirect"] = request.url_for("get_tasks").path

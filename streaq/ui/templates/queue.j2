@@ -3,6 +3,24 @@
 {% block queue %}active{% endblock %}
 
 {% block content %}
+<style>
+  .htmx-request>svg {
+    display: none;
+  }
+
+  /* while filtering, swap the task table for the bars */
+  #tasks-spinner {
+    display: none;
+  }
+
+  #tasks-wrap.htmx-request #tasks {
+    display: none;
+  }
+
+  #tasks-wrap.htmx-request #tasks-spinner {
+    display: block;
+  }
+</style>
 <div class="container">
   <div class="row mb-3 mt-3">
     <div class="col">
@@ -122,7 +140,8 @@
     <div class="col-12">
       <div class="card shadow">
         <div class="card-body">
-          <form hx-patch="{{ base_url }}queue" hx-trigger="change" hx-target="#tasks">
+          <form hx-patch="{{ base_url }}queue" hx-trigger="change" hx-target="#tasks" hx-swap="outerHTML"
+            hx-indicator="#tasks-wrap">
             <div class="row mb-3" style="max-height: 100%">
               <div class="col-6">
                 <h3 class="card-title">Tasks</h3>
@@ -148,32 +167,18 @@
                   <option value="queued">QUEUED</option>
                   <option value="running">RUNNING</option>
                   <option selected value="done">DONE</option>
+                  {% if dlq %}
                   <option value="dead">DEAD</option>
+                  {% endif %}
                 </select>
               </div>
             </div>
           </form>
-          <table class="table table-sm table-striped table-hover" id="tasks">
-            <thead>
-              <tr>
-                <th scope="col">Updated time</th>
-                <th scope="col">Function name</th>
-                <th scope="col">Status</th>
-                <th scope="col">Task ID</th>
-              </tr>
-            </thead>
-            <tbody class="font-monospace">
-              {% for task in tasks %}
-              <tr>
-                <td>{{ task.enqueue_time }}</td>
-                <td>{{ task.fn_name }}</td>
-                <td><span class="badge bg-{{ task.color }} text-uppercase text-{{ task.text_color }}">{{
-                    task.status.value }}</span></td>
-                <td><a href="{{ task.url }}">{{ task.task_id }}</a></td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+          <div id="tasks-wrap">
+            {% include "table.j2" %}
+            <img id="tasks-spinner" class="htmx-indicator mx-auto my-5"
+              src="https://www.tastyware.dev/static/bars.svg" height="48" />
+          </div>
         </div>
       </div>
     </div>

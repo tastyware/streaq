@@ -17,6 +17,7 @@ from typing import (
     cast,
     overload,
 )
+from uuid import NAMESPACE_OID, uuid5
 
 from coredis.commands.function import Library, LibraryT, wraps
 from coredis.commands.request import CommandRequest
@@ -25,8 +26,6 @@ from coredis.response._utils import flat_pairs_to_ordered_dict
 from coredis.response.types import StreamEntry
 from coredis.typing import KeyT
 from typing_extensions import TypeIs, TypeVar, TypeVarTuple
-
-from streaq.constants import VERSION
 
 if TYPE_CHECKING:
     from streaq.task import AsyncRegisteredTask, SyncRegisteredTask
@@ -180,11 +179,11 @@ class ReadStreamsCallback(
         return None
 
 
-_postfix = f"_v{VERSION.replace('.', '_')}"
-_name = "streaq" + _postfix
 _code = (Path(__file__).parent / "lua/streaq.lua").read_text()
-_code = _code.replace("', function(keys", f"{_postfix}', function(keys")
+_postfix = "_" + uuid5(NAMESPACE_OID, _code).hex[:8]
+_name = "streaq" + _postfix
 _code = _code.replace("name=streaq", f"name={_name}")
+_code = _code.replace("', function(keys", f"{_postfix}', function(keys")
 
 
 def ffi(

@@ -341,7 +341,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
                 )
             await stack.enter_async_context(self._redis.__asynccontextmanager__())
             logger.debug(f"Redis connection established in worker {self.id}")
-            # register lua scripts from library
+            # register lua scripts from library if not present
             if not await self._redis.function_list(Streaq.NAME):
                 await self._redis.function_load(Streaq.CODE, replace=True)  # type: ignore
             self._lib = Streaq(self._redis)
@@ -1766,6 +1766,19 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
     async def _get_completed_tasks(self, limit: int = 100) -> list[TaskResult[Any]]:
         task_ids = await self.redis.zrange(self._results_set, 0, limit - 1, rev=True)
+        # filter out dead tasks if DLQ is on
+        if task_ids and self.dlq_ttl != 0:
+            async with self.redis.pipeline(transaction=False) as pipe:
+                scores = [
+                    pipe.zmscore(self._dead_key + p, task_ids) for p in self.priorities
+                ]
+            dead = {
+                task_id
+                for s in scores
+                for task_id, score in zip(task_ids, await s)
+                if score
+            }
+            task_ids = [t for t in task_ids if t not in dead]
         return await self._get_results_for_ids(task_ids)
 
     async def _get_dead_tasks(
