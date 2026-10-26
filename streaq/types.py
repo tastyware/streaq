@@ -242,15 +242,17 @@ class Streaq(Library[str]):
     ) -> CommandRequest[Any]: ...
 
     @ffi
-    def refresh_timeout(
+    def claim_task(
         self,
         stream_key: KeyT,
         running_set: KeyT,
+        retry_key: KeyT,
+        abort_set: KeyT,
         group_name: str,
         consumer: str,
         message_id: str,
         task_id: str,
-    ) -> CommandRequest[int]: ...
+    ) -> CommandRequest[list[int] | None]: ...
 
     @ffi
     def schedule_cron_job(
@@ -278,6 +280,15 @@ class Streaq(Library[str]):
         task_id: str,
         current_time: int,
     ) -> CommandRequest[int]: ...
+
+    @ffi
+    def release_child(
+        self,
+        depends_set: KeyT,
+        stream_key: KeyT,
+        child_id: str,
+        current_time: int,
+    ) -> CommandRequest[None]: ...
 
     @ffi
     def purge_task(

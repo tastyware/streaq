@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from streaq import TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
+from streaq.task import TaskInfo, TaskResult
 from streaq.ui import get_exception_formatter, get_result_formatter, get_worker
 from streaq.ui.deps import templates
 
@@ -39,9 +40,16 @@ class TaskData(BaseModel):
 
 
 async def _get_context(
-    worker: Worker[Any], base_url: str, status: TaskStatus
+    worker: Worker[Any], base_url: str, status: TaskStatus, priority: str | None
 ) -> dict[str, Any]:
-    items = await worker.get_tasks_by_status(status)
+    items: list[TaskInfo] | list[TaskResult[Any]]
+    # only these statuses are stored per priority; split so each matches an overload
+    if status in (TaskStatus.SCHEDULED, TaskStatus.QUEUED):  # noqa: SIM114
+        items = await worker.get_tasks_by_status(status, priority=priority)
+    elif status == TaskStatus.DEAD:
+        items = await worker.get_tasks_by_status(status, priority=priority)
+    else:
+        items = await worker.get_tasks_by_status(status)
     async with worker.redis.pipeline(transaction=False) as pipe:
         delayed = [pipe.zcard(worker._queue_key + p) for p in worker.priorities]
         streams = [pipe.xlen(worker._stream_key + p) for p in worker.priorities]
@@ -70,6 +78,7 @@ async def _get_context(
     tasks.sort(key=lambda td: td.sort_time, reverse=True)
     return {
         "functions": list(worker.registry.keys()),
+        "priorities": worker.priorities,
         "tasks": tasks,
         "title": worker.queue_name,
         "scheduled": sum([await d for d in delayed]),
@@ -90,9 +99,10 @@ async def get_context(
     worker: Worker[Any],
     functions: list[str] | None = None,
     status: TaskStatus = TaskStatus.DONE,
+    priority: str | None = None,
 ) -> dict[str, Any]:
     base_url = request.url_for("get_root").path
-    context = await _get_context(worker, base_url, status)
+    context = await _get_context(worker, base_url, status, priority)
     context["base_url"] = base_url
     if functions:
         context["tasks"] = [t for t in context["tasks"] if t.fn_name in functions]
@@ -121,8 +131,9 @@ async def filter_tasks(
     worker: Annotated[Worker[Any], Depends(get_worker)],
     status: Annotated[TaskStatus, Form()],
     functions: Annotated[list[str] | None, Form()] = None,
+    priority: Annotated[str | None, Form()] = None,
 ) -> Any:
-    context = await get_context(request, worker, functions, status)
+    context = await get_context(request, worker, functions, status, priority)
     return templates.TemplateResponse(request, "table.j2", context=context)
 
 
@@ -209,7 +220,7 @@ async def abort_task(
 ) -> None:
     if not await worker.abort_by_id(task_id, timeout=3):
         raise HTTPException(
-            status_code=fast_status.HTTP_409_CONFLICT, detail="Timed out aborting task!"
+            status_code=fast_status.HTTP_409_CONFLICT, detail="Task not aborted!"
         )
     if redirect:
         response.headers["HX-Redirect"] = request.url_for("get_tasks").path
@@ -242,6 +253,10 @@ async def get_workers(
         ]
     tasks = await worker.get_tasks_by_status(TaskStatus.DONE, limit=1000)
     if tasks:
+        async with worker.redis.pipeline(transaction=False) as pipe:
+            _finished = pipe.zcard(worker._results_set)
+            _dead = [pipe.zcard(worker._dead_key + p) for p in worker.priorities]
+        finished, dead = await _finished, sum([await d for d in _dead])
         wait_times = [t.start_time - t.enqueue_time for t in tasks]
         tries = [t.tries for t in tasks]
         # 10 ms bounded slowdown
@@ -252,7 +267,11 @@ async def get_workers(
         context["avg_wait_time"] = mean(wait_times)
         context["avg_slowdown"] = mean(slowdowns)
         context["avg_tries"] = mean(tries)
-        context["success_rate"] = sum(t.success for t in tasks) / len(tasks) * 100
+        # the sample excludes dead tasks, which are all failures, so scale it by
+        # the share of finished tasks that aren't dead
+        sample_rate = sum(t.success for t in tasks) / len(tasks)
+        alive = max(finished - dead, 0) / max(finished, 1)
+        context["success_rate"] = sample_rate * alive * 100
     return templates.TemplateResponse(request, "workers.j2", context=context)
 
 

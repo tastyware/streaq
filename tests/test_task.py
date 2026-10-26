@@ -12,7 +12,7 @@ from anyio import TaskHandle, create_task_group, sleep
 from streaq.task import TaskStatus
 from streaq.types import ReturnCoroutine, StreaqError, StreaqRetry
 from streaq.worker import Worker
-from tests.conftest import run_worker
+from tests.conftest import run_worker, wait_for
 
 pytestmark = pytest.mark.anyio
 
@@ -72,11 +72,10 @@ async def test_task_status(worker: Worker):
         assert await task.status() is None
         await task.start()
         assert await task.status() == TaskStatus.QUEUED
-        task2 = await foobar.enqueue().start(delay=5)
+        task2 = await foobar.enqueue().start(delay=30)
 
     async with run_worker(worker):
-        await sleep(1)
-        assert await task.status() == TaskStatus.RUNNING
+        await wait_for(task.status, TaskStatus.RUNNING)
         await task.result(3)
         assert await task.status() == TaskStatus.DONE
         assert await task2.status() == TaskStatus.SCHEDULED
@@ -98,9 +97,8 @@ async def test_task_cron(worker: Worker):
     schedule = worker._next_datetime(cron1.crontab)  # type: ignore
     assert schedule.day == 1 and schedule.month == 1
     async with run_worker(worker):
-        await sleep(2)
-        # the cron job should have fired and still be executing
-        assert task_id
+        # the cron job should fire and still be executing
+        await wait_for(lambda: task_id)
         assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
@@ -383,7 +381,8 @@ async def test_failed_abort(worker: Worker, wait: int):
 
     async with run_worker(worker):
         task = await foobar.enqueue().start()
-        await sleep(1)
+        # finished without a stored result
+        await wait_for(task.status, None)
         assert not await task.abort(wait)
 
 
@@ -397,8 +396,7 @@ async def test_sync_cron(worker: Worker):
         time.sleep(3)
 
     async with run_worker(worker):
-        await sleep(2)
-        assert task_id
+        await wait_for(lambda: task_id)
 
 
 async def test_cron_multiple_runs(worker: Worker):
@@ -545,8 +543,7 @@ async def test_cron_with_custom_name(worker: Worker):
         worker.cron("* * * * * * *", name="foo")(cronjob1)
 
     async with run_worker(worker):
-        await sleep(2)
-        assert task_id
+        await wait_for(lambda: task_id)
         assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
@@ -608,8 +605,7 @@ async def test_dynamic_cron(worker: Worker):
 
     async with run_worker(worker):
         task = await foobar.enqueue(1).start(schedule="* * * * * * *")
-        await sleep(2)
-        assert vals
+        await wait_for(lambda: vals)
         await task.unschedule()
         await sleep(2)
         last_len = len(vals)
@@ -1247,10 +1243,11 @@ async def test_custom_id_ttl_zero_not_idempotent(worker: Worker):
 
     async with run_worker(worker):
         await foobar.enqueue().start(id="no-result")
-        await sleep(1)
-        # no stored result, so nothing left to dedup against
+        # finished without a stored result
+        await wait_for(lambda: worker.status_by_id("no-result"), None)
+        # so nothing left to dedup against
         await foobar.enqueue().start(id="no-result")
-        await sleep(1)
+        await wait_for(lambda: len(runs) == 2)
         assert runs == [1, 1]
 
 
@@ -1288,3 +1285,12 @@ async def test_depends_status(worker: Worker):
         waiting = await worker.get_tasks_by_status(TaskStatus.DEPENDS)
         assert child.id in {t.task_id for t in waiting}
         assert (await child.result(5)).result == 1
+
+
+async def test_unknown_priority_raises(worker: Worker):
+    @worker.task
+    async def foobar() -> None:
+        pass
+
+    with pytest.raises(StreaqError, match="Invalid priority"):
+        foobar.enqueue().start(priority="nope")

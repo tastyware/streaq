@@ -104,9 +104,11 @@ redis.register_function('read_streams', function(keys, argv)
   return entries
 end)
 
-redis.register_function('refresh_timeout', function(keys, argv)
+redis.register_function('claim_task', function(keys, argv)
   local stream_key = keys[1]
   local running_set = keys[2]
+  local retry_key = keys[3]
+  local abort_set = keys[4]
 
   local group_name = argv[1]
   local consumer = argv[2]
@@ -116,9 +118,8 @@ redis.register_function('refresh_timeout', function(keys, argv)
   if #redis.call('xpending', stream_key, group_name, message_id, message_id, 1, consumer) > 0 then
     redis.call('xclaim', stream_key, group_name, consumer, 0, message_id, 'justid')
     redis.call('sadd', running_set, task_id)
-    return 1
+    return { redis.call('incr', retry_key), redis.call('srem', abort_set, task_id) }
   end
-  return 0
 end)
 
 redis.register_function('schedule_cron_job', function(keys, argv)
@@ -154,8 +155,8 @@ redis.register_function('requeue_task', function(keys, argv)
   local task_id = argv[1]
   local current_time = argv[2]
 
-  if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
   if redis.call('exists', task_key) == 0 then return 0 end
+  if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
   redis.call('del', results_key, retry_key)
   redis.call('zrem', results_set, task_id)
   -- don't let the payload expire while it waits in the queue
@@ -163,6 +164,17 @@ redis.register_function('requeue_task', function(keys, argv)
   redis.call('persist', previous_key)
   redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
   return 1
+end)
+
+-- fail a child that's waiting on a task that can't trigger it
+local function release_child(depends_set, stream_key, child_id, current_time)
+  if redis.call('srem', depends_set, child_id) == 1 then
+    redis.call('xadd', stream_key, '*', 'task_id', child_id, 'enqueue_time', current_time, 'success', 0)
+  end
+end
+
+redis.register_function('release_child', function(keys, argv)
+  release_child(keys[1], keys[2], argv[1], argv[2])
 end)
 
 redis.register_function('purge_task', function(keys, argv)
@@ -176,8 +188,6 @@ redis.register_function('purge_task', function(keys, argv)
 
   if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
   -- a parked task holds back its child, so fail it now
-  if redis.call('srem', depends_set, child_id) == 1 then
-    redis.call('xadd', stream_key, '*', 'task_id', child_id, 'enqueue_time', current_time, 'success', 0)
-  end
+  release_child(depends_set, stream_key, child_id, current_time)
   return 1
 end)

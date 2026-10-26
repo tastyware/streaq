@@ -84,6 +84,12 @@ async def test_get_pages(worker: Worker):
                     data={"functions": [sleeper.fn_name], "status": status.value},
                 )
                 assert res.status_code == 200
+            # filtering by priority
+            res = await client.patch(
+                f"{prefix}/queue",
+                data={"status": "scheduled", "priority": worker.priorities[0]},
+            )
+            assert res.status_code == 200
             # test fetching tasks in various statuses
             handles: list[TaskHandle[Any]] = []
             async with create_task_group() as tg:
@@ -175,3 +181,29 @@ async def test_dead_task_routes(worker: Worker):
             assert res.status_code == 404
             res = await client.delete(f"{prefix}/task/{purged.id}/purge")
             assert res.status_code == 404
+
+
+async def test_workers_success_rate(worker: Worker):
+    app = FastAPI()
+    prefix = "/streaq"
+    app.include_router(router, prefix=prefix)
+    app.dependency_overrides[get_worker] = lambda: worker
+    worker.dlq_ttl = 60
+
+    @worker.task
+    async def succeeds() -> None:
+        pass
+
+    @worker.task
+    async def fails() -> None:
+        raise Exception("Oh no!")
+
+    async with run_worker(worker):
+        await (await succeeds.enqueue()).result(5)
+        await (await fails.enqueue()).result(5)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            res = await client.get(f"{prefix}/workers")
+            # the dead task isn't in the done sample, but still counts as a failure
+            assert "50.0%" in res.text

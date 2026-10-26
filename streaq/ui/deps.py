@@ -27,6 +27,7 @@ def humanize(count: int) -> str:
 BASE_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(BASE_DIR))
 templates.env.filters["humanize"] = humanize
+templates.env.autoescape = True
 
 
 def get_worker() -> Worker[Any]:

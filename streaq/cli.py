@@ -74,7 +74,7 @@ def web(
     ],
     host: Annotated[
         str, Option("--host", "-h", help="Host for the web UI server.")
-    ] = "0.0.0.0",
+    ] = "127.0.0.1",
     port: Annotated[
         int, Option("--port", "-p", help="Port for the web UI server.")
     ] = 8000,

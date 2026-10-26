@@ -1,12 +1,13 @@
 import os
 import signal
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from inspect import isawaitable
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from anyio import create_task_group
+from anyio import create_task_group, fail_after, sleep
 
 from streaq import Worker
 
@@ -63,3 +64,23 @@ async def run_worker(_worker: Worker[Any]) -> AsyncGenerator[None, None]:
         await tg.start(_worker.run_async)
         yield
         os.kill(os.getpid(), signal.SIGINT)
+
+
+_UNSET = object()
+
+
+async def wait_for(
+    condition: Callable[[], Any], expected: Any = _UNSET, timeout: float = 10
+) -> None:
+    """
+    Poll ``condition()`` (sync or async) until it equals ``expected``, or until it's
+    truthy if nothing is expected, failing after ``timeout`` seconds.
+    """
+    with fail_after(timeout):
+        while True:
+            res = condition()
+            if isawaitable(res):
+                res = await res
+            if (res == expected) if expected is not _UNSET else res:
+                return
+            await sleep(0.1)

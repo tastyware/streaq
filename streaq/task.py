@@ -156,6 +156,8 @@ class Task(Generic[P, R_co]):
             )
         if self._after:
             raise StreaqError("Only call `start()` on the first task in a chain!")
+        if priority and priority not in self.worker.priorities:
+            raise StreaqError(f"Invalid priority '{priority}'!")
         if id:
             self.id = id
         self.delay = delay
@@ -453,8 +455,22 @@ class RegisteredTask:
 
 class PipelineMixin(RegisteredTask, Generic[P, R_co]):
     """
-    Fan-out helpers shared by sync and async registered tasks.
+    Enqueuing and fan-out helpers shared by sync and async registered tasks.
     """
+
+    def enqueue(
+        self,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> Task[P, R_co]:
+        """
+        Create a task object, which can be serialized and sent to the queue for
+        execution by a worker.
+
+        Though this isn't async, it should be awaited as it returns an object that
+        should be.
+        """
+        return Task(args, kwargs, self, self.worker)
 
     def map(
         self: PipelineMixin[Concatenate[T, POther], R_co], data: Iterable[T]
@@ -515,19 +531,6 @@ class AsyncRegisteredTask(PipelineMixin[P, R_co]):
     def runner(self) -> AsyncTask[P, R_co]:
         return self.fn
 
-    def enqueue(
-        self,
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> Task[P, R_co]:
-        """
-        Serialize the task and send it to the queue for execution by a worker.
-
-        Though this isn't async, it should be awaited as it returns an object that
-        should be.
-        """
-        return Task(args, kwargs, self, self.worker)
-
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TypedCoroutine[R_co]:
         return self.fn(*args, **kwargs)
 
@@ -543,19 +546,6 @@ class SyncRegisteredTask(PipelineMixin[P, R_co]):
     @cached_property
     def runner(self) -> AsyncTask[P, R_co]:
         return asyncify(self.fn, self.worker._limiter)
-
-    def enqueue(
-        self,
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> Task[P, R_co]:
-        """
-        Serialize the task and send it to the queue for execution by a worker.
-
-        Though this isn't async, it should be awaited as it
-        returns an object that should be.
-        """
-        return Task(args, kwargs, self, self.worker)
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self.fn(*args, **kwargs)

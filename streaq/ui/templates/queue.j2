@@ -20,6 +20,11 @@
   #tasks-wrap.htmx-request #tasks-spinner {
     display: block;
   }
+
+  /* priority only applies to scheduled, queued, and dead tasks */
+  form:has(#status :is([value="depends"], [value="running"], [value="done"]):checked) #priority-col {
+    visibility: hidden;
+  }
 </style>
 {% macro card(title, count, classes) %}
 <div class="col">
@@ -86,18 +91,20 @@
               <div class="col-6">
                 <h3 class="card-title">Tasks</h3>
               </div>
+              <div class="col-2" id="priority-col">
+                <label for="priority">Priority</label>
+                <select name="priority" class="form-select" id="priority">
+                  {% for p in priorities %}
+                  <option {% if loop.last %}selected {% endif %}value="{{ p }}">{{ p }}</option>
+                  {% endfor %}
+                </select>
+              </div>
               <div class="col-2">
                 <label for="function">Function</label>
                 <select name="functions" class="form-select" multiple id="function">
                   {% for fn in functions %}
                   <option value="{{ fn }}">{{ fn }}</option>
                   {% endfor %}
-                </select>
-              </div>
-              <div class="col-2">
-                <label for="status">Priority</label>
-                <select name="priority" class="form-select" id="priority">
-                  <option value="default">default</option>
                 </select>
               </div>
               <div class="col-2">

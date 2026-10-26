@@ -20,7 +20,7 @@ from coredis.connection import TCPLocation
 from streaq import StreaqError, StreaqRetry, TaskStatus, Worker
 from streaq.constants import REDIS_HEALTH
 from streaq.task import Task, TaskResult
-from tests.conftest import run_worker
+from tests.conftest import run_worker, wait_for
 
 NAME_STR = "Freddy"
 pytestmark = pytest.mark.anyio
@@ -425,7 +425,7 @@ async def test_grace_period(redis_url: str):
     async with pool, create_task_group() as tg:
         await tg.start(worker.run_async)
         task = await foobar.enqueue()
-        await sleep(1)
+        await wait_for(task.status, TaskStatus.RUNNING)
         os.kill(os.getpid(), signal.SIGINT)
         res = await task.result(5)
         assert res.success
@@ -522,7 +522,7 @@ async def test_get_tasks_by_status_running(worker: Worker):
 
     async with run_worker(worker):
         task = await slow_task.enqueue()
-        await sleep(1)  # Wait for task to start
+        await wait_for(task.status, TaskStatus.RUNNING)
 
         running = await worker.get_tasks_by_status(TaskStatus.RUNNING)
         assert len(running) >= 1
@@ -645,6 +645,21 @@ async def test_dlq_parks_bad_payload(worker: Worker):
         assert await task.status() == TaskStatus.DEAD
 
 
+async def test_bad_payload_releases_child(worker: Worker):
+    @worker.task
+    async def foobar() -> int:
+        return 1
+
+    # DLQ off, so the root isn't parked and must release its child itself
+    worker.serializer, worker.deserializer = json.dumps, json.loads
+    async with worker:
+        child = await foobar.enqueue().then(foobar, forward=False)()
+    worker.serializer, worker.deserializer = pickle.dumps, pickle.loads
+    async with run_worker(worker):
+        # the child's payload is unreadable too, but it fails instead of hanging
+        assert not (await child.result(5)).success
+
+
 async def test_dlq_doesnt_park(worker: Worker):
     worker.dlq_ttl = 60
 
@@ -746,7 +761,7 @@ async def test_dlq_sweep_fails_child(worker: Worker):
 
 
 async def test_failed_result_kept_for_dlq_ttl(worker: Worker):
-    worker.dlq_ttl = 3
+    worker.dlq_ttl = 10
 
     @worker.task(ttl=1)
     async def boom() -> None:
@@ -768,6 +783,21 @@ async def test_failed_result_kept_for_ttl(worker: Worker):
         task = await boom.enqueue()
         assert await task.status() is not None
         await task.result(5)
+        await sleep(2)
+        assert await task.status() is None
+
+
+async def test_unparked_failure_uses_ttl(worker: Worker):
+    worker.dlq_ttl = 60
+
+    @worker.task(ttl=1)
+    async def foobar() -> None:
+        pass
+
+    async with run_worker(worker):
+        # aborted tasks aren't parked, so dlq_ttl shouldn't extend their result
+        task = await foobar.enqueue().start(delay=10)
+        assert await task.abort(3)
         await sleep(2)
         assert await task.status() is None
 
