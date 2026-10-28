@@ -72,10 +72,6 @@ _UNSET = object()
 async def wait_for(
     condition: Callable[[], Any], expected: Any = _UNSET, timeout: float = 10
 ) -> None:
-    """
-    Poll ``condition()`` (sync or async) until it equals ``expected``, or until it's
-    truthy if nothing is expected, failing after ``timeout`` seconds.
-    """
     with fail_after(timeout):
         while True:
             res = condition()

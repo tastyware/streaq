@@ -1,7 +1,7 @@
 Getting started
 ===============
 
-To start, you'll need to define your global dependencies which your tasks will need access to at run time. This is done with a ``dataclass`` or ``NamedTuple``:
+To start, you'll need to define your global dependencies which your tasks will need access to at run time. An easy way to do this is with a ``dataclass`` or ``NamedTuple``:
 
 .. code-block:: python
    :caption: worker.py
@@ -52,7 +52,7 @@ You can then register async tasks to the worker like this:
 
 .. code-block:: python
    :caption: worker.py
-   :emphasize-lines: 5,26-29
+   :emphasize-lines: 26-29
 
    from contextlib import asynccontextmanager
    from dataclasses import dataclass

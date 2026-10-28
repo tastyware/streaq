@@ -16,7 +16,7 @@ Fast, async, fully-typed distributed task queue via Redis streams
 - Support for delayed/scheduled tasks
 - Cron jobs
 - Task middleware
-- Task dependency graph
+- Dead-letter queue
 - Pipelining
 - Priority queues
 - Support for synchronous tasks (run in separate threads)
@@ -91,7 +91,7 @@ Nobody respects the spammish repetition!
 [INFO] 2025-09-23 02:15:00: task cronjob ■ 2a4b864e5ecd4fc99979a92f5db3a6e0 ← None
 ```
 ```python
-TaskInfo(fn_name='sleeper', enqueue_time=1751508876961, tries=0, scheduled=datetime.datetime(2025, 7, 3, 2, 14, 39, 961000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+TaskInfo(fn_name='sleeper', enqueue_time=1751508876961, tries=0, scheduled=datetime.datetime(2025, 7, 3, 2, 14, 39, 961000, tzinfo=datetime.timezone.utc), child=None)
 TaskResult(fn_name='sleeper', enqueue_time=1751508876961, success=True, start_time=1751508880500, finish_time=1751508881503, tries=1, worker_id='ca5bd9eb', _result=1)
 ```
 

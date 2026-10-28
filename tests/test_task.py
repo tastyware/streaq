@@ -478,24 +478,6 @@ async def test_task_pipeline(worker: Worker):
         assert res.result and res.success
 
 
-async def test_task_pipeline_multiple(worker: Worker):
-    @worker.task
-    async def double(val: int) -> int:
-        return val * 2
-
-    @worker.task
-    async def is_even(val: int) -> bool:
-        return val % 2 == 0
-
-    async with worker:
-        task1 = double.enqueue(1).then(double)().then(is_even)()
-        task2 = double.enqueue(1).then(double)().then(double)()
-        with pytest.RaisesGroup(
-            StreaqError, allow_unwrapped=True, flatten_subgroups=True
-        ):
-            await worker.enqueue_many([task1, task2])
-
-
 async def test_task_with_custom_name(worker: Worker):
     @worker.task(name="bar")
     async def foo() -> int:
@@ -1102,6 +1084,20 @@ async def test_chain_identical_retry(worker: Worker):
         assert runs == [1, 2]
 
 
+async def test_chain_reenqueue_no_orphan(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        first = await double.enqueue(1).start(id="root").then(double)()
+        await first.result(5)
+        # re-enqueue the finished chain, eg. a retried orchestrator
+        second = await double.enqueue(1).start(id="root").then(double)()
+        assert second.id == first.id
+        assert await second.status() == TaskStatus.DONE
+
+
 async def test_cron_chain_raises(worker: Worker):
     @worker.cron("* * * * *")
     async def cronjob() -> int:
@@ -1258,6 +1254,22 @@ async def test_start_non_first_link_raises(worker: Worker):
 
     with pytest.raises(StreaqError, match="first task in a chain"):
         double.enqueue(1).then(double)().start(delay=1)
+
+
+async def test_await_non_last_link_raises(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    root = double.enqueue(1)
+    middle = root.then(double)()
+    middle.then(double)()
+    async with worker:
+        for task in (root, middle):
+            with pytest.raises(StreaqError, match="last task of a chain"):
+                await task
+        # nothing was enqueued
+        assert await root.status() is None
 
 
 async def test_info_queued(worker: Worker):

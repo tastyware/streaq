@@ -119,6 +119,15 @@ class TaskContext:
     tries: int
     ttl: timedelta | int | None
 
+    def derive_id(self, *, key: str) -> str:
+        """
+        Get a deterministic ID for a task enqueued inside this one, so that if this task
+        is retried, the other is deduped. Use a different ``key`` per task enqueued.
+
+        :param key: unique key for deriving new ID together with this one's ID
+        """
+        return uuid5(NAMESPACE_OID, f"{self.task_id}:{key}").hex
+
 
 ReturnCoroutine: TypeAlias = Callable[..., Coroutine[Any, Any, Any]]
 TypedCoroutine: TypeAlias = Coroutine[Any, Any, R_co]
@@ -228,6 +237,16 @@ class Streaq(Library[str]):
         score: int,
         expire: int,
         current_time: int,
+    ) -> CommandRequest[None]: ...
+
+    @ffi
+    def stage_task(
+        self,
+        task_key: KeyT,
+        results_key: KeyT,
+        depends_set: KeyT,
+        task_id: str,
+        task_data: Any,
     ) -> CommandRequest[None]: ...
 
     @ffi

@@ -9,7 +9,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Concatenate, Generic, Literal, cast, overload
 from uuid import NAMESPACE_OID, uuid4, uuid5
 
-from coredis import PureToken
 from coredis.client import Client
 
 from streaq.types import (
@@ -154,7 +153,7 @@ class Task(Generic[P, R_co]):
             raise StreaqError(
                 "Use one of 'delay' or 'schedule' when enqueuing tasks, not both!"
             )
-        if self._after:
+        if self._after or self._triggers:
             raise StreaqError("Only call `start()` on the first task in a chain!")
         if priority and priority not in self.worker.priorities:
             raise StreaqError(f"Invalid priority '{priority}'!")
@@ -201,6 +200,7 @@ class Task(Generic[P, R_co]):
         def bind(*args: POther.args, **kwargs: POther.kwargs) -> Task[POther, ROther]:
             child: Task[POther, ROther] = Task(args, kwargs, task, self.worker)
             child._after = self
+            child.id = uuid5(NAMESPACE_OID, self.id).hex
             child._ignores_output = not forward
             self._triggers = child
             return child
@@ -250,6 +250,7 @@ class Task(Generic[P, R_co]):
                 else Task(args, kwargs, task, self.worker)
             )
             child._after = self
+            child.id = uuid5(NAMESPACE_OID, self.id).hex
             child._ignores_output = not forward
             self._fails_over = True
             self._triggers = child
@@ -307,29 +308,39 @@ class Task(Generic[P, R_co]):
 
         return bind
 
-    async def _recurse(self, lib: Streaq, pipe: Client[str], enqueue_time: int) -> None:
-        if self.parent.expire:
+    async def _recurse(
+        self,
+        lib: Streaq,
+        pipe: Client[str],
+        enqueue_time: int,
+        child: Task[Any, Any] | None = None,
+    ) -> None:
+        if self._triggers is not child:
+            raise StreaqError("Only enqueue the last task of a chain!")
+        if self.parent.expire and (child or self._after):
             raise StreaqError("Tasks with expire can't be pipelined!")
-        if self._after:
-            await self._after._recurse(lib, pipe, enqueue_time)
-        if self._triggers:
-            self._triggers.id = uuid5(NAMESPACE_OID, self.id).hex
         data = await self.serialize(enqueue_time)
         if self._after:
-            pipe.set(self.worker._task_key + self.id, data, condition=PureToken.NX)
-            pipe.sadd(self.worker._depends_set, [self.id])
+            # store children before parents -> parent can't finish before child enqueue
+            lib.stage_task(
+                self.worker._task_key + self.id,
+                self.worker._results_key + self.id,
+                self.worker._depends_set,
+                self.id,
+                data,
+            )
+            await self._after._recurse(lib, pipe, enqueue_time, self)
         else:
-            if isinstance(self.schedule, str):
+            if child and isinstance(self.schedule, str):
                 raise StreaqError("Cron tasks can't be pipelined!")
             self.worker._publish_task(pipe, self, data, enqueue_time, lib=lib)
 
     async def _chain(self) -> Task[P, R_co]:
         now = now_ms()
         # iterate over chain
-        if self._after:
-            async with self.worker.redis.pipeline(transaction=True) as pipe:
-                lib = Streaq(pipe)
-                await self._recurse(lib, pipe, now)
+        if self._after or self._triggers:
+            async with self.worker.redis.pipeline(transaction=False) as pipe:
+                await self._recurse(Streaq(pipe), pipe, now)
         else:
             await self.worker._publish_task(
                 self.worker.redis, self, await self.serialize(now), now
@@ -485,12 +496,13 @@ class PipelineMixin(RegisteredTask, Generic[P, R_co]):
             callable for creating N new, dependent task objects and aggregating the
             results
         """
+        items = list(data)
 
         def bind(
             *args: POther.args, **kwargs: POther.kwargs
         ) -> Task[[Collection[T]], list[R_co]]:
             return self.worker._map.enqueue(
-                list(data), to=self.fn_name, args=args, kwargs=kwargs
+                items, to=self.fn_name, args=args, kwargs=kwargs
             )
 
         return bind
@@ -508,12 +520,13 @@ class PipelineMixin(RegisteredTask, Generic[P, R_co]):
             callable for creating N new, dependent task objects, aggregating the
             results, and filtering out any that evaluated to False
         """
+        items = list(data)
 
         def bind(
             *args: POther.args, **kwargs: POther.kwargs
         ) -> Task[[Collection[T]], list[T]]:
             return self.worker._filter.enqueue(
-                list(data), by=self.fn_name, args=args, kwargs=kwargs
+                items, by=self.fn_name, args=args, kwargs=kwargs
             )
 
         return bind

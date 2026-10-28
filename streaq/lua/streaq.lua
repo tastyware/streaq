@@ -62,6 +62,22 @@ redis.register_function('publish_task', function(keys, argv)
   end
 end)
 
+redis.register_function('stage_task', function(keys, argv)
+  local task_key = keys[1]
+  local results_key = keys[2]
+  local depends_set = keys[3]
+
+  local task_id = argv[1]
+  local task_data = argv[2]
+
+  -- idempotency if result exists
+  if redis.call('exists', results_key) == 1 then return end
+  -- idempotency if payload exists
+  if redis.call('set', task_key, task_data, 'nx') then
+    redis.call('sadd', depends_set, task_id)
+  end
+end)
+
 redis.register_function('read_streams', function(keys, argv)
   local stream_key = keys[1]
 

@@ -6,7 +6,7 @@ import math
 import pickle
 import signal
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, tzinfo
@@ -20,7 +20,6 @@ from anyio import (
     AsyncContextManagerMixin,
     CancelScope,
     CapacityLimiter,
-    TaskHandle,
     create_memory_object_stream,
     create_task_group,
     current_time,
@@ -98,6 +97,7 @@ from streaq.types import (
     StreaqRetry,
     SyncCron,
     SyncTask,
+    T,
     TaskData,
     TaskDecorator,
     is_async_task,
@@ -158,6 +158,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
     :param dlq_ttl:
         time to preserve failed tasks in a dead-letter queue, if 0 DLQ is disabled.
         results of parked tasks are kept for max(task_ttl, dlq_ttl)
+    :param utility_ttl: time to store utility results in Redis (map, filter)
     """
 
     def __init__(
@@ -188,6 +189,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         cluster_nodes: list[tuple[str, int]] | None = None,
         id: str | None = None,
         dlq_ttl: timedelta | int | None = 0,
+        utility_ttl: timedelta | int | None = timedelta(minutes=5),
     ) -> None:
         # Redis connection
         redis_kwargs = redis_kwargs.copy() if redis_kwargs else {}
@@ -292,15 +294,15 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             fn=partial(_filter, self),
             fn_name=UTILITIES_FILTER,
             worker=self,
-            ttl=300,
+            ttl=utility_ttl,
         )
         self._map: AsyncRegisteredTask[..., list[Any]] = AsyncRegisteredTask(
             fn=partial(_map, self),
             fn_name=UTILITIES_MAP,
             worker=self,
-            ttl=300,
+            ttl=utility_ttl,
         )
-        self._utilties = {UTILITIES_FILTER: self._filter, UTILITIES_MAP: self._map}
+        self._utilities = {UTILITIES_FILTER: self._filter, UTILITIES_MAP: self._map}
 
     def include(self, other: Worker[Any]) -> None:
         """
@@ -1050,7 +1052,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         task_try, aborted = claimed
         raw, _previous = await payloads
         if not raw:
-            logger.fatal(f"task † {task_id} expired")
+            logger.error(f"task † {task_id} expired")
             return await self.fail_task(
                 msg,
                 StreaqError("Task expired!"),
@@ -1073,7 +1075,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
             args = data["a"]
         else:
             args = (*previous, *data["a"])
-        task = self.registry.get(fn_name := data["f"]) or self._utilties.get(fn_name)
+        task = self.registry.get(fn_name := data["f"]) or self._utilities.get(fn_name)
         if not task:
             logger.error(f"task {fn_name} ⊘ {task_id} skipped, missing function")
             return await self.fail_task(
@@ -1289,7 +1291,7 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         Enqueue multiple tasks for immediate execution.
 
         This uses a Redis pipeline, so it's more efficient than awaiting each
-        individual task. Pipelined tasks aren't supported.
+        individual task.
 
         :param tasks: sequence of task objects to enqueue
 
@@ -1302,16 +1304,10 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
 
         """
         enqueue_time = now_ms()
-        handles: list[TaskHandle[Any, None]] = []
-        async with create_task_group() as tg:
-            for task in tasks:
-                if task._after or task._triggers:
-                    raise StreaqError("Pipelined tasks can't be enqueued in batches!")
-                handles.append(tg.start_soon(task.serialize, enqueue_time))
         async with self.redis.pipeline(transaction=False) as pipe:
             lib = Streaq(pipe)
-            for task, data in zip(tasks, handles):
-                self._publish_task(pipe, task, data.return_value, enqueue_time, lib=lib)
+            for task in tasks:
+                await task._recurse(lib, pipe, enqueue_time)
 
     def _publish_task(
         self,
@@ -1888,49 +1884,80 @@ class Worker(AsyncContextManagerMixin, Generic[C]):
         except Exception as e:
             raise StreaqError("Failed to deserialize data!") from e
 
+    async def results_for(
+        self, tasks: Sequence[Task[Any, T]], timeout: timedelta | int | None = None
+    ) -> list[TaskResult[T]]:
+        """
+        Wait for all results of the given tasks, then return them aggregated. For many
+        results, this is more optimized than `Task.result()` as it uses a single
+        pub/sub connection instead of one connection per task.
+
+        :param tasks: collection of tasks to get results for
+        :param timeout: amount of time to wait before raising a `TimeoutError`
+
+        :return: a list of `TaskResult` objects corresponding to task order
+        """
+        if not tasks:
+            return []
+        ids = list({t.id for t in tasks})
+        with fail_after(to_seconds(timeout)):
+            # avoid creating N separate pubsub connections
+            async with self.redis.pubsub(
+                channels=[self._channel_key + i for i in ids],
+                ignore_subscribe_messages=True,
+                subscription_timeout=5,
+            ) as pubsub:
+                found = await self.redis.mget([self._results_key + i for i in ids])
+                raws = {i: raw for i, raw in zip(ids, found) if raw}
+                while len(raws) < len(ids):
+                    msg = await anext(pubsub)
+                    channel = msg["channel"].removeprefix(self._channel_key)  # type: ignore
+                    raws.setdefault(channel, msg["data"])  # type: ignore
+        datas = await gather(*[self.deserialize(raws[t.id]) for t in tasks])
+        return [
+            TaskResult(
+                task_id=t.id,
+                fn_name=d["f"],
+                created_time=d["ct"],
+                enqueue_time=d["et"],
+                success=d["s"],
+                start_time=d["st"],
+                finish_time=d["ft"],
+                tries=d["t"],
+                worker_id=d["w"],
+                _result=d["r"],
+            )
+            for t, d in zip(tasks, datas)
+        ]
+
 
 async def _map(
     worker: Worker[Any],
-    data: list[Any],
+    data: Collection[Any],
     *,
     to: str,
     args: tuple[Any, ...] = (),
     kwargs: dict[str, Any] | None = None,
 ) -> list[Any]:
-    task_id = _task_context.get().task_id
-    if not data:
-        return []
+    # deterministic IDs, so a retried parent doesn't rerun finished subtasks
+    ctx = _task_context.get()
     tasks = [
         worker.enqueue_unsafe(to, d, *args, **(kwargs or {})).start(
-            id=uuid5(NAMESPACE_OID, f"{task_id}:{i}").hex
+            id=ctx.derive_id(key=str(i))
         )
         for i, d in enumerate(data)
     ]
-    # avoid creating N separate pubsub connections
-    async with worker.redis.pubsub(
-        channels=[worker._channel_key + t.id for t in tasks],
-        ignore_subscribe_messages=True,
-        subscription_timeout=5,
-    ) as pubsub:
-        await worker.enqueue_many(tasks)
-        found = await worker.redis.mget([worker._results_key + t.id for t in tasks])
-        raws = {task.id: raw for task, raw in zip(tasks, found) if raw}
-        while len(raws) < len(tasks):
-            msg = await anext(pubsub)
-            channel = msg["channel"].removeprefix(worker._channel_key)  # type: ignore
-            raws.setdefault(channel, msg["data"])  # type: ignore
-    deserialized = await gather(*[worker.deserialize(raws[task.id]) for task in tasks])
-    results: list[Any] = []
-    for _data in deserialized:
-        if not _data["s"]:
-            raise StreaqError("Subtask failed!") from _data["r"]
-        results.append(_data["r"])
-    return results
+    await worker.enqueue_many(tasks)
+    results = await worker.results_for(tasks)
+    for res in results:
+        if not res.success:
+            raise StreaqError("Subtask failed!") from res.exception
+    return [res.result for res in results]
 
 
 async def _filter(
     worker: Worker[Any],
-    data: list[Any],
+    data: Collection[Any],
     *,
     by: str,
     args: tuple[Any, ...] = (),

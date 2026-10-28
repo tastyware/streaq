@@ -961,14 +961,32 @@ async def test_abort_and_failure_counters(worker: Worker):
         assert worker.counters["aborted"] == 2
 
 
-async def test_enqueue_many_rejects_chains(worker: Worker):
+async def test_enqueue_many_chains(worker: Worker):
     @worker.task
-    async def foobar(val: int) -> int:
-        return val
+    async def double(val: int) -> int:
+        return val * 2
 
+    tasks: list[Task[Any, int]] = [
+        double.enqueue(1),
+        double.enqueue(2).then(double)(),
+        double.enqueue(3).then(double)().then(double)(),
+    ]
+    async with run_worker(worker):
+        await worker.enqueue_many(tasks)
+        results = await worker.results_for(tasks, timeout=5)
+        assert [r.result for r in results] == [2, 8, 24]
+
+
+async def test_enqueue_many_rejects_chain_root(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    plain = double.enqueue(1)
+    root = double.enqueue(2)
+    root.then(double)()
     async with worker:
-        root = foobar.enqueue(1)
-        tail = root.then(foobar)()
-        for task in (root, tail):
-            with pytest.RaisesGroup(StreaqError, flatten_subgroups=True):
-                await worker.enqueue_many([task])
+        with pytest.raises(StreaqError, match="last task of a chain"):
+            await worker.enqueue_many([plain, root])
+        # nothing in the batch was enqueued
+        assert await plain.status() is None

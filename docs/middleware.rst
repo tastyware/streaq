@@ -37,6 +37,7 @@ Stacking middleware
 You can register as many middleware as you like to a worker, which will run them in the same order they were registered.
 
 .. code-block:: python
+   :emphasize-lines: 1,13-25
 
    from streaq import StreaqRetry
 
