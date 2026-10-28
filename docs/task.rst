@@ -40,14 +40,13 @@ We can now register async functions with the worker:
 
 The ``task`` decorator has several optional arguments that can be used to customize behavior:
 
-- ``expire``: time after which to dequeue the task, if ``None`` will never be dequeued
+- ``expire``: time after which to dequeue the task, if ``None`` will never be dequeued. Not compatible with idempotency guarantees or the dead-letter queue.
 - ``max_tries``: maximum number of attempts before giving up if task is retried; defaults to ``3``
 - ``name``: use a custom name for the task instead of the function name
 - ``retry_timeouts``: whether to retry the task if it times out; defaults to ``False``
 - ``silent``: whether to silence task logs; defaults to False
-- ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` (the default) means never timeout
+- ``timeout``: amount of time to run the task before raising ``TimeoutError``; ``None`` means never timeout
 - ``ttl``: amount of time to store task result in Redis; defaults to 5 minutes. ``None`` means never delete results, ``0`` means never store results
-- ``unique``: whether to prevent more than one instance of the task running simultaneously; defaults to ``False`` for normal tasks and ``True`` for cron jobs. (Note that more than one instance may be queued, but two running at once will cause the second to fail.)
 
 For example:
 
@@ -78,16 +77,12 @@ We can also defer task execution to a later time:
        await sleeper.enqueue(3).start(delay=10)  # start after 10 seconds
        await sleeper.enqueue(3).start(schedule=datetime(...))  # start at a specific time
 
-Tasks can depend on other tasks, meaning they won't be enqueued until their dependencies have finished successfully. If the dependency fails, the dependent task will not be enqueued.
+.. warning::
 
-.. code-block:: python
-
-   async with worker:
-       task1 = await sleeper.enqueue(1)
-       task2 = await sleeper.enqueue(2).start(after=task1.id)
-       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
+   Scheduling uses the worker's own clock, so make sure Redis and worker machines are NTP-synced!
 
 .. note::
+
    ``Task.enqueue()`` is actually a sync function that returns a ``Task`` object. Since ``Task`` is awaitable, it gets enqueued when awaited. Therefore, you should always use await even though ``Task.enqueue()`` is sync, unless you're enqueuing by batch (see below).
 
 Task priorities
@@ -95,7 +90,7 @@ Task priorities
 
 Sometimes, certain critical tasks should "skip the line" and receive priority over other tasks. streaQ supports this by allowing you to specify a priority when enqueuing tasks. If a low priority queue is backed up, you can use a high priority queue to ensure that critical tasks are executed quickly.
 
-By passing the ``priorities`` argument on worker creation, you can create an arbitrary number of queues with your priority ordering. (Please take into account that there will be a slight performance penalty per additional queue.)
+By passing the ``priorities`` argument on worker creation, you can create an arbitrary number of queues with your priority ordering. (Please take into account that there will be a slight performance penalty per additional queue. Consider spinning up separate workers with different queue names instead.)
 
 .. code-block:: python
 
@@ -184,7 +179,7 @@ If an exception occurs while performing the task, the ``TaskResult.success`` fla
 
 .. important::
 
-    If you're using the default serialization (pickle), the exception object won't contain traceback information, since pickle doesn't natively support serializing traceback objects — this information will be lost during serialization and deserialization.
+    If you're using the default serializer (pickle), the exception object won't contain traceback information, since pickle doesn't natively support serializing traceback objects — this information will be lost during serialization and deserialization.
 
     To keep the full traceback details for exceptions, you can use the `python-tblib <https://github.com/ionelmc/python-tblib>`_ package. This package makes it easy to serialize traceback objects with pickle. In most cases just two lines of code are needed to add this support:
 
@@ -228,6 +223,41 @@ streaQ provides a special exception that you can raise manually inside of your t
        return True
 
 By default, the retries will use an exponential backoff, where each retry happens after a ``try**2`` second delay. To change this behavior, you can pass the ``delay`` or ``schedule`` parameters to the ``StreaqRetry`` exception. You can pass ``retry_timeouts=True`` to a task decorator to retry tasks on timeout as well.
+
+.. _dead-letter-queue:
+
+Dead-letter queue
+-----------------
+
+By default, a task that fails terminally just stores its failed result. If you pass ``dlq_ttl`` to the worker, failed tasks are instead *parked* in a dead-letter queue (DLQ), where you can inspect, requeue, or purge them:
+
+.. code-block:: python
+
+   from datetime import timedelta
+
+   worker = Worker(dlq_ttl=timedelta(days=7))  # park dead tasks for a week
+
+A task is parked for most kinds of terminal failures (that is, non-retryable and no fallback set). However, tasks that are aborted or expire aren't parked.
+
+Once a task is in the DLQ, you can view it in the :doc:`web UI <cli>` and decide how to proceed:
+
+- **Requeuing** a task moves the task back to the live queue, resets its retry count, and discards its failed result:
+
+  .. code-block:: python
+
+     async with worker:
+         await worker.requeue_by_id(task_id)
+
+- **Purging** a task deletes it and its result permanently.
+
+  .. code-block:: python
+
+     async with worker:
+         await worker.purge_by_id(task_id)
+
+  After ``dlq_ttl`` the task and its dependency chain will be purged automatically.
+
+A parked task's failure result is kept for ``max(task_ttl, dlq_ttl)``. If a task with a dependent is parked, the dependency chain will be left untouched (unless a fallback fires), so the chain will resume if the parent task is requeued and runs successfully; see :ref:`chains-and-the-dlq`.
 
 Cancelling tasks
 ----------------
@@ -295,156 +325,27 @@ Note that if the task waiting for its completion is cancelled, the thread will s
        task = await sync_sleep.enqueue(1)
        print(await task.result(3))
 
-Task dependency graph
----------------------
+Idempotency
+-----------
 
-streaQ supports chaining tasks together in a dependency graph. This means that tasks depending on other tasks won't be enqueued until their dependencies have finished successfully. If the dependency fails, the dependent task will fail as well.
-
-Dependencies can be specified using the ``after`` parameter of the ``Task.start`` function:
+streaQ tasks are idempotent by default, keyed on their task ID:
 
 .. code-block:: python
 
    async with worker:
-       task1 = await sleeper.enqueue(1)
-       task2 = await sleeper.enqueue(2).start(after=task1.id)
-       task3 = await sleeper.enqueue(3).start(after=[task1.id, task2.id])
+       task = sleeper.enqueue(1)
+       t1 = await task
+       # second enqueue does nothing
+       t2 = await task
+       # both point to the same result object
+       assert await t1.result() == await t2.result()
 
-And the dependency failing will cause dependent tasks to fail as well:
-
-.. code-block:: python
-
-    @worker.task
-    async def foobar() -> None:
-        raise Exception("Oh no!")
-
-    @worker.task
-    async def do_nothing() -> None:
-        pass
-
-    async with worker:
-        task = await foobar.enqueue().start()
-        dep = await do_nothing.enqueue().start(after=task.id)
-        print(await dep.result(3))
-
-Task pipelining
----------------
-
-streaQ also supports task pipelining via the dependency graph, allowing you to directly feed the results of one task to another while maintaining type safety. Let's build on the ``fetch`` task defined earlier:
+Each call to ``enqueue()`` creates a new task with an auto-generated UUID. Idempotency guarantees last as long as a task's TTL. If you need to ensure idempotency keys are consistent between streaQ and your database, you can set a task's ID manually before enqueuing:
 
 .. code-block:: python
 
-   @worker.task(timeout=5)
-   async def fetch(url: str) -> int:
-       res = await worker.context.http_client.get(url)
-       return len(res.text)
-
-   @worker.task
-   async def double(val: int) -> int:
-       return val * 2
-
-   @worker.task
-   async def is_even(val: int) -> bool:
-       return val % 2 == 0
-
-   async with worker:
-       task = await fetch.enqueue("https://tastyware.dev").then(double).then(is_even)
-       print(await task.result(3))
-
-.. code-block:: python
-
-   TaskResult(fn_name='is_even', enqueue_time=1743469913601, success=True, start_time=1743469913901, finish_time=1743469913902, tries=1, worker_id='ca5bd9eb', _result=True)
-
-This is useful for ETL pipelines or similar tasks, where each task builds upon the result of the previous one. With a little work, you can build common pipelining utilities from these building blocks:
-
-.. code-block:: python
-
-   from typing import Any
-   from anyio import gather
-   from streaq.utils import to_tuple
-
-   @worker.task
-   async def map(data: list[Any], *, to: str) -> list[Any]:
-       task = map.worker.registry[to]
-       tasks = [task.enqueue(*to_tuple(d)) for d in data]
-       await map.worker.enqueue_many(tasks)
-       results = await gather(*[t.result(3) for t in tasks])
-       return [r.result for r in results]
-
-   @worker.task
-   async def filter(data: list[Any], *, by: str) -> list[Any]:
-       task = filter.worker.registry[by]
-       tasks = [task.enqueue(*to_tuple(d)) for d in data]
-       await filter.worker.enqueue_many(tasks)
-       results = await gather(*[t.result(3) for t in tasks])
-       return [data[i] for i in range(len(data)) if results[i].result]
-
-   async with worker:
-       data = [0, 1, 2, 3]
-       t1 = await map.enqueue(data, to=double.fn_name).then(filter, by=is_even.fn_name)
-       print(await t1.result())
-       t2 = await filter.enqueue(data, by=is_even.fn_name).then(map, to=double.fn_name)
-       print(await t2.result())
-
-.. code-block:: python
-
-   TaskResult(fn_name='filter', enqueue_time=1751712228859, success=True, start_time=1751712228895, finish_time=1751712228919, tries=1, worker_id='ca5bd9eb', _result=[0, 2, 4, 6])
-   TaskResult(fn_name='map', enqueue_time=1751712228923, success=True, start_time=1751712228951, finish_time=1751712228966, tries=1, worker_id='ca5bd9eb', _result=[0, 4])
+   task = await sleeper.enqueue(1).start(id="my-uuid")
 
 .. warning::
-   For pipelined tasks, positional arguments must all come from the previous task (tuple outputs will be unpacked), and any additional arguments can be passed as kwargs to ``then()``.
 
-   Here's an example that takes advantage of this behavior:
-
-   .. code-block:: python
-
-      @worker.task
-      async def tuplify(input: int) -> tuple[int, int]:
-          return (input, input)
-
-      @worker.task
-      async def untuple(first: int, second: int, *, third: int = 0) -> int:
-          return first + second + third
-
-      async with worker:
-          task = await tuplify.enqueue(3).then(untuple, third=3)
-          res = await task.result(3)
-          print(res.result)  # 9
-
-If you don't need to pass additional arguments, tasks can be pipelined using the ``|`` operator as a convenience:
-
-.. code-block:: python
-
-   async with worker:
-       await (fetch.enqueue("https://tastyware.dev") | double | is_even)
-
-Note that ``await`` is higher precedence than ``|`` so the parentheses are necessary!
-
-Fail-over tasks
----------------
-
-Similar to ``Task.then()``, streaQ also provides ``Task.otherwise()``, which lets you run another task with the same arguments if a task fails:
-
-.. code-block:: python
-
-   @worker.task
-   async def fails(val: int) -> int:
-       raise Exception("Oh no!")
-
-   @worker.task
-   async def double(val: int) -> int:
-       return val * 2
-
-   async with worker:
-       task = await fails.enqueue(3).otherwise(double)
-       print(await task.result(3))
-
-Both tasks must have the same function signature (parameters and return type) in order to use fail-overs. Here ``task.result()`` will be the result of ``fails(3)`` if it succeeds, otherwise the result of ``double(3)``.
-
-You can also use the ``^`` operator as a convenience:
-
-.. code-block:: python
-
-   async with worker:
-       await (fails.enqueue(3) ^ double)
-
-Note that ``await`` is higher precedence than ``^`` so the parentheses are necessary!
+   Don't use the ``expire`` parameter when you need idempotency, as you could potentially undermine idempotency guarantees if the task gets dequeued between the first and second calls!

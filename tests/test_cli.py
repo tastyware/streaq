@@ -7,8 +7,9 @@ from anyio import sleep
 from httpx import AsyncClient, ConnectError
 from typer.testing import CliRunner
 
-from streaq import VERSION, Worker
+from streaq import Worker
 from streaq.cli import cli
+from streaq.constants import VERSION
 
 pytestmark = pytest.mark.anyio
 runner = CliRunner()

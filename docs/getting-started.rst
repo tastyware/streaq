@@ -1,7 +1,7 @@
 Getting started
 ===============
 
-To start, you'll need to define your global dependencies which your tasks will need access to at run time. This is done with a ``dataclass`` or ``NamedTuple``:
+To start, you'll need to define your global dependencies which your tasks will need access to at run time. An easy way to do this is with a ``dataclass`` or ``NamedTuple``:
 
 .. code-block:: python
    :caption: worker.py
@@ -52,7 +52,7 @@ You can then register async tasks to the worker like this:
 
 .. code-block:: python
    :caption: worker.py
-   :emphasize-lines: 5,26-29
+   :emphasize-lines: 26-29
 
    from contextlib import asynccontextmanager
    from dataclasses import dataclass
@@ -115,7 +115,7 @@ We can run this script with ``$ python script.py``. You should see output like:
 
 .. code-block:: python
 
-   TaskInfo(fn_name='fetch', enqueue_time=1756365588232, tries=0, scheduled=datetime.datetime(2025, 8, 28, 7, 19, 51, 232000, tzinfo=datetime.timezone.utc), dependencies=set(), dependents=set())
+   TaskInfo(fn_name='fetch', enqueue_time=1756365588232, tries=0, scheduled=datetime.datetime(2025, 8, 28, 7, 19, 51, 232000, tzinfo=datetime.timezone.utc))
    TaskResult(fn_name='fetch', enqueue_time=1756365588232, success=True, start_time=1756365591327, finish_time=1756365592081, tries=1, worker_id='12195ce1', _result=303659)
 
 And the worker logs should look like this:

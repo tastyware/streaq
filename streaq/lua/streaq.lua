@@ -14,45 +14,6 @@ redis.register_function('create_groups', function(keys, argv)
   end
 end)
 
-redis.register_function('fail_dependents', function(keys, argv)
-  local dependents_key = keys[1]
-  local dependencies_key = keys[2]
-
-  local task_id = argv[1]
-  local skip_id = argv[2]
-
-  local visited = {}
-  local failed = {}
-  local stack = { task_id }
-
-  -- iterative DFS to traverse DAG
-  while #stack > 0 do
-    -- pop off last element
-    local tid = stack[#stack]
-    stack[#stack] = nil
-    if not visited[tid] then
-      visited[tid] = true
-      -- push dependents onto the stack
-      local deps = redis.call('smembers', dependents_key .. tid)
-      for _, dep_id in ipairs(deps) do
-        redis.call('srem', dependencies_key .. dep_id, tid)
-        -- skip the subtree if fallback
-        if dep_id ~= skip_id then
-          stack[#stack + 1] = dep_id
-        end
-      end
-      -- remove dependents set
-      redis.call('del', dependents_key .. tid)
-      -- add to failed list
-      if tid ~= task_id then
-        failed[#failed + 1] = tid
-      end
-    end
-  end
-
-  return failed
-end)
-
 redis.register_function('publish_delayed_tasks', function(keys, argv)
   local queue_key = keys[1]
   local stream_key = keys[2]
@@ -74,9 +35,7 @@ redis.register_function('publish_task', function(keys, argv)
   local stream_key = keys[1]
   local queue_key = keys[2]
   local task_key = keys[3]
-  local dependents_key = keys[4]
-  local dependencies_key = keys[5]
-  local results_key = keys[6]
+  local results_key = keys[4]
 
   local task_id = argv[1]
   local task_data = argv[2]
@@ -84,39 +43,39 @@ redis.register_function('publish_task', function(keys, argv)
   local expire = argv[4]
   local current_time = argv[5]
 
-  local args
+  -- idempotency if result exists
+  if redis.call('exists', results_key) == 1 then return end
+  -- idempotency if payload exists
+  local res
   if expire ~= '0' then
-    args = { 'set', task_key, task_data, 'nx', 'px', expire }
+    res = redis.call('set', task_key, task_data, 'nx', 'px', expire)
   else
-    args = { 'set', task_key, task_data, 'nx' }
+    res = redis.call('set', task_key, task_data, 'nx')
   end
-
-  if not redis.call(unpack(args)) then return 0 end
-
-  local modified = 0
-  -- additional args are dependencies for task
-  for i = 6, #argv do
-    local dep_id = argv[i]
-    -- update dependency DAG if dependency exists
-    if redis.call('exists', results_key .. dep_id) ~= 1 then
-      modified = modified + 1
-      redis.call('sadd', dependencies_key .. task_id, dep_id)
-      redis.call('sadd', dependents_key .. dep_id, task_id)
-    end
+  if not res then return end
+  -- delayed queue
+  if score ~= '0' then
+    redis.call('zadd', queue_key, score, task_id)
+  -- live queue
+  else
+    redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
   end
+end)
 
-  -- if there are dependencies don't queue yet
-  if modified == 0 then
-    -- delayed queue
-    if score ~= '0' then
-      redis.call('zadd', queue_key, score, task_id)
-      -- live queue
-    else
-      return redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
-    end
+redis.register_function('stage_task', function(keys, argv)
+  local task_key = keys[1]
+  local results_key = keys[2]
+  local depends_set = keys[3]
+
+  local task_id = argv[1]
+  local task_data = argv[2]
+
+  -- idempotency if result exists
+  if redis.call('exists', results_key) == 1 then return end
+  -- idempotency if payload exists
+  if redis.call('set', task_key, task_data, 'nx') then
+    redis.call('sadd', depends_set, task_id)
   end
-
-  return 1
 end)
 
 redis.register_function('read_streams', function(keys, argv)
@@ -161,32 +120,11 @@ redis.register_function('read_streams', function(keys, argv)
   return entries
 end)
 
-redis.register_function('update_dependents', function(keys, argv)
-  local dependents_key = keys[1]
-  local dependencies_key = keys[2]
-
-  local task_id = argv[1]
-
-  local runnable = {}
-
-  local deps = redis.call('smembers', dependents_key .. task_id)
-  for i = 1, #deps do
-    local dep = deps[i]
-    redis.call('srem', dependencies_key .. dep, task_id)
-    -- if no more dependencies are left, it's time to enqueue!
-    if redis.call('scard', dependencies_key .. dep) == 0 then
-      table.insert(runnable, dep)
-    end
-  end
-
-  redis.call('del', dependents_key .. task_id, dependencies_key .. task_id)
-
-  return runnable
-end)
-
-redis.register_function('refresh_timeout', function(keys, argv)
+redis.register_function('claim_task', function(keys, argv)
   local stream_key = keys[1]
   local running_set = keys[2]
+  local retry_key = keys[3]
+  local abort_set = keys[4]
 
   local group_name = argv[1]
   local consumer = argv[2]
@@ -196,9 +134,8 @@ redis.register_function('refresh_timeout', function(keys, argv)
   if #redis.call('xpending', stream_key, group_name, message_id, message_id, 1, consumer) > 0 then
     redis.call('xclaim', stream_key, group_name, consumer, 0, message_id, 'justid')
     redis.call('sadd', running_set, task_id)
-    return true
+    return { redis.call('incr', retry_key), redis.call('srem', abort_set, task_id) }
   end
-  return false
 end)
 
 redis.register_function('schedule_cron_job', function(keys, argv)
@@ -210,10 +147,63 @@ redis.register_function('schedule_cron_job', function(keys, argv)
   local task_id = argv[1]
   local score = argv[2]
   local member = argv[3]
+  local expire = argv[4]
 
   -- check if another worker already handled this
   if redis.call('zadd', cron_key, 'gt', 'ch', score, member) ~= 0 then
     redis.call('zadd', queue_key, score, task_id)
     redis.call('copy', data_key, task_key)
+    if expire ~= '0' then
+      redis.call('pexpire', task_key, expire)
+    end
   end
+end)
+
+redis.register_function('requeue_task', function(keys, argv)
+  local dead_key = keys[1]
+  local stream_key = keys[2]
+  local task_key = keys[3]
+  local previous_key = keys[4]
+  local results_key = keys[5]
+  local retry_key = keys[6]
+  local results_set = keys[7]
+
+  local task_id = argv[1]
+  local current_time = argv[2]
+
+  if redis.call('exists', task_key) == 0 then return 0 end
+  if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
+  redis.call('del', results_key, retry_key)
+  redis.call('zrem', results_set, task_id)
+  -- don't let the payload expire while it waits in the queue
+  redis.call('persist', task_key)
+  redis.call('persist', previous_key)
+  redis.call('xadd', stream_key, '*', 'task_id', task_id, 'enqueue_time', current_time)
+  return 1
+end)
+
+-- fail a child that's waiting on a task that can't trigger it
+local function release_child(depends_set, stream_key, child_id, current_time)
+  if redis.call('srem', depends_set, child_id) == 1 then
+    redis.call('xadd', stream_key, '*', 'task_id', child_id, 'enqueue_time', current_time, 'success', 0)
+  end
+end
+
+redis.register_function('release_child', function(keys, argv)
+  release_child(keys[1], keys[2], argv[1], argv[2])
+end)
+
+redis.register_function('purge_task', function(keys, argv)
+  local dead_key = keys[1]
+  local stream_key = keys[2]
+  local depends_set = keys[3]
+
+  local task_id = argv[1]
+  local child_id = argv[2]
+  local current_time = argv[3]
+
+  if redis.call('zrem', dead_key, task_id) == 0 then return 0 end
+  -- a parked task holds back its child, so fail it now
+  release_child(depends_set, stream_key, child_id, current_time)
+  return 1
 end)

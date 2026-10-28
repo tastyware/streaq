@@ -1,19 +1,18 @@
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-import anyio.lowlevel
 import pytest
 from anyio import TaskHandle, create_task_group, sleep
 
-from streaq.constants import REDIS_UNIQUE
 from streaq.task import TaskStatus
 from streaq.types import ReturnCoroutine, StreaqError, StreaqRetry
 from streaq.worker import Worker
-from tests.conftest import run_worker
+from tests.conftest import run_worker, wait_for
 
 pytestmark = pytest.mark.anyio
 
@@ -70,40 +69,36 @@ async def test_task_status(worker: Worker):
 
     async with worker:
         task = foobar.enqueue()
-        assert await task.status() == TaskStatus.NOT_FOUND
+        assert await task.status() is None
         await task.start()
         assert await task.status() == TaskStatus.QUEUED
-        task2 = await foobar.enqueue().start(delay=5)
+        task2 = await foobar.enqueue().start(delay=30)
 
     async with run_worker(worker):
-        await sleep(1)
-        assert await task.status() == TaskStatus.RUNNING
+        await wait_for(task.status, TaskStatus.RUNNING)
         await task.result(3)
         assert await task.status() == TaskStatus.DONE
         assert await task2.status() == TaskStatus.SCHEDULED
 
 
 async def test_task_cron(worker: Worker):
+    task_id = ""
+
     @worker.cron("30 9 1 1 *")
     async def cron1() -> bool:
         return True
 
     @worker.cron("* * * * * * *")  # once/second
     async def cron2() -> None:
-        await sleep(5)
+        nonlocal task_id
+        task_id = cron2.context.task_id
+        await sleep(0)
 
     schedule = worker._next_datetime(cron1.crontab)  # type: ignore
     assert schedule.day == 1 and schedule.month == 1
     async with run_worker(worker):
-        await sleep(2)
-        # this will be set if task is running
-        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cron2.fn_name)
-
-    with pytest.raises(StreaqError):
-
-        @worker.cron("* * * * * *", timeout=None)
-        async def cron3() -> None:
-            await anyio.lowlevel.checkpoint()
+        # the cron job should fire and still be executing
+        await wait_for(lambda: task_id)
 
 
 async def test_task_info(worker: Worker):
@@ -124,7 +119,7 @@ async def test_task_info(worker: Worker):
 
 
 async def test_task_retry(worker: Worker):
-    @worker.task(unique=True, timeout=10)
+    @worker.task(timeout=10)
     async def foobar() -> int:
         if foobar.context.tries < 3:
             raise StreaqRetry("Retrying!")
@@ -224,26 +219,20 @@ async def test_task_failed_abort(worker: Worker):
         assert not await task.abort()
 
 
-async def test_task_nonexistent_or_finished_dependency(worker: Worker):
-    @worker.task
-    async def foobar() -> None:
-        pass
-
-    async with run_worker(worker):
-        task = await foobar.enqueue().start(after="nonexistent")
-        with pytest.raises(TimeoutError):
-            await task.result(3)
-
-
 async def test_task_dependency(worker: Worker):
     @worker.task
-    async def foobar() -> None:
+    async def foobar() -> int:
         await sleep(1)
+        return 1
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start(delay=1)
-        task2 = await foobar.enqueue().start(after=task.id)
-        assert await task2.status() == TaskStatus.SCHEDULED
+        task = foobar.enqueue().start(delay=1)
+        task2 = await task.then(double)()
+        assert await task2.status() == TaskStatus.DEPENDS
         await task.result(3)
         result = await task2.result(3)
         assert result.success
@@ -251,52 +240,30 @@ async def test_task_dependency(worker: Worker):
             _ = result.exception
 
 
-async def test_task_dependency_multiple(worker: Worker):
-    @worker.task
-    async def foobar() -> None:
-        await sleep(1)
-
-    async with run_worker(worker):
-        task = await foobar.enqueue().start()
-        task2 = await foobar.enqueue().start(after=task.id)
-        task3 = await foobar.enqueue().start(after=[task.id, task2.id])
-        assert await task2.status() == TaskStatus.SCHEDULED
-        assert await task3.status() == TaskStatus.SCHEDULED
-        res1 = await task.result(3)
-        assert res1.success
-        assert await task3.status() == TaskStatus.SCHEDULED
-        res2 = await task2.result(3)
-        assert res2.success
-        res3 = await task3.result(3)
-        assert res3.success
-
-
 async def test_task_dependency_failed(worker: Worker):
     @worker.task
-    async def foobar() -> None:
+    async def foobar() -> int:
         raise Exception("Oh no!")
 
     @worker.task
-    async def do_nothing() -> None:
+    async def do_nothing(val: int) -> None:
         pass
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start(delay=1)
-        dep = await do_nothing.enqueue().start(after=task.id)
-        res = await dep.result(3)
+        task = await foobar.enqueue().then(do_nothing)()
+        res = await task.result(3)
         assert not res.success
         assert isinstance(res.exception, StreaqError)
 
 
 async def test_task_dependency_aborted(worker: Worker):
     @worker.task
-    async def foobar() -> None:
-        pass
+    async def foobar(val: int) -> int:
+        return val + 1
 
     async with worker:
-        dep = await foobar.enqueue()
-        task = await foobar.enqueue().start(after=dep.id)
-        await dep.abort(timeout=0)
+        task = await foobar.enqueue(1).then(foobar)()
+        await task.abort(timeout=0)
     async with run_worker(worker):
         res = await task.result(3)
         assert not res.success
@@ -341,9 +308,9 @@ async def test_chained_failed_dependencies(worker: Worker):
         pass
 
     async with run_worker(worker):
-        task = await foobar.enqueue().start(delay=timedelta(seconds=3))
-        dep1 = await child.enqueue().start(after=task.id)
-        dep2 = await child.enqueue().start(after=[task.id, dep1.id])
+        task = foobar.enqueue().start(delay=timedelta(seconds=3))
+        dep1 = task.then(child, forward=False)()
+        dep2 = await dep1.then(child, forward=False)()
         await sleep(1)
         assert await task.abort(3)
         res1 = await dep1.result(3)
@@ -403,38 +370,6 @@ async def test_bad_start_params(worker: Worker):
     async with worker:
         with pytest.raises(StreaqError):
             await foobar.enqueue().start(delay=1, schedule=datetime.now())
-        with pytest.raises(StreaqError):
-            await foobar.enqueue().start(delay=1, after="foobar")
-        with pytest.raises(StreaqError):
-            await foobar.enqueue().start(schedule=datetime.now(), after="foobar")
-
-
-async def test_enqueue_unique_task(worker: Worker):
-    @worker.task(unique=True, timeout=3)
-    async def foobar() -> None:
-        await sleep(1)
-
-    async with run_worker(worker):
-        task = await foobar.enqueue()
-        task2 = await foobar.enqueue()
-        results: list[TaskHandle[Any]] = []
-        async with create_task_group() as tg:
-            results.append(tg.start_soon(task.result, 3))
-            results.append(tg.start_soon(task2.result, 3))
-        assert any(
-            not r.return_value.success
-            and isinstance(r.return_value.exception, StreaqError)
-            for r in results
-        )
-        assert any(
-            r.return_value.success and r.return_value.result is None for r in results
-        )
-
-    with pytest.raises(StreaqError):
-
-        @worker.task(unique=True)
-        async def barfoo() -> None:
-            await anyio.lowlevel.checkpoint()
 
 
 @pytest.mark.parametrize("wait", [1, 0])
@@ -445,18 +380,22 @@ async def test_failed_abort(worker: Worker, wait: int):
 
     async with run_worker(worker):
         task = await foobar.enqueue().start()
-        await sleep(1)
+        # finished without a stored result
+        await wait_for(task.status, None)
         assert not await task.abort(wait)
 
 
 async def test_sync_cron(worker: Worker):
+    task_id = ""
+
     @worker.cron("* * * * * * *")
     def cronjob() -> None:
+        nonlocal task_id
+        task_id = cronjob.context.task_id
         time.sleep(3)
 
     async with run_worker(worker):
-        await sleep(2)
-        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
+        await wait_for(lambda: task_id)
 
 
 async def test_cron_multiple_runs(worker: Worker):
@@ -533,38 +472,9 @@ async def test_task_pipeline(worker: Worker):
         return val % 2 == 0
 
     async with run_worker(worker):
-        task = await double.enqueue(1).then(double).then(is_even)
+        task = await double.enqueue(1).then(double)().then(is_even)()
         res = await task.result(3)
         assert res.result and res.success
-
-
-async def test_task_pipeline_shorthand(worker: Worker):
-    @worker.task
-    async def double(val: int) -> int:
-        return val * 2
-
-    async with run_worker(worker):
-        task = await (double.enqueue(1) | double | double)
-        res = await task.result(3)
-        assert res.success and res.result == 8
-
-
-async def test_task_pipeline_multiple(worker: Worker):
-    @worker.task
-    async def double(val: int) -> int:
-        return val * 2
-
-    @worker.task
-    async def is_even(val: int) -> bool:
-        return val % 2 == 0
-
-    async with worker:
-        task1 = double.enqueue(1).then(double).then(is_even)
-        task2 = double.enqueue(1) | double | double
-        with pytest.RaisesGroup(
-            StreaqError, allow_unwrapped=True, flatten_subgroups=True
-        ):
-            await worker.enqueue_many([task1, task2])
 
 
 async def test_task_with_custom_name(worker: Worker):
@@ -598,8 +508,12 @@ async def test_task_with_custom_name(worker: Worker):
 
 
 async def test_cron_with_custom_name(worker: Worker):
+    task_id = ""
+
     @worker.cron("* * * * * * *", name="foo")
     async def cronjob() -> None:
+        nonlocal task_id
+        task_id = cronjob.context.task_id
         await sleep(3)
 
     async def cronjob1() -> None:
@@ -610,8 +524,8 @@ async def test_cron_with_custom_name(worker: Worker):
         worker.cron("* * * * * * *", name="foo")(cronjob1)
 
     async with run_worker(worker):
-        await sleep(2)
-        assert await worker.redis.get(worker.prefix + REDIS_UNIQUE + cronjob.fn_name)
+        await wait_for(lambda: task_id)
+        assert await worker.status_by_id(task_id) == TaskStatus.RUNNING
 
 
 @pytest.mark.parametrize("ttl", [60, 0])
@@ -672,8 +586,7 @@ async def test_dynamic_cron(worker: Worker):
 
     async with run_worker(worker):
         task = await foobar.enqueue(1).start(schedule="* * * * * * *")
-        await sleep(2)
-        assert vals
+        await wait_for(lambda: vals)
         await task.unschedule()
         await sleep(2)
         last_len = len(vals)
@@ -713,7 +626,7 @@ async def test_otherwise_fallback(worker: Worker):
         return val // 2
 
     async with run_worker(worker):
-        task = await maybe_fail.enqueue(1).otherwise(halve)
+        task = await maybe_fail.enqueue(1).otherwise(halve)()
         res = await task.result(3)
         assert res.success and res.result == 0
 
@@ -730,26 +643,9 @@ async def test_otherwise_skipped_on_success(worker: Worker):
         return val // 2
 
     async with run_worker(worker):
-        task = await maybe_fail.enqueue(2).otherwise(halve)
+        task = await maybe_fail.enqueue(2).otherwise(halve)()
         res = await task.result(3)
         assert res.success and res.result == 4
-
-
-async def test_otherwise_shorthand(worker: Worker):
-    @worker.task
-    async def maybe_fail(val: int) -> int:
-        if val % 2 != 0:
-            raise ValueError("odd")
-        return val * 2
-
-    @worker.task
-    async def halve(val: int) -> int:
-        return val // 2
-
-    async with run_worker(worker):
-        task = await (maybe_fail.enqueue(1) ^ halve)
-        res = await task.result(3)
-        assert res.success and res.result == 0
 
 
 async def test_otherwise_then_after_fail(worker: Worker):
@@ -766,7 +662,7 @@ async def test_otherwise_then_after_fail(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await fail_task.enqueue(5).otherwise(fallback).then(add_one)
+        task = await fail_task.enqueue(5).otherwise(fallback)().then(add_one)()
         res = await task.result(3)
         assert res.success
         assert res.result == 106  # fallback(5)+1
@@ -786,7 +682,7 @@ async def test_otherwise_then_after_success(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await ok.enqueue(5).otherwise(fallback).then(add_one)
+        task = await ok.enqueue(5).otherwise(fallback)().then(add_one)()
         res = await task.result(3)
         assert res.success and res.result == 11
 
@@ -805,7 +701,7 @@ async def test_otherwise_after_then_fails(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await produce.enqueue(5).then(fail_consumer).otherwise(fallback)
+        task = await produce.enqueue(5).then(fail_consumer)().otherwise(fallback)()
         res = await task.result(3)
         assert res.success and res.result == 11
 
@@ -824,7 +720,7 @@ async def test_otherwise_after_then_succeeds(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await produce.enqueue(5).then(consume).otherwise(fallback)
+        task = await produce.enqueue(5).then(consume)().otherwise(fallback)()
         res = await task.result(3)
         assert res.success and res.result == 110
 
@@ -843,7 +739,7 @@ async def test_chained_otherwise_first_fails(worker: Worker):
         return -999
 
     async with run_worker(worker):
-        task = await fail_task.enqueue(5).otherwise(ok).otherwise(never)
+        task = await fail_task.enqueue(5).otherwise(ok)().otherwise(never)()
         res = await task.result(3)
         assert res.success and res.result == 6
 
@@ -862,7 +758,7 @@ async def test_chained_otherwise_all_fail(worker: Worker):
         return val * 10
 
     async with run_worker(worker):
-        task = await fail1.enqueue(5).otherwise(fail2).otherwise(final)
+        task = await fail1.enqueue(5).otherwise(fail2)().otherwise(final)()
         res = await task.result(3)
         assert res.success and res.result == 50
 
@@ -877,7 +773,7 @@ async def test_otherwise_retries_exhaust(worker: Worker):
         return val + 1
 
     async with run_worker(worker):
-        task = await always_fail.enqueue(5).otherwise(fallback)
+        task = await always_fail.enqueue(5).otherwise(fallback)()
         res = await task.result(5)
         assert res.success and res.result == 6
 
@@ -894,7 +790,7 @@ async def test_otherwise_retry_eventually_succeeds(worker: Worker):
         return -1
 
     async with run_worker(worker):
-        task = await flaky.enqueue(5).otherwise(fallback)
+        task = await flaky.enqueue(5).otherwise(fallback)()
         res = await task.result(5)
         assert res.success and res.result == 10
 
@@ -905,6 +801,507 @@ async def test_otherwise_fallback_fails(worker: Worker):
         raise ValueError
 
     async with run_worker(worker):
-        task = await fail.enqueue(5).otherwise(fail)
+        task = await fail.enqueue(5).otherwise(fail)()
         res = await task.result(3)
         assert not res.success
+
+
+async def test_map(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await double.map([0, 1, 2])()
+        res = await task.result(5)
+        assert res.success and res.result == [0, 2, 4]
+
+
+async def test_map_empty(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    data: list[int] = []
+    async with run_worker(worker):
+        task = await double.map(data)()
+        res = await task.result(5)
+        assert res.success and res.result == []
+
+
+async def test_map_sync_task(worker: Worker):
+    @worker.task
+    def triple(val: int) -> int:
+        return val * 3
+
+    async with run_worker(worker):
+        task = await triple.map([1, 2])()
+        res = await task.result(5)
+        assert res.success and res.result == [3, 6]
+
+
+async def test_map_kwargs(worker: Worker):
+    @worker.task
+    async def scale(val: int, factor: int) -> int:
+        return val * factor
+
+    async with run_worker(worker):
+        task = await scale.map([1, 2, 3])(factor=3)
+        res = await task.result(5)
+        assert res.success and res.result == [3, 6, 9]
+
+
+async def test_map_child_fails(worker: Worker):
+    @worker.task(max_tries=1)
+    async def boom(val: int) -> int:
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        task = await boom.map([1, 2])()
+        res = await task.result(5)
+        assert not res.success
+
+
+async def test_filter(worker: Worker):
+    @worker.task
+    async def is_even(val: int) -> bool:
+        return val % 2 == 0
+
+    async with run_worker(worker):
+        task = await is_even.filter([0, 1, 2, 3])()
+        res = await task.result(5)
+        assert res.success and res.result == [0, 2]
+
+
+async def test_filter_kwargs(worker: Worker):
+    @worker.task
+    async def divisible(val: int, by: int) -> bool:
+        return val % by == 0
+
+    async with run_worker(worker):
+        task = await divisible.filter([1, 2, 3, 4, 5, 6])(by=3)
+        res = await task.result(5)
+        assert res.success and res.result == [3, 6]
+
+
+async def test_map_then_filter(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def over_two(val: int) -> bool:
+        return val > 2
+
+    async with run_worker(worker):
+        task = await double.map([0, 1, 2, 3])().filter(over_two)()
+        res = await task.result(5)
+        assert res.success and res.result == [4, 6]
+
+
+async def test_filter_then_map(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def is_even(val: int) -> bool:
+        return val % 2 == 0
+
+    async with run_worker(worker):
+        task = await is_even.filter([0, 1, 2, 3])().map(double)()
+        res = await task.result(5)
+        assert res.success and res.result == [0, 4]
+
+
+async def test_map_over_set(worker: Worker):
+    @worker.task
+    async def uniques() -> set[int]:
+        return {1, 2, 3}
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await uniques.enqueue().map(double)()
+        res = await task.result(5)
+        assert res.success and sorted(res.result) == [2, 4, 6]
+
+
+async def test_map_over_deque(worker: Worker):
+    @worker.task
+    async def queued() -> deque[int]:
+        return deque([1, 2, 3])
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await queued.enqueue().map(double)()
+        res = await task.result(5)
+        assert res.success and res.result == [2, 4, 6]
+
+
+async def test_map_over_dict_keys(worker: Worker):
+    @worker.task
+    async def tally() -> dict[int, str]:
+        return {1: "a", 2: "b"}
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        task = await tally.enqueue().map(double)()
+        res = await task.result(5)
+        assert res.success and sorted(res.result) == [2, 4]
+
+
+async def test_then_extra_args(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def combine(val: int, offset: int, *, scale: int = 1) -> int:
+        return (val + offset) * scale
+
+    async with run_worker(worker):
+        task = await double.enqueue(2).then(combine)(1, scale=3)
+        res = await task.result(5)
+        assert res.success and res.result == 15
+
+
+async def test_then_tuple_not_unpacked(worker: Worker):
+    @worker.task
+    async def pair() -> tuple[int, int]:
+        return 1, 2
+
+    @worker.task
+    async def total(vals: tuple[int, int]) -> int:
+        return sum(vals)
+
+    async with run_worker(worker):
+        task = await pair.enqueue().then(total)()
+        res = await task.result(5)
+        assert res.success and res.result == 3
+
+
+async def test_then_forward_false(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        ignored = await double.enqueue(2).then(double, forward=False)(5)
+        res = await ignored.result(5)
+        assert res.success and res.result == 10
+
+
+async def test_otherwise_forward_false(worker: Worker):
+    @worker.task
+    async def maybe_fail(val: int) -> int:
+        if val % 2 != 0:
+            raise ValueError("odd")
+        return val * 2
+
+    @worker.task
+    async def constant(val: int) -> int:
+        return val
+
+    async with run_worker(worker):
+        failed = await maybe_fail.enqueue(1).otherwise(constant, forward=False)(42)
+        passed = await maybe_fail.enqueue(2).otherwise(constant, forward=False)(42)
+        # parent failed, so the fallback runs with its own args
+        res = await failed.result(5)
+        assert res.success and res.result == 42
+        # parent succeeded, so the fallback passes its result through
+        res = await passed.result(5)
+        assert res.success and res.result == 4
+
+
+async def test_fallback_retry_runs_again(worker: Worker):
+    @worker.task
+    async def boom(val: int) -> int:
+        raise ValueError("nope")
+
+    @worker.task
+    async def flaky(val: int) -> int:
+        if flaky.context.tries < 2:
+            raise StreaqRetry("retry", delay=0)
+        return val * 3
+
+    async with run_worker(worker):
+        # retries arrive without the parent's status, so this must rerun, not skip
+        task = await boom.enqueue(2).otherwise(flaky)()
+        res = await task.result(5)
+        assert res.success and res.result == 6
+
+
+async def test_fallback_below_dependency_failure(worker: Worker):
+    @worker.task
+    async def boom() -> int:
+        raise ValueError("nope")
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    @worker.task
+    async def rescue(val: int) -> int:
+        return -1
+
+    async with run_worker(worker):
+        task = await boom.enqueue().then(double)().otherwise(rescue)()
+        res = await task.result(5)
+        assert not res.success
+        assert "Dependency failed" in str(res.exception)
+
+
+async def test_chain_identical_retry(worker: Worker):
+    runs: list[int] = []
+
+    @worker.task
+    async def double(val: int) -> int:
+        runs.append(val)
+        await sleep(1)
+        return val * 2
+
+    async with run_worker(worker):
+        first = await double.enqueue(1).start(id="root").then(double)()
+        # identical retry while the chain is still running
+        second = await double.enqueue(1).start(id="root").then(double)()
+        assert second.id == first.id
+        res = await second.result(5)
+        assert res.success and res.result == 4
+        # and again after it's finished
+        third = await double.enqueue(1).start(id="root").then(double)()
+        res = await third.result(5)
+        assert res.success and res.result == 4
+        assert runs == [1, 2]
+
+
+async def test_chain_reenqueue_no_orphan(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with run_worker(worker):
+        first = await double.enqueue(1).start(id="root").then(double)()
+        await first.result(5)
+        # re-enqueue the finished chain, eg. a retried orchestrator
+        second = await double.enqueue(1).start(id="root").then(double)()
+        assert second.id == first.id
+        assert await second.status() == TaskStatus.DONE
+
+
+async def test_cron_chain_raises(worker: Worker):
+    @worker.cron("* * * * *")
+    async def cronjob() -> int:
+        return 1
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with worker:
+        with pytest.raises(StreaqError, match="can't be pipelined"):
+            await cronjob.enqueue().start(schedule="* * * * *").then(double)()
+
+
+async def test_expire_chain_raises(worker: Worker):
+    @worker.task(expire=1)
+    async def expires() -> int:
+        return 1
+
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with worker:
+        with pytest.raises(StreaqError, match="expire"):
+            await expires.enqueue().then(double)()
+
+
+async def test_registered_map_extra_args(worker: Worker):
+    @worker.task
+    async def scale(val: int, factor: int) -> int:
+        return val * factor
+
+    @worker.task
+    async def above(val: int, threshold: int) -> bool:
+        return val > threshold
+
+    async with run_worker(worker):
+        mapped = await scale.map([1, 2, 3])(3)
+        filtered = await above.filter([1, 2, 3])(1)
+        res = await mapped.result(5)
+        assert res.success and res.result == [3, 6, 9]
+        res = await filtered.result(5)
+        assert res.success and res.result == [2, 3]
+
+
+async def test_task_map_extra_args(worker: Worker):
+    @worker.task
+    async def numbers() -> list[int]:
+        return [1, 2, 3]
+
+    @worker.task
+    async def scale(val: int, factor: int) -> int:
+        return val * factor
+
+    @worker.task
+    async def above(val: int, threshold: int) -> bool:
+        return val > threshold
+
+    async with run_worker(worker):
+        task = await numbers.enqueue().map(scale)(2).filter(above)(3)
+        res = await task.result(5)
+        assert res.success and res.result == [4, 6]
+
+
+async def test_info_child(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    async with worker:
+        root = double.enqueue(1)
+        child = await root.then(double)()
+        info = await root.info()
+        assert info and info.child == child.id
+        info = await child.info()
+        assert info and info.child is None
+
+
+async def test_custom_id_dedup(worker: Worker):
+    runs: list[int] = []
+
+    @worker.task
+    async def foobar(val: int) -> int:
+        runs.append(val)
+        await sleep(1)
+        return val
+
+    async with run_worker(worker):
+        await foobar.enqueue(1).start(id="dedup")
+        # duplicate while the first is still running, different args are ignored
+        second = await foobar.enqueue(2).start(id="dedup")
+        assert (await second.result(5)).result == 1
+        # duplicate after it's finished, while the result is still stored
+        third = await foobar.enqueue(3).start(id="dedup")
+        assert (await third.result(5)).result == 1
+        assert runs == [1]
+
+
+async def test_custom_id_dedup_delayed(worker: Worker):
+    runs: list[int] = []
+
+    @worker.task
+    async def foobar(val: int) -> int:
+        runs.append(val)
+        return val
+
+    async with run_worker(worker):
+        await foobar.enqueue(1).start(id="delayed", delay=1)
+        # the payload exists, so this neither runs early nor replaces the first
+        second = await foobar.enqueue(2).start(id="delayed")
+        assert (await second.result(5)).result == 1
+        assert runs == [1]
+
+
+async def test_custom_id_failure_blocks_reenqueue(worker: Worker):
+    runs: list[int] = []
+
+    @worker.task
+    async def boom() -> None:
+        runs.append(1)
+        raise ValueError("nope")
+
+    async with run_worker(worker):
+        await (await boom.enqueue().start(id="failed")).result(5)
+        # a failed result still holds the ID, requeue is the way to rerun
+        second = await boom.enqueue().start(id="failed")
+        assert not (await second.result(5)).success
+        await sleep(1)
+        assert runs == [1]
+
+
+async def test_custom_id_ttl_zero_not_idempotent(worker: Worker):
+    runs: list[int] = []
+
+    @worker.task(ttl=0)
+    async def foobar() -> None:
+        runs.append(1)
+
+    async with run_worker(worker):
+        await foobar.enqueue().start(id="no-result")
+        # finished without a stored result
+        await wait_for(lambda: worker.status_by_id("no-result"), None)
+        # so nothing left to dedup against
+        await foobar.enqueue().start(id="no-result")
+        await wait_for(lambda: len(runs) == 2)
+        assert runs == [1, 1]
+
+
+async def test_start_non_first_link_raises(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    with pytest.raises(StreaqError, match="first task in a chain"):
+        double.enqueue(1).then(double)().start(delay=1)
+
+
+async def test_await_non_last_link_raises(worker: Worker):
+    @worker.task
+    async def double(val: int) -> int:
+        return val * 2
+
+    root = double.enqueue(1)
+    middle = root.then(double)()
+    middle.then(double)()
+    async with worker:
+        for task in (root, middle):
+            with pytest.raises(StreaqError, match="last task of a chain"):
+                await task
+        # nothing was enqueued
+        assert await root.status() is None
+
+
+async def test_info_queued(worker: Worker):
+    @worker.task
+    async def foobar() -> None:
+        pass
+
+    async with worker:
+        task = await foobar.enqueue()
+        info = await task.info()
+        assert info and info.status == TaskStatus.QUEUED
+
+
+async def test_depends_status(worker: Worker):
+    @worker.task
+    async def sleeper(time: int) -> int:
+        await sleep(time)
+        return time
+
+    async with run_worker(worker):
+        child = await sleeper.enqueue(1).then(sleeper)()
+        assert await child.status() == TaskStatus.DEPENDS
+        info = await child.info()
+        assert info and info.status == TaskStatus.DEPENDS
+        waiting = await worker.get_tasks_by_status(TaskStatus.DEPENDS)
+        assert child.id in {t.task_id for t in waiting}
+        assert (await child.result(5)).result == 1
+
+
+async def test_unknown_priority_raises(worker: Worker):
+    @worker.task
+    async def foobar() -> None:
+        pass
+
+    with pytest.raises(StreaqError, match="Invalid priority"):
+        foobar.enqueue().start(priority="nope")

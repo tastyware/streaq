@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Collection, Generator, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Concatenate, Generic, cast, overload
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, Concatenate, Generic, Literal, cast, overload
+from uuid import NAMESPACE_OID, uuid4, uuid5
 
 from coredis.client import Client
 
@@ -15,14 +15,15 @@ from streaq.types import (
     AsyncTask,
     P,
     POther,
-    R,
+    R_co,
     ReturnCoroutine,
     ROther,
     Streaq,
     StreaqError,
     SyncTask,
+    T,
     TaskContext,
-    Ts,
+    TaskData,
     TypedCoroutine,
 )
 from streaq.utils import asyncify, now_ms
@@ -38,8 +39,6 @@ class TaskStatus(StrEnum):
     Enum of possible task statuses.
     """
 
-    #: task doesn't exist in Redis
-    NOT_FOUND = "missing"
     #: task is in the live queue
     QUEUED = "queued"
     #: task is running on a worker
@@ -48,28 +47,31 @@ class TaskStatus(StrEnum):
     SCHEDULED = "scheduled"
     #: task was completed
     DONE = "done"
+    #: task is in dead letter queue
+    DEAD = "dead"
+    #: task is waiting on its parent
+    DEPENDS = "depends"
 
 
 @dataclass(frozen=True)
 class TaskInfo:
     """
-    Dataclass with information about an unfinished task (running or enqueued).
+    Dataclass with information about an unfinished or dead task.
     """
 
     task_id: str
     fn_name: str
     created_time: int
+    status: TaskStatus
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict[str, Any])
     tries: int = 0
     scheduled: datetime | None = None
-    dependencies: set[str] = field(default_factory=set[str])
-    dependents: set[str] = field(default_factory=set[str])
-    status: TaskStatus = TaskStatus.NOT_FOUND
+    child: str | None = None
 
 
 @dataclass(frozen=True)
-class TaskResult(Generic[R]):
+class TaskResult(Generic[R_co]):
     """
     Dataclass wrapping the result of a task with additional info.
     """
@@ -83,16 +85,16 @@ class TaskResult(Generic[R]):
     finish_time: int
     tries: int
     worker_id: str
-    _result: R | BaseException
+    _result: R_co | BaseException
 
     @property
-    def result(self) -> R:
+    def result(self) -> R_co:
         if not self.success:
             raise StreaqError(
                 "Can't access result for a failed task, use TaskResult.exception "
                 "instead!"
             )
-        return cast(R, self._result)
+        return cast(R_co, self._result)
 
     @property
     def exception(self) -> BaseException:
@@ -105,7 +107,7 @@ class TaskResult(Generic[R]):
 
 
 @dataclass(slots=True)
-class Task(Generic[P, R]):
+class Task(Generic[P, R_co]):
     """
     Represents a task that has been enqueued or scheduled.
 
@@ -118,125 +120,229 @@ class Task(Generic[P, R]):
     worker: Worker[Any]
     id: str = field(default_factory=lambda: uuid4().hex)
     _after: Task[Any, Any] | None = None
-    after: list[str] = field(default_factory=list[str])
     delay: timedelta | int | None = None
     schedule: datetime | str | None = None
     priority: str | None = None
     _triggers: Task[Any, Any] | None = None
     _fails_over: bool = False
-    _prev_source: str | None = None
+    _ignores_output: bool = False
 
     def start(
         self,
-        after: str | Iterable[str] | None = None,
         delay: timedelta | int | None = None,
         schedule: datetime | str | None = None,
         priority: str | None = None,
-    ) -> Task[P, R]:
+        id: str | None = None,
+    ) -> Task[P, R_co]:
         """
-        Configure the task to modify schedule, queue, or dependencies.
+        Configure the task to modify schedule, queue, or ID.
 
-        :param after: task ID(s) to wait for before running this task
+        Only the first task of a chain can be configured.
+
         :param delay: duration to wait before running the task
         :param schedule:
             datetime at which to run the task, or crontab for repeated scheduling,
             follows the specification
             `here <https://github.com/josiahcarlson/parse-crontab?tab=readme-ov-file#description>`_.
         :param priority: priority queue to insert the task
+        :param id: custom ID for the task
 
         :return: self
         """
-        # merge _after and after into a single list[str]
-        if isinstance(after, str):
-            self.after.append(after)
-        elif after:
-            self.after.extend(after)
+        if delay and schedule:
+            raise StreaqError(
+                "Use one of 'delay' or 'schedule' when enqueuing tasks, not both!"
+            )
+        if self._after or self._triggers:
+            raise StreaqError("Only call `start()` on the first task in a chain!")
+        if priority and priority not in self.worker.priorities:
+            raise StreaqError(f"Invalid priority '{priority}'!")
+        if id:
+            self.id = id
         self.delay = delay
         self.schedule = schedule
         self.priority = priority
-        if (delay and schedule) or (delay and after) or (schedule and after):
-            raise StreaqError(
-                "Use one of 'delay', 'schedule', or 'after' when enqueuing tasks, not "
-                "multiple!"
-            )
         return self
 
     @overload
     def then(
-        self: Task[Any, R],
-        task: AsyncRegisteredTask[Concatenate[R, POther], ROther]
-        | SyncRegisteredTask[Concatenate[R, POther], ROther],
-        *_: POther.args,  # for some reason we have to define this but it's not used
-        **kwargs: POther.kwargs,
-    ) -> Task[Concatenate[R, POther], ROther]: ...
+        self: Task[Any, R_co],
+        task: AsyncRegisteredTask[Concatenate[R_co, POther], ROther]
+        | SyncRegisteredTask[Concatenate[R_co, POther], ROther],
+        *,
+        forward: Literal[True] = True,
+    ) -> Callable[POther, Task[Concatenate[R_co, POther], ROther]]: ...
 
     @overload
     def then(
-        self: Task[Any, tuple[*Ts]],
-        task: Callable[[*Ts], TypedCoroutine[ROther]],
-        **kwargs: Any,
-    ) -> Task[Any, ROther]: ...
+        self,
+        task: AsyncRegisteredTask[POther, ROther] | SyncRegisteredTask[POther, ROther],
+        *,
+        forward: Literal[False],
+    ) -> Callable[POther, Task[POther, ROther]]: ...
 
-    @overload
     def then(
-        self: Task[Any, tuple[*Ts]],
-        task: Callable[[*Ts], ROther],
-        **kwargs: Any,
-    ) -> Task[Any, ROther]: ...
-
-    def then(self: Task[Any, Any], task: Any, *_: Any, **kwargs: Any) -> Task[Any, Any]:
+        self,
+        task: AsyncRegisteredTask[Any, ROther] | SyncRegisteredTask[Any, ROther],
+        *,
+        forward: bool = True,
+    ) -> Callable[..., Task[Any, ROther]]:
         """
         Enqueues the given task as a dependent of this one.
 
-        Positional arguments must come from the previous task's output (tuple outputs
-        will be unpacked), and any additional arguments can be passed as kwargs.
+        :param task: task to run afterwards
+        :param forward:
+            whether to pass this task's result as the next one's first argument
 
-        :param task: task to feed output to
-
-        :return: task object for newly created, dependent task
+        :return: callable for creating a new, dependent task object
         """
-        self._triggers = Task((), kwargs, task, self.worker)
-        self._triggers._after = self
-        return self._triggers
+
+        def bind(*args: POther.args, **kwargs: POther.kwargs) -> Task[POther, ROther]:
+            child: Task[POther, ROther] = Task(args, kwargs, task, self.worker)
+            child._after = self
+            child.id = uuid5(NAMESPACE_OID, self.id).hex
+            child._ignores_output = not forward
+            self._triggers = child
+            return child
+
+        return bind
+
+    @overload
+    def otherwise(
+        self,
+        task: AsyncRegisteredTask[P, R_co] | SyncRegisteredTask[P, R_co],
+        *,
+        forward: Literal[True] = True,
+    ) -> Callable[[], Task[P, R_co]]: ...
+
+    @overload
+    def otherwise(
+        self,
+        task: AsyncRegisteredTask[POther, R_co] | SyncRegisteredTask[POther, R_co],
+        *,
+        forward: Literal[False],
+    ) -> Callable[POther, Task[POther, R_co]]: ...
 
     def otherwise(
-        self, task: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
-    ) -> Task[P, R]:
+        self,
+        task: AsyncRegisteredTask[Any, ROther] | SyncRegisteredTask[Any, ROther],
+        *,
+        forward: bool = True,
+    ) -> Callable[..., Task[Any, R_co]]:
         """
         Enqueues the given task as a fallback of this one.
 
-        If this task fails, the other task will be run with the same arguments. If this
-        task succeeds, the other task will be skipped and return the same result.
+        If this task fails, the other task will be run, with the same arguments if
+        forwarding, or provided arguments otherwise. If this task succeeds, the other
+        task will be skipped and return the same result.
 
         :param task: task to fall back to
+        :param forward:
+            whether to replay task's args/kwargs, otherwise uses provided ones
 
-        :return: task object for newly created, dependent task
+        :return: callable for creating a new, fallback task object
         """
-        self._triggers = Task(self.args, self.kwargs, task, self.worker)
-        self._triggers._after = self
-        self._fails_over = True
-        return self._triggers
 
-    async def _recurse(self, lib: Streaq, pipe: Client[str], enqueue_time: int) -> None:
-        if self._after:
-            await self._after._recurse(lib, pipe, enqueue_time)
-            self.after.append(self._after.id)
-            if self._after._fails_over:
-                self._prev_source = self._after._prev_source
-            else:
-                self._prev_source = self._after.id
+        def bind(*args: Any, **kwargs: Any) -> Task[Any, R_co]:
+            child: Task[Any, R_co] = (
+                Task((), self.kwargs, task, self.worker)
+                if forward
+                else Task(args, kwargs, task, self.worker)
+            )
+            child._after = self
+            child.id = uuid5(NAMESPACE_OID, self.id).hex
+            child._ignores_output = not forward
+            self._fails_over = True
+            self._triggers = child
+            return child
+
+        return bind
+
+    def map(
+        self: Task[P, Collection[T]],
+        task: AsyncRegisteredTask[Concatenate[T, POther], ROther]
+        | SyncRegisteredTask[Concatenate[T, POther], ROther],
+    ) -> Callable[POther, Task[[Collection[T]], list[ROther]]]:
+        """
+        Run the given task on each item of this task's output in parallel. Additional
+        arguments are duplicated per call.
+
+        :param task: task to run for each item
+
+        :return:
+            callable for creating N new, dependent task objects and aggregating the
+            results
+        """
+
+        def bind(
+            *args: POther.args, **kwargs: POther.kwargs
+        ) -> Task[[Collection[T]], list[ROther]]:
+            return self.then(self.worker._map)(
+                to=task.fn_name, args=args, kwargs=kwargs
+            )
+
+        return bind
+
+    def filter(
+        self: Task[P, Collection[T]],
+        task: AsyncRegisteredTask[Concatenate[T, POther], bool]
+        | SyncRegisteredTask[Concatenate[T, POther], bool],
+    ) -> Callable[POther, Task[[Collection[T]], list[T]]]:
+        """
+        Run the given task on each item of this task's output in parallel, filtering
+        out any results that evaluate to False.
+
+        :param task: task to filter each item by
+
+        :return:
+            callable for creating N new, dependent task objects, aggregating the
+            results, and filtering out any that evaluated to False
+        """
+
+        def bind(
+            *args: POther.args, **kwargs: POther.kwargs
+        ) -> Task[[Collection[T]], list[T]]:
+            return self.then(self.worker._filter)(
+                by=task.fn_name, args=args, kwargs=kwargs
+            )
+
+        return bind
+
+    async def _recurse(
+        self,
+        lib: Streaq,
+        pipe: Client[str],
+        enqueue_time: int,
+        child: Task[Any, Any] | None = None,
+    ) -> None:
+        if self._triggers is not child:
+            raise StreaqError("Only enqueue the last task of a chain!")
+        if self.parent.expire and (child or self._after):
+            raise StreaqError("Tasks with expire can't be pipelined!")
         data = await self.serialize(enqueue_time)
-        self.worker.publish_task(pipe, self, data, enqueue_time, lib=lib)
+        if self._after:
+            # store children before parents -> parent can't finish before child enqueue
+            lib.stage_task(
+                self.worker._task_key + self.id,
+                self.worker._results_key + self.id,
+                self.worker._depends_set,
+                self.id,
+                data,
+            )
+            await self._after._recurse(lib, pipe, enqueue_time, self)
+        else:
+            if child and isinstance(self.schedule, str):
+                raise StreaqError("Cron tasks can't be pipelined!")
+            self.worker._publish_task(pipe, self, data, enqueue_time, lib=lib)
 
-    async def _chain(self) -> Task[P, R]:
+    async def _chain(self) -> Task[P, R_co]:
         now = now_ms()
         # iterate over chain
-        if self._after:
-            async with self.worker.redis.pipeline(transaction=True) as pipe:
-                lib = Streaq(pipe)
-                await self._recurse(lib, pipe, now)
+        if self._after or self._triggers:
+            async with self.worker.redis.pipeline(transaction=False) as pipe:
+                await self._recurse(Streaq(pipe), pipe, now)
         else:
-            await self.worker.publish_task(
+            await self.worker._publish_task(
                 self.worker.redis, self, await self.serialize(now), now
             )
         return self
@@ -244,34 +350,8 @@ class Task(Generic[P, R]):
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def __await__(self) -> Generator[Any, None, Task[P, R]]:
+    def __await__(self) -> Generator[Any, None, Task[P, R_co]]:
         return self._chain().__await__()
-
-    @overload
-    def __or__(
-        self: Task[Any, R],
-        other: AsyncRegisteredTask[[R], ROther] | SyncRegisteredTask[[R], ROther],
-    ) -> Task[[R], ROther]: ...
-
-    @overload
-    def __or__(
-        self: Task[Any, tuple[*Ts]], other: Callable[[*Ts], TypedCoroutine[ROther]]
-    ) -> Task[Any, ROther]: ...
-
-    @overload
-    def __or__(
-        self: Task[Any, tuple[*Ts]], other: Callable[[*Ts], ROther]
-    ) -> Task[Any, ROther]: ...
-
-    def __or__(self: Task[Any, Any], other: Any) -> Task[Any, Any]:
-        self._triggers = Task((), {}, other, self.worker)
-        self._triggers._after = self
-        return self._triggers
-
-    def __xor__(
-        self, other: AsyncRegisteredTask[P, R] | SyncRegisteredTask[P, R]
-    ) -> Task[P, R]:
-        return self.otherwise(other)
 
     async def serialize(self, enqueue_time: int) -> Any:
         """
@@ -282,26 +362,25 @@ class Task(Generic[P, R]):
         :return: serialized task data
         """
         try:
-            data = {
+            data: TaskData = {
                 "f": self.parent.fn_name,
                 "a": self.args,
                 "k": self.kwargs,
                 "t": enqueue_time,
             }
-            if self._prev_source:
-                data["A"] = self._prev_source
             if self._after and self._after._fails_over:
                 data["F"] = self._after.id
             if self._triggers:
-                if self._fails_over:
-                    data["O"] = self._triggers.id
-                else:
-                    data["T"] = self._triggers.id
+                data["C"] = self._triggers.id
+            if self._fails_over:
+                data["O"] = 1
+            if self._ignores_output:
+                data["I"] = 1
             return await self.worker.serialize(data)
         except Exception as e:
             raise StreaqError(f"Unable to serialize task {self.parent.fn_name}!") from e
 
-    async def status(self) -> TaskStatus:
+    async def status(self) -> TaskStatus | None:
         """
         Fetch the current status of the task.
 
@@ -309,7 +388,7 @@ class Task(Generic[P, R]):
         """
         return await self.worker.status_by_id(self.id)
 
-    async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R]:
+    async def result(self, timeout: timedelta | int | None = None) -> TaskResult[R_co]:
         """
         Wait for and return the task's result, optionally with a timeout.
 
@@ -352,16 +431,14 @@ class RegisteredTask:
     Base task registry definition containing task properties from the decorator.
     """
 
-    expire: timedelta | int | None
-    max_schedule_drift: timedelta | int | None
-    max_tries: int | None
-    retry_timeouts: bool
-    silent: bool
-    timeout: timedelta | int | None
-    ttl: timedelta | int | None
-    unique: bool
+    expire: timedelta | int | None = None
+    max_tries: int | None = None
+    retry_timeouts: bool = False
+    silent: bool = False
+    timeout: timedelta | int | None = None
+    ttl: timedelta | int | None = None
     fn_name: str
-    crontab: str | None
+    crontab: str | None = None
     worker: Worker[Any]
 
     def build_context(self, id: str, tries: int = 1) -> TaskContext:
@@ -387,61 +464,103 @@ class RegisteredTask:
             raise StreaqError("Context is only available in running tasks!") from e
 
 
-@dataclass(kw_only=True)
-class AsyncRegisteredTask(RegisteredTask, Generic[P, R]):
+class PipelineMixin(RegisteredTask, Generic[P, R_co]):
     """
-    Definition for an async function that can be enqueued.
+    Enqueuing and fan-out helpers shared by sync and async registered tasks.
     """
-
-    fn: AsyncTask[P, R]
-
-    @cached_property
-    def runner(self) -> AsyncTask[P, R]:
-        return self.fn
 
     def enqueue(
         self,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Task[P, R]:
+    ) -> Task[P, R_co]:
         """
-        Serialize the task and send it to the queue for execution by a worker.
+        Create a task object, which can be serialized and sent to the queue for
+        execution by a worker.
 
         Though this isn't async, it should be awaited as it returns an object that
         should be.
         """
         return Task(args, kwargs, self, self.worker)
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TypedCoroutine[R]:
+    def map(
+        self: PipelineMixin[Concatenate[T, POther], R_co], data: Iterable[T]
+    ) -> Callable[POther, Task[[Collection[T]], list[R_co]]]:
+        """
+        Run this task on each item given in parallel. Additional arguments are
+        duplicated per call.
+
+        :param data: items to run tasks on and aggregate
+
+        :return:
+            callable for creating N new, dependent task objects and aggregating the
+            results
+        """
+        items = list(data)
+
+        def bind(
+            *args: POther.args, **kwargs: POther.kwargs
+        ) -> Task[[Collection[T]], list[R_co]]:
+            return self.worker._map.enqueue(
+                items, to=self.fn_name, args=args, kwargs=kwargs
+            )
+
+        return bind
+
+    def filter(
+        self: PipelineMixin[Concatenate[T, POther], bool], data: Iterable[T]
+    ) -> Callable[POther, Task[[Collection[T]], list[T]]]:
+        """
+        Run this task on each item given in parallel, filtering out any results that
+        evaluate to False.
+
+        :param data: items to run tasks on and filter by
+
+        :return:
+            callable for creating N new, dependent task objects, aggregating the
+            results, and filtering out any that evaluated to False
+        """
+        items = list(data)
+
+        def bind(
+            *args: POther.args, **kwargs: POther.kwargs
+        ) -> Task[[Collection[T]], list[T]]:
+            return self.worker._filter.enqueue(
+                items, by=self.fn_name, args=args, kwargs=kwargs
+            )
+
+        return bind
+
+
+@dataclass(kw_only=True)
+class AsyncRegisteredTask(PipelineMixin[P, R_co]):
+    """
+    Definition for an async function that can be enqueued.
+    """
+
+    fn: AsyncTask[P, R_co]
+
+    @cached_property
+    def runner(self) -> AsyncTask[P, R_co]:
+        return self.fn
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TypedCoroutine[R_co]:
         return self.fn(*args, **kwargs)
 
 
 @dataclass(kw_only=True)
-class SyncRegisteredTask(RegisteredTask, Generic[P, R]):
+class SyncRegisteredTask(PipelineMixin[P, R_co]):
     """
     Definition for a sync function that can be enqueued.
     """
 
-    fn: SyncTask[P, R]
+    fn: SyncTask[P, R_co]
 
     @cached_property
-    def runner(self) -> AsyncTask[P, R]:
+    def runner(self) -> AsyncTask[P, R_co]:
         return asyncify(self.fn, self.worker._limiter)
 
-    def enqueue(
-        self,
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> Task[P, R]:
-        """
-        Serialize the task and send it to the queue for execution by a worker.
-
-        Though this isn't async, it should be awaited as it
-        returns an object that should be.
-        """
-        return Task(args, kwargs, self, self.worker)
-
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self.fn(*args, **kwargs)
 
 

@@ -101,9 +101,16 @@ Other configuration options
 - ``anyio_kwargs``: extra arguments for anyio, see documentation `here <https://anyio.readthedocs.io/en/stable/basics.html#backend-specific-options>`_
 - ``sentinel_kwargs``: extra arguments to pass to sentinel connections (see below)
 - ``id``: a custom worker ID. You must ensure that it is unique for the specified queue name.
+- ``dlq_ttl``: time to keep failed tasks in the :ref:`dead-letter queue <dead-letter-queue>`, ``None`` means keep forever and ``0`` disables the queue entirely
+- ``utility_ttl`` time to store pipelining utility results in Redis (``map``, ``filter``)
+
+Deploying to production
+-----------------------
+
+Workers are designed to exit on Redis errors and should be restarted by a supervisor. Configure ``idle_timeout`` if you need faster recovery after worker reboot.
 
 Deploying with Redis Sentinel
------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In production environments, high availability guarantees are often needed, which is why Redis Sentinel was created. streaQ allows you to use Redis Sentinel easily:
 
@@ -121,7 +128,7 @@ In production environments, high availability guarantees are often needed, which
 For a simple Docker Compose file to get a cluster running, see `here <https://gist.github.com/Graeme22/d2745077ad62a08e3fcf5f71c6b5b431>`_.
 
 Deploying with Redis Cluster
-----------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Redis Cluster support is also provided, with some caveats. streaQ makes heavy use of Redis pipelines and Lua scripting, which are difficult to support on cluster. However, it is still possible to use a cluster environment by using a `hash tag <https://redis.io/docs/latest/operate/rc/databases/configuration/clustering/#manage-the-hashing-policy>`_, which guarantees that different keys wind up on the same node. A hash tag is defined with curly braces:
 
@@ -150,6 +157,7 @@ Sometimes in large apps, registering all tasks to a single, global ``Worker`` in
 
 .. code-block:: python
    :caption: main.py
+   :emphasize-lines: 3,7
 
    from anyio import run
 
@@ -191,7 +199,7 @@ Here, ``other.context`` will be inferred as type ``Any``. However, we can get co
    other = Worker[WorkerContext]()
 
 .. warning::
-   Sometimes you need to access the worker itself *inside* a task, for example:
+   Sometimes you need to access the worker itself *inside* an included worker's task, for example:
 
    .. code-block:: python
       :caption: other.py
@@ -205,6 +213,7 @@ Here, ``other.context`` will be inferred as type ``Any``. However, we can get co
 
    .. code-block:: python
       :caption: other.py
+      :emphasize-lines: 4
 
       @other.task
       async def abort_foobar(task_id: str) -> bool:
@@ -259,13 +268,15 @@ Sometimes you'll want to abort tasks, fetch task info, etc. without having acces
 .. code-block:: python
 
    async with worker:
-       print(await worker.status_by_id(my_task_id))
-       print(await worker.result_by_id(my_task_id))
-       print(await worker.info_by_id(my_task_id))
-       print(await worker.abort_by_id(my_task_id))
+       await worker.status_by_id(my_task_id)
+       await worker.result_by_id(my_task_id)
+       await worker.info_by_id(my_task_id)
+       await worker.abort_by_id(my_task_id)
        await worker.unschedule_by_id(my_task_id)
+       await worker.requeue_by_id(my_task_id)
+       await worker.purge_by_id(my_task_id)
 
-You can also fetch all tasks of a given status:
+You can also fetch batches of tasks of a given status:
 
 .. code-block:: python
 
