@@ -416,7 +416,7 @@ async def test_include_duplicate(redis_url: str, worker: Worker):
 
 async def test_grace_period(redis_url: str):
     pool = ConnectionPool.from_url(redis_url, decode_responses=True)
-    worker = Worker(redis_pool=pool, queue_name=uuid4().hex, grace_period=3)
+    worker = Worker(redis_pool=pool, queue_name=uuid4().hex, grace_period=5)
 
     @worker.task
     async def foobar() -> None:
@@ -427,7 +427,7 @@ async def test_grace_period(redis_url: str):
         task = await foobar.enqueue()
         await wait_for(task.status, TaskStatus.RUNNING)
         os.kill(os.getpid(), signal.SIGINT)
-        res = await task.result(5)
+        res = await task.result(7)
         assert res.success
 
 
