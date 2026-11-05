@@ -160,11 +160,13 @@ Orchestrators hold a worker slot
 
 An orchestrator occupies one of its worker's concurrency slots while it waits, so make sure concurrency is high enough the orchestrator doesn't get blocked, or run orchestrators on dedicated workers with a separate queue.
 
-For long-running tasks you don't want to hold slots indefinitely, you can poll instead:
+For long-running tasks you don't want to hold slots indefinitely (eg something that needs human approval), you can poll instead:
 
 .. code-block:: python
 
-   if not await is_approved(order_id):
+   try:
+       res = await task.result(timeout=1)
+   except TimeoutError:
        raise StreaqRetry(delay=300)  # register the task with max_tries=None
 
 Waiting on many tasks
